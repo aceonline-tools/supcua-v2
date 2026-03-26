@@ -7,9 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
+  test-and-build:
+    name: Test and Build
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -19,17 +19,6 @@ jobs:
 
       - name: Run tests
         run: go test ./...
-
-  build:
-    name: Build Windows
-    runs-on: windows-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
 
       - name: Install rsrc
         run: go install github.com/akavel/rsrc@latest
@@ -48,8 +37,8 @@ jobs:
 
   release:
     name: Release
-    runs-on: windows-latest
-    needs: build
+    runs-on: self-hosted
+    needs: test-and-build
     if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:')
     steps:
       - uses: actions/checkout@v4
