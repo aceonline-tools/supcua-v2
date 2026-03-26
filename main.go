@@ -53,7 +53,7 @@ func main() {
 	appController := app.NewController(scriptExecutor, hotkeyManager, scriptStore, configStore)
 
 	// UI
-	mainWindow, _, err := ui.CreateMainWindow(appController, scriptStore)
+	mainWindow, _, err := ui.CreateMainWindow(scriptStore)
 	if err != nil {
 		log.Fatalf("failed to create main window: %v", err)
 	}
