@@ -13,8 +13,11 @@ import (
 )
 
 var (
-	gdi32DLL             = syscall.NewLazyDLL("gdi32.dll")
-	procCreateSolidBrush = gdi32DLL.NewProc("CreateSolidBrush")
+	user32DLL                      = syscall.NewLazyDLL("user32.dll")
+	gdi32DLL                       = syscall.NewLazyDLL("gdi32.dll")
+	procCreateSolidBrush           = gdi32DLL.NewProc("CreateSolidBrush")
+	procFillRect                   = user32DLL.NewProc("FillRect")
+	procSetLayeredWindowAttributes = user32DLL.NewProc("SetLayeredWindowAttributes")
 )
 
 const (
@@ -24,6 +27,8 @@ const (
 	colorGreenActive = 0x0000FF00
 	colorRedInactive = 0x000000FF
 	colorWhiteText   = 0x00FFFFFF
+
+	layeredWindowAttributeAlpha = 0x02
 )
 
 // OverlayWindow is the always-on-top HUD showing global status.
@@ -77,7 +82,9 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 	}
 
 	// Set 80% opacity
-	win.SetLayeredWindowAttributes(overlayWindow.windowHandle, 0, 200, win.LWA_ALPHA)
+	procSetLayeredWindowAttributes.Call(
+		uintptr(overlayWindow.windowHandle), 0, 200, layeredWindowAttributeAlpha,
+	)
 
 	if startVisible {
 		win.ShowWindow(overlayWindow.windowHandle, win.SW_SHOWNOACTIVATE)
@@ -122,7 +129,7 @@ func (overlayWindow *OverlayWindow) paint() {
 
 	brushHandle, _, _ := procCreateSolidBrush.Call(uintptr(backgroundColor))
 	clientRect := win.RECT{Left: 0, Top: 0, Right: overlayWidth, Bottom: overlayHeight}
-	win.FillRect(deviceContext, &clientRect, win.HBRUSH(brushHandle))
+	procFillRect.Call(uintptr(deviceContext), uintptr(unsafe.Pointer(&clientRect)), brushHandle)
 	win.DeleteObject(win.HGDIOBJ(brushHandle))
 
 	win.SetBkMode(deviceContext, win.TRANSPARENT)
