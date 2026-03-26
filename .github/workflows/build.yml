@@ -1,0 +1,80 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run tests
+        run: go test ./...
+
+  build:
+    name: Build Windows
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install rsrc
+        run: go install github.com/akavel/rsrc@latest
+
+      - name: Generate syso from manifest
+        run: rsrc -manifest main.manifest -o rsrc.syso
+
+      - name: Build
+        run: go build -ldflags="-H windowsgui" -o supcua-v2.exe .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: supcua-v2-windows-amd64
+          path: supcua-v2.exe
+
+  release:
+    name: Release
+    runs-on: windows-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install rsrc
+        run: go install github.com/akavel/rsrc@latest
+
+      - name: Generate syso from manifest
+        run: rsrc -manifest main.manifest -o rsrc.syso
+
+      - name: Build release binary
+        run: go build -ldflags="-H windowsgui -s -w" -o supcua-v2.exe .
+
+      - name: Extract version from commit message
+        id: version
+        shell: bash
+        run: echo "tag=$(git log -1 --pretty=%s | sed 's/release: //')" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: supcua-v2.exe
+          generate_release_notes: true
