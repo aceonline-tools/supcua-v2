@@ -50,7 +50,7 @@ jobs:
     name: Release
     runs-on: windows-latest
     needs: build
-    if: ${{ github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:') }}
+    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:')
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +70,9 @@ jobs:
       - name: Extract version from commit message
         id: version
         shell: bash
-        run: echo "tag=$(git log -1 --pretty=%s | sed 's/release: //')" >> $GITHUB_OUTPUT
+        run: |
+          TAG=$(git log -1 --pretty=%s | sed 's/release: //')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
