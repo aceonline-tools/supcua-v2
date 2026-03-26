@@ -3,6 +3,8 @@
 package ui
 
 import (
+	"os"
+
 	"github.com/lxn/walk"
 
 	"github.com/yanmad27/supcua-v2/app"
@@ -28,6 +30,17 @@ func NewTrayIcon(mainWindow *walk.MainWindow, appController *app.Controller, ove
 		appController: appController,
 		mainWindow:    mainWindow,
 		overlayWindow: overlayWindow,
+	}
+
+	// Set icon from the executable itself, fallback to a stock icon
+	executablePath, _ := os.Executable()
+	appIcon, iconErr := walk.NewIconFromFile(executablePath)
+	if iconErr != nil {
+		appIcon, _ = walk.NewIconFromResourceId(3)
+	}
+	if appIcon != nil {
+		notifyIcon.SetIcon(appIcon)
+		mainWindow.SetIcon(appIcon)
 	}
 
 	notifyIcon.SetToolTip("supcua-v2 - Inactive")

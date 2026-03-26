@@ -16,14 +16,19 @@ import (
 )
 
 func main() {
-	log.SetOutput(os.Stdout)
-	log.Println("supcua-v2 starting...")
-
 	executablePath, err := os.Executable()
 	if err != nil {
 		log.Fatalf("failed to get executable path: %v", err)
 	}
 	applicationDirectory := filepath.Dir(executablePath)
+
+	// Log to file since -H windowsgui hides console
+	logFile, logErr := os.OpenFile(filepath.Join(applicationDirectory, "supcua-v2.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if logErr == nil {
+		log.SetOutput(logFile)
+		defer logFile.Close()
+	}
+	log.Println("supcua-v2 starting...")
 
 	// Storage
 	configStore := storage.NewConfigStore(filepath.Join(applicationDirectory, "config.json"))

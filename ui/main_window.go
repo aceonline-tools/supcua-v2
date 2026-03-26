@@ -34,7 +34,7 @@ func CreateMainWindow(appController *app.Controller, scriptStore *storage.Script
 		MinSize:  Size{Width: 800, Height: 500},
 		Size:     Size{Width: 1000, Height: 600},
 		Layout:   HBox{MarginsZero: true},
-		Visible:  false,
+		Visible:  true,
 		Children: []Widget{
 			ListBox{
 				AssignTo: &windowController.scriptListBox,
