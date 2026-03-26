@@ -112,13 +112,60 @@ func CreateMainWindow(scriptStore *storage.ScriptStore) (*walk.MainWindow, *Main
 								AssignTo: &windowController.actionListBox,
 								MinSize:  Size{Height: 200},
 							},
+							// Add action buttons - one per type
+							GroupBox{
+								Title:  "Add Action",
+								Layout: Grid{Columns: 5},
+								Children: []Widget{
+									PushButton{
+										Text:      "Mouse Move",
+										OnClicked: func() { windowController.addActionOfType(model.ActionMouseMove) },
+									},
+									PushButton{
+										Text:      "Left Down",
+										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseLeftDown) },
+									},
+									PushButton{
+										Text:      "Left Up",
+										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseLeftUp) },
+									},
+									PushButton{
+										Text:      "Right Down",
+										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseRightDown) },
+									},
+									PushButton{
+										Text:      "Right Up",
+										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseRightUp) },
+									},
+									PushButton{
+										Text:      "Key Down",
+										OnClicked: func() { windowController.addActionOfType(model.ActionKeyDown) },
+									},
+									PushButton{
+										Text:      "Key Up",
+										OnClicked: func() { windowController.addActionOfType(model.ActionKeyUp) },
+									},
+									PushButton{
+										Text:      "Delay",
+										OnClicked: func() { windowController.addActionOfType(model.ActionDelay) },
+									},
+									PushButton{
+										Text:      "Loop",
+										OnClicked: func() { windowController.addActionOfType(model.ActionLoop) },
+									},
+									PushButton{
+										Text:      "Wait Image",
+										OnClicked: func() { windowController.addActionOfType(model.ActionWaitForImage) },
+									},
+									PushButton{
+										Text:      "If Image",
+										OnClicked: func() { windowController.addActionOfType(model.ActionIfImage) },
+									},
+								},
+							},
 							Composite{
 								Layout: HBox{},
 								Children: []Widget{
-									PushButton{
-										Text:      "Add",
-										OnClicked: func() { windowController.onAddAction() },
-									},
 									PushButton{
 										Text:      "Edit",
 										OnClicked: func() { windowController.onEditAction() },
@@ -298,15 +345,26 @@ func (windowController *MainWindowController) onSave() {
 	windowController.refreshScriptList()
 }
 
-func (windowController *MainWindowController) onAddAction() {
+// addSimpleAction adds a parameterless action (mouse down/up) directly without dialog.
+func (windowController *MainWindowController) addSimpleAction(actionType string) {
 	if windowController.currentScript == nil {
 		return
 	}
-	newAction, accepted := ShowActionDialog(windowController.mainWindow, nil)
+	windowController.currentScript.Actions = append(windowController.currentScript.Actions, model.Action{Type: actionType})
+	windowController.refreshActionList()
+}
+
+// addActionOfType opens a parameter dialog for the given action type.
+func (windowController *MainWindowController) addActionOfType(actionType string) {
+	if windowController.currentScript == nil {
+		return
+	}
+	newAction := model.Action{Type: actionType}
+	editedAction, accepted := ShowActionParamDialog(windowController.mainWindow, &newAction)
 	if !accepted {
 		return
 	}
-	windowController.currentScript.Actions = append(windowController.currentScript.Actions, newAction)
+	windowController.currentScript.Actions = append(windowController.currentScript.Actions, editedAction)
 	windowController.refreshActionList()
 }
 
@@ -319,7 +377,15 @@ func (windowController *MainWindowController) onEditAction() {
 		return
 	}
 	existingAction := &windowController.currentScript.Actions[selectedIndex]
-	editedAction, accepted := ShowActionDialog(windowController.mainWindow, existingAction)
+
+	// Simple actions with no params — nothing to edit
+	switch existingAction.Type {
+	case model.ActionMouseLeftDown, model.ActionMouseLeftUp,
+		model.ActionMouseRightDown, model.ActionMouseRightUp:
+		return
+	}
+
+	editedAction, accepted := ShowActionParamDialog(windowController.mainWindow, existingAction)
 	if !accepted {
 		return
 	}

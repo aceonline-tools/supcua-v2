@@ -11,73 +11,110 @@ import (
 	"github.com/yanmad27/supcua-v2/model"
 )
 
-// ShowActionDialog shows a dialog to create or edit an action.
-// Returns the action and true if OK was clicked, or zero-value and false if cancelled.
-func ShowActionDialog(ownerWindow walk.Form, existingAction *model.Action) (model.Action, bool) {
+// ShowActionParamDialog shows a dialog with only the relevant parameters for the action type.
+// The action's Type is already set — this dialog only edits parameters.
+func ShowActionParamDialog(ownerWindow walk.Form, existingAction *model.Action) (model.Action, bool) {
 	var dialogWindow *walk.Dialog
-	var actionTypeComboBox *walk.ComboBox
-	var parameterXEdit *walk.LineEdit
-	var parameterYEdit *walk.LineEdit
-	var keyNameEdit *walk.LineEdit
-	var delayMsEdit *walk.LineEdit
-	var loopCountEdit *walk.LineEdit
 	var acceptedResult bool
 
-	actionTypeNames := []string{
-		"mouse_move", "mouse_left_down", "mouse_left_up",
-		"mouse_right_down", "mouse_right_up",
-		"key_down", "key_up", "delay", "loop",
-		"wait_for_image", "if_image",
-	}
+	resultAction := *existingAction
 
-	initialType := 0
-	initialX := ""
-	initialY := ""
-	initialKey := ""
-	initialDelay := ""
-	initialLoopCount := ""
+	dialogTitle := "Edit: " + existingAction.Type
+	var formWidgets []Widget
 
-	if existingAction != nil {
-		for typeIndex, typeName := range actionTypeNames {
-			if typeName == existingAction.Type {
-				initialType = typeIndex
-				break
-			}
+	switch existingAction.Type {
+	case model.ActionMouseMove:
+		var xEdit, yEdit *walk.LineEdit
+		formWidgets = []Widget{
+			Label{Text: "X:"},
+			LineEdit{AssignTo: &xEdit, Text: strconv.Itoa(existingAction.X)},
+			Label{Text: "Y:"},
+			LineEdit{AssignTo: &yEdit, Text: strconv.Itoa(existingAction.Y)},
 		}
-		initialX = strconv.Itoa(existingAction.X)
-		initialY = strconv.Itoa(existingAction.Y)
-		initialKey = existingAction.Key
-		initialDelay = strconv.Itoa(existingAction.DelayMs)
-		initialLoopCount = strconv.Itoa(existingAction.LoopCount)
+		defer func() {
+			if acceptedResult && xEdit != nil {
+				resultAction.X, _ = strconv.Atoi(xEdit.Text())
+				resultAction.Y, _ = strconv.Atoi(yEdit.Text())
+			}
+		}()
+
+	case model.ActionKeyDown, model.ActionKeyUp:
+		var keyEdit *walk.LineEdit
+		formWidgets = []Widget{
+			Label{Text: "Key:"},
+			LineEdit{AssignTo: &keyEdit, Text: existingAction.Key},
+		}
+		defer func() {
+			if acceptedResult && keyEdit != nil {
+				resultAction.Key = keyEdit.Text()
+			}
+		}()
+
+	case model.ActionDelay:
+		var delayEdit *walk.LineEdit
+		formWidgets = []Widget{
+			Label{Text: "Delay (ms):"},
+			LineEdit{AssignTo: &delayEdit, Text: strconv.Itoa(existingAction.DelayMs)},
+		}
+		defer func() {
+			if acceptedResult && delayEdit != nil {
+				resultAction.DelayMs, _ = strconv.Atoi(delayEdit.Text())
+			}
+		}()
+
+	case model.ActionLoop:
+		var countEdit *walk.LineEdit
+		formWidgets = []Widget{
+			Label{Text: "Count (0=infinite):"},
+			LineEdit{AssignTo: &countEdit, Text: strconv.Itoa(existingAction.LoopCount)},
+		}
+		defer func() {
+			if acceptedResult && countEdit != nil {
+				resultAction.LoopCount, _ = strconv.Atoi(countEdit.Text())
+			}
+		}()
+
+	case model.ActionWaitForImage:
+		var timeoutEdit *walk.LineEdit
+		var useFoundCheckbox *walk.CheckBox
+		formWidgets = []Widget{
+			Label{Text: "Timeout (ms):"},
+			LineEdit{AssignTo: &timeoutEdit, Text: strconv.Itoa(existingAction.TimeoutMs)},
+			Label{Text: "Use found position:"},
+			CheckBox{AssignTo: &useFoundCheckbox, Checked: existingAction.UseFoundPosition},
+		}
+		defer func() {
+			if acceptedResult && timeoutEdit != nil {
+				resultAction.TimeoutMs, _ = strconv.Atoi(timeoutEdit.Text())
+				resultAction.UseFoundPosition = useFoundCheckbox.Checked()
+			}
+		}()
+
+	case model.ActionIfImage:
+		var useFoundCheckbox *walk.CheckBox
+		formWidgets = []Widget{
+			Label{Text: "Use found position:"},
+			CheckBox{AssignTo: &useFoundCheckbox, Checked: existingAction.UseFoundPosition},
+		}
+		defer func() {
+			if acceptedResult && useFoundCheckbox != nil {
+				resultAction.UseFoundPosition = useFoundCheckbox.Checked()
+			}
+		}()
+
+	default:
+		return resultAction, true
 	}
 
 	dialogDefinition := Dialog{
 		AssignTo: &dialogWindow,
-		Title:    "Action Editor",
-		MinSize:  Size{Width: 350, Height: 250},
+		Title:    dialogTitle,
+		MinSize:  Size{Width: 300, Height: 150},
 		Layout:   VBox{},
 		Children: []Widget{
 			Composite{
-				Layout: Grid{Columns: 2},
-				Children: []Widget{
-					Label{Text: "Type:"},
-					ComboBox{
-						AssignTo:     &actionTypeComboBox,
-						Model:        actionTypeNames,
-						CurrentIndex: initialType,
-						Editable:     false,
-					},
-					Label{Text: "X:"},
-					LineEdit{AssignTo: &parameterXEdit, Text: initialX},
-					Label{Text: "Y:"},
-					LineEdit{AssignTo: &parameterYEdit, Text: initialY},
-					Label{Text: "Key:"},
-					LineEdit{AssignTo: &keyNameEdit, Text: initialKey},
-					Label{Text: "Delay (ms):"},
-					LineEdit{AssignTo: &delayMsEdit, Text: initialDelay},
-					Label{Text: "Loop Count (0=inf):"},
-					LineEdit{AssignTo: &loopCountEdit, Text: initialLoopCount},
-				},
+				Layout:   Grid{Columns: 2},
+				Children: formWidgets,
 			},
 			Composite{
 				Layout: HBox{},
@@ -105,32 +142,6 @@ func ShowActionDialog(ownerWindow walk.Form, existingAction *model.Action) (mode
 
 	if !acceptedResult {
 		return model.Action{}, false
-	}
-
-	selectedType := actionTypeNames[actionTypeComboBox.CurrentIndex()]
-	parsedX, _ := strconv.Atoi(parameterXEdit.Text())
-	parsedY, _ := strconv.Atoi(parameterYEdit.Text())
-	parsedDelay, _ := strconv.Atoi(delayMsEdit.Text())
-	parsedLoopCount, _ := strconv.Atoi(loopCountEdit.Text())
-
-	resultAction := model.Action{
-		Type:      selectedType,
-		X:         parsedX,
-		Y:         parsedY,
-		Key:       keyNameEdit.Text(),
-		DelayMs:   parsedDelay,
-		LoopCount: parsedLoopCount,
-	}
-
-	// Preserve nested actions from existing action if editing a loop/if_image
-	if existingAction != nil {
-		resultAction.Actions = existingAction.Actions
-		resultAction.ThenActions = existingAction.ThenActions
-		resultAction.ElseActions = existingAction.ElseActions
-		resultAction.Image = existingAction.Image
-		resultAction.SearchRegion = existingAction.SearchRegion
-		resultAction.UseFoundPosition = existingAction.UseFoundPosition
-		resultAction.TimeoutMs = existingAction.TimeoutMs
 	}
 
 	return resultAction, true
