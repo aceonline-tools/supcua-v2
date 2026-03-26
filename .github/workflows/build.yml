@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+defaults:
+  run:
+    shell: cmd
+
 jobs:
   test-and-build:
     name: Test and Build
