@@ -2,11 +2,16 @@ package model
 
 // ActionType enumerates all supported script action types.
 const (
-	ActionMouseMove      = "mouse_move"
-	ActionMouseLeftDown  = "mouse_left_down"
-	ActionMouseLeftUp    = "mouse_left_up"
-	ActionMouseRightDown = "mouse_right_down"
-	ActionMouseRightUp   = "mouse_right_up"
+	ActionMouseMove        = "mouse_move"
+	ActionMouseLeftClick   = "mouse_left_click"
+	ActionMouseRightClick  = "mouse_right_click"
+	ActionMouseLeftDouble  = "mouse_left_double"
+	ActionMouseRightDouble = "mouse_right_double"
+	ActionMouseLeftDown    = "mouse_left_down"
+	ActionMouseLeftUp      = "mouse_left_up"
+	ActionMouseRightDown   = "mouse_right_down"
+	ActionMouseRightUp     = "mouse_right_up"
+	ActionKeyPress       = "key_press"
 	ActionKeyDown        = "key_down"
 	ActionKeyUp          = "key_up"
 	ActionDelay          = "delay"

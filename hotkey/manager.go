@@ -4,9 +4,11 @@ package hotkey
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -16,7 +18,7 @@ var (
 	user32DLL            = syscall.NewLazyDLL("user32.dll")
 	procRegisterHotKey   = user32DLL.NewProc("RegisterHotKey")
 	procUnregisterHotKey = user32DLL.NewProc("UnregisterHotKey")
-	procGetMessage       = user32DLL.NewProc("GetMessageW")
+	procPeekMessage      = user32DLL.NewProc("PeekMessageW")
 )
 
 const (
@@ -26,31 +28,45 @@ const (
 	modifierWin   = 0x0008
 
 	wmHotkey = 0x0312
+	pmRemove = 0x0001
 )
 
 // HotkeyCallback is invoked when a registered hotkey is pressed.
 type HotkeyCallback func(hotkeyID int)
 
-// Registration tracks a single registered hotkey.
-type Registration struct {
-	HotkeyID int
-	Hotkey   model.Hotkey
-	Label    string
+type regRequest struct {
+	hotkey   model.Hotkey
+	callback HotkeyCallback
+	reply    chan regReply
+}
+
+type regReply struct {
+	id  int
+	err error
+}
+
+type unregRequest struct {
+	id    int
+	reply chan error
 }
 
 // Manager handles global hotkey registration and dispatching on Windows.
+// All Win32 calls happen on a single locked OS thread.
 type Manager struct {
-	registrationMutex sync.Mutex
-	registrationMap   map[int]HotkeyCallback
-	nextHotkeyID      int
-	windowHandle      uintptr
+	mu          sync.RWMutex
+	callbacks   map[int]HotkeyCallback
+	nextID      int
+	registerCh  chan regRequest
+	unregisterCh chan unregRequest
 }
 
 // NewManager creates a hotkey Manager.
 func NewManager() *Manager {
 	return &Manager{
-		registrationMap: make(map[int]HotkeyCallback),
-		nextHotkeyID:    1,
+		callbacks:    make(map[int]HotkeyCallback),
+		nextID:       1,
+		registerCh:   make(chan regRequest, 32),
+		unregisterCh: make(chan unregRequest, 32),
 	}
 }
 
@@ -96,44 +112,41 @@ func convertKeyNameToVirtualKeyCode(keyName string) uint32 {
 	return 0
 }
 
-// Register registers a global hotkey and returns its ID. Returns error if already taken.
-func (hotkeyManager *Manager) Register(hotkey model.Hotkey, callback HotkeyCallback) (int, error) {
-	hotkeyManager.registrationMutex.Lock()
-	defer hotkeyManager.registrationMutex.Unlock()
-
-	assignedID := hotkeyManager.nextHotkeyID
-	hotkeyManager.nextHotkeyID++
-
-	modifierFlags := convertModifiersToFlags(hotkey.Modifiers)
-	virtualKeyCode := convertKeyNameToVirtualKeyCode(hotkey.Key)
-
-	returnValue, _, err := procRegisterHotKey.Call(0, uintptr(assignedID), uintptr(modifierFlags), uintptr(virtualKeyCode))
-	if returnValue == 0 {
-		return 0, fmt.Errorf("RegisterHotKey failed for %+v: %v", hotkey, err)
-	}
-
-	hotkeyManager.registrationMap[assignedID] = callback
-	return assignedID, nil
+// Register sends a registration request to the listener goroutine (same OS thread as RegisterHotKey).
+func (m *Manager) Register(hotkey model.Hotkey, callback HotkeyCallback) (int, error) {
+	reply := make(chan regReply, 1)
+	m.registerCh <- regRequest{hotkey: hotkey, callback: callback, reply: reply}
+	r := <-reply
+	return r.id, r.err
 }
 
-// Unregister removes a registered hotkey by its ID.
-func (hotkeyManager *Manager) Unregister(hotkeyID int) error {
-	hotkeyManager.registrationMutex.Lock()
-	defer hotkeyManager.registrationMutex.Unlock()
-
-	returnValue, _, err := procUnregisterHotKey.Call(0, uintptr(hotkeyID))
-	if returnValue == 0 {
-		return fmt.Errorf("UnregisterHotKey failed for ID %d: %v", hotkeyID, err)
-	}
-
-	delete(hotkeyManager.registrationMap, hotkeyID)
-	return nil
+// Unregister sends an unregistration request to the listener goroutine.
+func (m *Manager) Unregister(hotkeyID int) error {
+	reply := make(chan error, 1)
+	m.unregisterCh <- unregRequest{id: hotkeyID, reply: reply}
+	return <-reply
 }
 
-// ListenForHotkeys starts the Windows message loop to dispatch hotkey events.
+// UnregisterAll removes all registered hotkeys.
+func (m *Manager) UnregisterAll() {
+	m.mu.RLock()
+	ids := make([]int, 0, len(m.callbacks))
+	for id := range m.callbacks {
+		ids = append(ids, id)
+	}
+	m.mu.RUnlock()
+	for _, id := range ids {
+		m.Unregister(id)
+	}
+}
+
+// ListenForHotkeys starts the Windows message loop on a locked OS thread.
 // This blocks — run in a goroutine.
-func (hotkeyManager *Manager) ListenForHotkeys() {
-	type messageStruct struct {
+func (m *Manager) ListenForHotkeys() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	type msgStruct struct {
 		hwnd    uintptr
 		message uint32
 		wParam  uintptr
@@ -143,22 +156,55 @@ func (hotkeyManager *Manager) ListenForHotkeys() {
 		ptY     int32
 	}
 
-	var windowMessage messageStruct
 	for {
-		returnValue, _, _ := procGetMessage.Call(
-			uintptr(unsafe.Pointer(&windowMessage)), 0, 0, 0,
-		)
-		if returnValue == 0 {
-			break
-		}
-		if windowMessage.message == wmHotkey {
-			pressedHotkeyID := int(windowMessage.wParam)
-			hotkeyManager.registrationMutex.Lock()
-			registeredCallback, exists := hotkeyManager.registrationMap[pressedHotkeyID]
-			hotkeyManager.registrationMutex.Unlock()
-			if exists {
-				go registeredCallback(pressedHotkeyID)
+		// Process pending registrations
+		for {
+			select {
+			case req := <-m.registerCh:
+				id := m.nextID
+				m.nextID++
+				modFlags := convertModifiersToFlags(req.hotkey.Modifiers)
+				vk := convertKeyNameToVirtualKeyCode(req.hotkey.Key)
+				ret, _, err := procRegisterHotKey.Call(0, uintptr(id), uintptr(modFlags), uintptr(vk))
+				if ret == 0 {
+					req.reply <- regReply{0, fmt.Errorf("RegisterHotKey failed for %+v: %v", req.hotkey, err)}
+				} else {
+					m.mu.Lock()
+					m.callbacks[id] = req.callback
+					m.mu.Unlock()
+					req.reply <- regReply{id, nil}
+				}
+			case req := <-m.unregisterCh:
+				ret, _, err := procUnregisterHotKey.Call(0, uintptr(req.id))
+				if ret == 0 {
+					req.reply <- fmt.Errorf("UnregisterHotKey failed for ID %d: %v", req.id, err)
+				} else {
+					m.mu.Lock()
+					delete(m.callbacks, req.id)
+					m.mu.Unlock()
+					req.reply <- nil
+				}
+			default:
+				goto doneChannels
 			}
 		}
+	doneChannels:
+
+		// Check for hotkey messages (non-blocking)
+		var msg msgStruct
+		ret, _, _ := procPeekMessage.Call(
+			uintptr(unsafe.Pointer(&msg)), 0, 0, 0, pmRemove,
+		)
+		if ret != 0 && msg.message == wmHotkey {
+			pressedID := int(msg.wParam)
+			m.mu.RLock()
+			cb, ok := m.callbacks[pressedID]
+			m.mu.RUnlock()
+			if ok {
+				go cb(pressedID)
+			}
+		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -4,6 +4,8 @@ package ui
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/lxn/walk"
@@ -13,28 +15,100 @@ import (
 	"github.com/yanmad27/supcua-v2/storage"
 )
 
-// MainWindowController manages the main application window and script editing.
-type MainWindowController struct {
-	mainWindow    *walk.MainWindow
-	scriptStore   *storage.ScriptStore
-	scriptListBox *walk.ListBox
+// ScriptRunner can start/stop scripts.
+type ScriptRunner interface {
+	IsGlobalActive() bool
+	ToggleGlobalStatus()
+	StartScript(script model.Script)
+	StopRunningScript()
+	GetRunningScriptID() string
+}
 
-	// Editor fields
-	nameEdit           *walk.LineEdit
-	enabledCheckbox    *walk.CheckBox
-	runModeComboBox    *walk.ComboBox
-	hotkeyModeComboBox *walk.ComboBox
-	actionListBox      *walk.ListBox
+// MainWindowController manages the main application window with script list.
+type MainWindowController struct {
+	mainWindow     *walk.MainWindow
+	scriptStore    *storage.ScriptStore
+	configStore    *storage.ConfigStore
+	tableView      *walk.TableView
+	tableModel     *scriptTableModel
+	activeCheckbox *walk.CheckBox
+	scriptRunner   ScriptRunner
+
+	// Called after scripts are created/edited/deleted to re-register hotkeys
+	OnScriptsChanged func()
 
 	// State
-	allScripts    []model.Script
-	currentScript *model.Script
+	allScripts []model.Script
+}
+
+// SetScriptRunner sets the app controller for global active state.
+func (wc *MainWindowController) SetScriptRunner(toggler ScriptRunner) {
+	wc.scriptRunner = toggler
+	if toggler != nil {
+		wc.activeCheckbox.SetChecked(toggler.IsGlobalActive())
+	}
+}
+
+// RefreshActiveState syncs the checkbox with the current global state.
+func (wc *MainWindowController) RefreshActiveState() {
+	if wc.scriptRunner != nil {
+		wc.activeCheckbox.SetChecked(wc.scriptRunner.IsGlobalActive())
+	}
+}
+
+// scriptTableModel implements walk.TableModel with check support.
+type scriptTableModel struct {
+	walk.TableModelBase
+	items   []scriptRow
+	checked map[int]bool
+	wc      *MainWindowController
+}
+
+type scriptRow struct {
+	name    string
+	hotkey  string
+	runMode string
+}
+
+func (m *scriptTableModel) RowCount() int { return len(m.items) }
+
+func (m *scriptTableModel) Value(row, col int) interface{} {
+	if row < 0 || row >= len(m.items) {
+		return ""
+	}
+	switch col {
+	case 0:
+		return m.items[row].name
+	case 1:
+		return m.items[row].hotkey
+	case 2:
+		return m.items[row].runMode
+	}
+	return ""
+}
+
+func (m *scriptTableModel) Checked(index int) bool {
+	return m.checked[index]
+}
+
+func (m *scriptTableModel) SetChecked(index int, checked bool) error {
+	m.checked[index] = checked
+	if m.wc != nil && index >= 0 && index < len(m.wc.allScripts) {
+		script := m.wc.allScripts[index]
+		script.Enabled = checked
+		m.wc.scriptStore.Save(script)
+		m.wc.allScripts[index] = script
+		m.wc.notifyScriptsChanged()
+	}
+	return nil
 }
 
 // CreateMainWindow builds and returns the main application window.
-func CreateMainWindow(scriptStore *storage.ScriptStore) (*walk.MainWindow, *MainWindowController, error) {
-	windowController := &MainWindowController{
+func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.ConfigStore, savedPos model.WindowPos) (*walk.MainWindow, *MainWindowController, error) {
+	wc := &MainWindowController{
 		scriptStore: scriptStore,
+		configStore: configStore,
+		tableModel:  &scriptTableModel{checked: map[int]bool{}, wc: nil},
 	}
 
 	var mainWindowInstance *walk.MainWindow
@@ -42,159 +116,56 @@ func CreateMainWindow(scriptStore *storage.ScriptStore) (*walk.MainWindow, *Main
 	err := (MainWindow{
 		AssignTo: &mainWindowInstance,
 		Title:    "supcua-v2 - Script Automation",
-		MinSize:  Size{Width: 800, Height: 500},
-		Size:     Size{Width: 1000, Height: 600},
-		Layout:   HBox{},
+		MinSize:  Size{Width: 550, Height: 250},
+		Size:     Size{Width: 650, Height: 350},
+		Layout:   VBox{},
 		Visible:  true,
 		Children: []Widget{
-			// Left sidebar: script list + buttons
-			Composite{
-				MinSize: Size{Width: 220},
-				MaxSize: Size{Width: 250},
-				Layout:  VBox{},
-				Children: []Widget{
-					Label{Text: "Scripts"},
-					ListBox{
-						AssignTo: &windowController.scriptListBox,
-						OnCurrentIndexChanged: func() {
-							windowController.onScriptSelected()
-						},
-					},
-					Composite{
-						Layout: HBox{},
-						Children: []Widget{
-							PushButton{
-								Text:      "New",
-								OnClicked: func() { windowController.onNewScript() },
-							},
-							PushButton{
-								Text:      "Delete",
-								OnClicked: func() { windowController.onDeleteScript() },
-							},
-						},
-					},
+			TableView{
+				AssignTo:         &wc.tableView,
+				AlternatingRowBG: true,
+				ColumnsOrderable: false,
+				MultiSelection:   false,
+				CheckBoxes:       true,
+				Model:            wc.tableModel,
+				Columns: []TableViewColumn{
+					{Title: "Name", Width: 200},
+					{Title: "Hotkey", Width: 160},
+					{Title: "Mode", Width: 80},
+				},
+				OnItemActivated: func() { wc.onEditScript() },
+				OnSizeChanged: func() {
+					wc.resizeTableColumns()
 				},
 			},
-			// Right side: script editor
 			Composite{
-				Layout: VBox{},
+				Layout: HBox{},
 				Children: []Widget{
-					GroupBox{
-						Title:  "Script Properties",
-						Layout: Grid{Columns: 2},
-						Children: []Widget{
-							Label{Text: "Name:"},
-							LineEdit{AssignTo: &windowController.nameEdit},
-
-							Label{Text: "Enabled:"},
-							CheckBox{AssignTo: &windowController.enabledCheckbox},
-
-							Label{Text: "Run Mode:"},
-							ComboBox{
-								AssignTo: &windowController.runModeComboBox,
-								Model:    []string{"once", "infinite"},
-								Editable: false,
-							},
-
-							Label{Text: "Hotkey Mode:"},
-							ComboBox{
-								AssignTo: &windowController.hotkeyModeComboBox,
-								Model:    []string{"toggle", "separate"},
-								Editable: false,
-							},
+					CheckBox{
+						AssignTo: &wc.activeCheckbox,
+						Text:     "Global Active",
+						OnCheckedChanged: func() {
+							if wc.scriptRunner != nil {
+								isActive := wc.scriptRunner.IsGlobalActive()
+								wantActive := wc.activeCheckbox.Checked()
+								if isActive != wantActive {
+									wc.scriptRunner.ToggleGlobalStatus()
+								}
+							}
 						},
 					},
-					GroupBox{
-						Title:  "Actions",
-						Layout: VBox{},
-						Children: []Widget{
-							ListBox{
-								AssignTo: &windowController.actionListBox,
-								MinSize:  Size{Height: 200},
-							},
-							// Add action buttons - one per type
-							GroupBox{
-								Title:  "Add Action",
-								Layout: Grid{Columns: 5},
-								Children: []Widget{
-									PushButton{
-										Text:      "Mouse Move",
-										OnClicked: func() { windowController.addActionOfType(model.ActionMouseMove) },
-									},
-									PushButton{
-										Text:      "Left Down",
-										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseLeftDown) },
-									},
-									PushButton{
-										Text:      "Left Up",
-										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseLeftUp) },
-									},
-									PushButton{
-										Text:      "Right Down",
-										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseRightDown) },
-									},
-									PushButton{
-										Text:      "Right Up",
-										OnClicked: func() { windowController.addSimpleAction(model.ActionMouseRightUp) },
-									},
-									PushButton{
-										Text:      "Key Down",
-										OnClicked: func() { windowController.addActionOfType(model.ActionKeyDown) },
-									},
-									PushButton{
-										Text:      "Key Up",
-										OnClicked: func() { windowController.addActionOfType(model.ActionKeyUp) },
-									},
-									PushButton{
-										Text:      "Delay",
-										OnClicked: func() { windowController.addActionOfType(model.ActionDelay) },
-									},
-									PushButton{
-										Text:      "Loop",
-										OnClicked: func() { windowController.addActionOfType(model.ActionLoop) },
-									},
-									PushButton{
-										Text:      "Wait Image",
-										OnClicked: func() { windowController.addActionOfType(model.ActionWaitForImage) },
-									},
-									PushButton{
-										Text:      "If Image",
-										OnClicked: func() { windowController.addActionOfType(model.ActionIfImage) },
-									},
-								},
-							},
-							Composite{
-								Layout: HBox{},
-								Children: []Widget{
-									PushButton{
-										Text:      "Edit",
-										OnClicked: func() { windowController.onEditAction() },
-									},
-									PushButton{
-										Text:      "Delete",
-										OnClicked: func() { windowController.onDeleteAction() },
-									},
-									PushButton{
-										Text:      "Up",
-										OnClicked: func() { windowController.onMoveActionUp() },
-									},
-									PushButton{
-										Text:      "Down",
-										OnClicked: func() { windowController.onMoveActionDown() },
-									},
-								},
-							},
-						},
+					HSpacer{},
+					PushButton{
+						Text:      "New",
+						OnClicked: func() { wc.onNewScript() },
 					},
-					Composite{
-						Layout: HBox{},
-						Children: []Widget{
-							HSpacer{},
-							PushButton{
-								Text:      "Save Script",
-								OnClicked: func() { windowController.onSave() },
-							},
-						},
+					PushButton{
+						Text:      "Edit",
+						OnClicked: func() { wc.onEditScript() },
+					},
+					PushButton{
+						Text:      "Delete",
+						OnClicked: func() { wc.onDeleteScript() },
 					},
 				},
 			},
@@ -205,80 +176,123 @@ func CreateMainWindow(scriptStore *storage.ScriptStore) (*walk.MainWindow, *Main
 		return nil, nil, err
 	}
 
-	windowController.mainWindow = mainWindowInstance
-	windowController.refreshScriptList()
+	wc.mainWindow = mainWindowInstance
+	wc.tableModel.wc = wc
+	wc.tableView.SetSelectionHiddenWithoutFocus(false)
+	wc.refreshScriptList()
 
-	return mainWindowInstance, windowController, nil
+	// Auto-select first item
+	if len(wc.allScripts) > 0 {
+		wc.tableView.SetCurrentIndex(0)
+	}
+
+	// Restore saved position
+	if savedPos.X != 0 || savedPos.Y != 0 {
+		b := mainWindowInstance.Bounds()
+		mainWindowInstance.SetBounds(walk.Rectangle{X: savedPos.X, Y: savedPos.Y, Width: b.Width, Height: b.Height})
+	}
+
+	// Save position on close
+	if configStore != nil {
+		mainWindowInstance.Closing().Attach(func(cancelled *bool, reason walk.CloseReason) {
+			cfg, err := configStore.Load()
+			if err == nil {
+				b := mainWindowInstance.Bounds()
+				cfg.MainWindowPos = model.WindowPos{X: b.X, Y: b.Y}
+				configStore.Save(cfg)
+			}
+		})
+	}
+
+	return mainWindowInstance, wc, nil
 }
 
-// refreshScriptList reloads scripts from disk and updates the list.
-func (windowController *MainWindowController) refreshScriptList() {
-	allScripts, err := windowController.scriptStore.List()
+func (wc *MainWindowController) resizeTableColumns() {
+	if wc.tableView == nil {
+		return
+	}
+	totalWidth := wc.tableView.Width()
+	if totalWidth <= 0 {
+		return
+	}
+	// Fixed widths for Hotkey and Mode columns
+	hotkeyWidth := 160
+	modeWidth := 80
+	nameWidth := totalWidth - hotkeyWidth - modeWidth - 4 // 4px for scrollbar margin
+	if nameWidth < 80 {
+		nameWidth = 80
+	}
+	cols := wc.tableView.Columns()
+	if cols.Len() >= 3 {
+		cols.At(0).SetWidth(nameWidth)
+		cols.At(1).SetWidth(hotkeyWidth)
+		cols.At(2).SetWidth(modeWidth)
+	}
+}
+
+func (wc *MainWindowController) notifyScriptsChanged() {
+	if wc.OnScriptsChanged != nil {
+		wc.OnScriptsChanged()
+	}
+}
+
+// refreshScriptList reloads scripts from disk and updates the table.
+func (wc *MainWindowController) refreshScriptList() {
+	allScripts, err := wc.scriptStore.List()
 	if err != nil {
 		return
 	}
-	windowController.allScripts = allScripts
+	wc.allScripts = allScripts
 
-	scriptNames := make([]string, len(allScripts))
-	for index, script := range allScripts {
-		statusPrefix := "[ ] "
-		if script.Enabled {
-			statusPrefix = "[x] "
+	sort.Slice(wc.allScripts, func(i, j int) bool {
+		return strings.ToLower(wc.allScripts[i].Name) < strings.ToLower(wc.allScripts[j].Name)
+	})
+
+	rows := make([]scriptRow, len(wc.allScripts))
+	checked := map[int]bool{}
+	for i, script := range wc.allScripts {
+		rows[i] = scriptRow{
+			name:    script.Name,
+			hotkey:  formatScriptHotkey(script),
+			runMode: script.RunMode,
 		}
-		scriptNames[index] = statusPrefix + script.Name
+		if script.Enabled {
+			checked[i] = true
+		}
 	}
-
-	windowController.scriptListBox.SetModel(scriptNames)
+	wc.tableModel.items = rows
+	wc.tableModel.checked = checked
+	wc.tableModel.PublishRowsReset()
 }
 
-func (windowController *MainWindowController) onScriptSelected() {
-	selectedIndex := windowController.scriptListBox.CurrentIndex()
-	if selectedIndex < 0 || selectedIndex >= len(windowController.allScripts) {
-		return
+func formatScriptHotkey(script model.Script) string {
+	switch script.HotkeyMode {
+	case model.HotkeyModeToggle:
+		if script.ToggleHotkey != nil {
+			return formatHotkey(script.ToggleHotkey)
+		}
+	case model.HotkeyModeSeparate:
+		parts := []string{}
+		if script.StartHotkey != nil {
+			parts = append(parts, "Start: "+formatHotkey(script.StartHotkey))
+		}
+		if script.StopHotkey != nil {
+			parts = append(parts, "Stop: "+formatHotkey(script.StopHotkey))
+		}
+		return strings.Join(parts, " | ")
 	}
-	script := windowController.allScripts[selectedIndex]
-	scriptCopy := script
-	windowController.currentScript = &scriptCopy
-	windowController.loadScriptIntoEditor()
+	return ""
 }
 
-func (windowController *MainWindowController) loadScriptIntoEditor() {
-	if windowController.currentScript == nil {
-		return
+func formatHotkey(hk *model.Hotkey) string {
+	result := ""
+	for _, mod := range hk.Modifiers {
+		result += mod + "+"
 	}
-	script := windowController.currentScript
-
-	windowController.nameEdit.SetText(script.Name)
-	windowController.enabledCheckbox.SetChecked(script.Enabled)
-
-	runModeIndex := 0
-	if script.RunMode == model.RunModeInfinite {
-		runModeIndex = 1
-	}
-	windowController.runModeComboBox.SetCurrentIndex(runModeIndex)
-
-	hotkeyModeIndex := 0
-	if script.HotkeyMode == model.HotkeyModeSeparate {
-		hotkeyModeIndex = 1
-	}
-	windowController.hotkeyModeComboBox.SetCurrentIndex(hotkeyModeIndex)
-
-	windowController.refreshActionList()
+	return result + hk.Key
 }
 
-func (windowController *MainWindowController) refreshActionList() {
-	if windowController.currentScript == nil {
-		windowController.actionListBox.SetModel([]string{})
-		return
-	}
-	actionDescriptions := make([]string, len(windowController.currentScript.Actions))
-	for index, action := range windowController.currentScript.Actions {
-		actionDescriptions[index] = describeAction(action)
-	}
-	windowController.actionListBox.SetModel(actionDescriptions)
-}
-
-func (windowController *MainWindowController) onNewScript() {
+func (wc *MainWindowController) onNewScript() {
 	newScript := model.Script{
 		ID:         uuid.New().String(),
 		Name:       "New Script",
@@ -287,19 +301,52 @@ func (windowController *MainWindowController) onNewScript() {
 		HotkeyMode: model.HotkeyModeToggle,
 		Actions:    []model.Action{},
 	}
-	windowController.currentScript = &newScript
-	windowController.loadScriptIntoEditor()
+
+	saved := ShowScriptEditDialog(wc.mainWindow, &newScript, wc.scriptStore, wc.configStore)
+	if saved {
+		wc.refreshScriptList()
+		wc.notifyScriptsChanged()
+		idx := len(wc.allScripts) - 1
+		if idx >= 0 {
+			wc.mainWindow.Synchronize(func() {
+				wc.tableView.SetCurrentIndex(idx)
+			})
+		}
+	}
 }
 
-func (windowController *MainWindowController) onDeleteScript() {
-	selectedIndex := windowController.scriptListBox.CurrentIndex()
-	if selectedIndex < 0 || selectedIndex >= len(windowController.allScripts) {
+func (wc *MainWindowController) onEditScript() {
+	selectedIndex := wc.tableView.CurrentIndex()
+	if selectedIndex < 0 || selectedIndex >= len(wc.allScripts) {
+		return
+	}
+	scriptCopy := wc.allScripts[selectedIndex]
+
+	saved := ShowScriptEditDialog(wc.mainWindow, &scriptCopy, wc.scriptStore, wc.configStore)
+	if saved {
+		wc.refreshScriptList()
+		wc.notifyScriptsChanged()
+		idx := selectedIndex
+		if idx >= len(wc.allScripts) {
+			idx = len(wc.allScripts) - 1
+		}
+		if idx >= 0 {
+			wc.mainWindow.Synchronize(func() {
+				wc.tableView.SetCurrentIndex(idx)
+			})
+		}
+	}
+}
+
+func (wc *MainWindowController) onDeleteScript() {
+	selectedIndex := wc.tableView.CurrentIndex()
+	if selectedIndex < 0 || selectedIndex >= len(wc.allScripts) {
 		return
 	}
 
-	scriptToDelete := windowController.allScripts[selectedIndex]
+	scriptToDelete := wc.allScripts[selectedIndex]
 	confirmResult := walk.MsgBox(
-		windowController.mainWindow,
+		wc.mainWindow,
 		"Delete Script",
 		fmt.Sprintf("Delete script '%s'?", scriptToDelete.Name),
 		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion,
@@ -308,166 +355,17 @@ func (windowController *MainWindowController) onDeleteScript() {
 		return
 	}
 
-	windowController.scriptStore.Delete(scriptToDelete.ID)
-	windowController.currentScript = nil
-	windowController.nameEdit.SetText("")
-	windowController.enabledCheckbox.SetChecked(false)
-	windowController.actionListBox.SetModel([]string{})
-	windowController.refreshScriptList()
-}
+	wc.scriptStore.Delete(scriptToDelete.ID)
+	wc.refreshScriptList()
+	wc.notifyScriptsChanged()
 
-func (windowController *MainWindowController) onSave() {
-	if windowController.currentScript == nil {
-		walk.MsgBox(windowController.mainWindow, "No Script", "Create or select a script first.", walk.MsgBoxIconWarning)
-		return
-	}
-
-	windowController.currentScript.Name = windowController.nameEdit.Text()
-	windowController.currentScript.Enabled = windowController.enabledCheckbox.Checked()
-
-	if windowController.runModeComboBox.CurrentIndex() == 0 {
-		windowController.currentScript.RunMode = model.RunModeOnce
-	} else {
-		windowController.currentScript.RunMode = model.RunModeInfinite
-	}
-
-	if windowController.hotkeyModeComboBox.CurrentIndex() == 0 {
-		windowController.currentScript.HotkeyMode = model.HotkeyModeToggle
-	} else {
-		windowController.currentScript.HotkeyMode = model.HotkeyModeSeparate
-	}
-
-	err := windowController.scriptStore.Save(*windowController.currentScript)
-	if err != nil {
-		walk.MsgBox(windowController.mainWindow, "Error", "Failed to save: "+err.Error(), walk.MsgBoxIconError)
-		return
-	}
-	windowController.refreshScriptList()
-}
-
-// addSimpleAction adds a parameterless action (mouse down/up) directly without dialog.
-func (windowController *MainWindowController) addSimpleAction(actionType string) {
-	if windowController.currentScript == nil {
-		return
-	}
-	windowController.currentScript.Actions = append(windowController.currentScript.Actions, model.Action{Type: actionType})
-	windowController.refreshActionList()
-}
-
-// addActionOfType opens a parameter dialog for the given action type.
-func (windowController *MainWindowController) addActionOfType(actionType string) {
-	if windowController.currentScript == nil {
-		return
-	}
-	newAction := model.Action{Type: actionType}
-	editedAction, accepted := ShowActionParamDialog(windowController.mainWindow, &newAction)
-	if !accepted {
-		return
-	}
-	windowController.currentScript.Actions = append(windowController.currentScript.Actions, editedAction)
-	windowController.refreshActionList()
-}
-
-func (windowController *MainWindowController) onEditAction() {
-	if windowController.currentScript == nil {
-		return
-	}
-	selectedIndex := windowController.actionListBox.CurrentIndex()
-	if selectedIndex < 0 || selectedIndex >= len(windowController.currentScript.Actions) {
-		return
-	}
-	existingAction := &windowController.currentScript.Actions[selectedIndex]
-
-	// Simple actions with no params — nothing to edit
-	switch existingAction.Type {
-	case model.ActionMouseLeftDown, model.ActionMouseLeftUp,
-		model.ActionMouseRightDown, model.ActionMouseRightUp:
-		return
-	}
-
-	editedAction, accepted := ShowActionParamDialog(windowController.mainWindow, existingAction)
-	if !accepted {
-		return
-	}
-	windowController.currentScript.Actions[selectedIndex] = editedAction
-	windowController.refreshActionList()
-}
-
-func (windowController *MainWindowController) onDeleteAction() {
-	if windowController.currentScript == nil {
-		return
-	}
-	selectedIndex := windowController.actionListBox.CurrentIndex()
-	if selectedIndex < 0 || selectedIndex >= len(windowController.currentScript.Actions) {
-		return
-	}
-	windowController.currentScript.Actions = append(
-		windowController.currentScript.Actions[:selectedIndex],
-		windowController.currentScript.Actions[selectedIndex+1:]...,
-	)
-	windowController.refreshActionList()
-}
-
-func (windowController *MainWindowController) onMoveActionUp() {
-	if windowController.currentScript == nil {
-		return
-	}
-	selectedIndex := windowController.actionListBox.CurrentIndex()
-	if selectedIndex <= 0 {
-		return
-	}
-	actions := windowController.currentScript.Actions
-	actions[selectedIndex], actions[selectedIndex-1] = actions[selectedIndex-1], actions[selectedIndex]
-	windowController.refreshActionList()
-	windowController.actionListBox.SetCurrentIndex(selectedIndex - 1)
-}
-
-func (windowController *MainWindowController) onMoveActionDown() {
-	if windowController.currentScript == nil {
-		return
-	}
-	selectedIndex := windowController.actionListBox.CurrentIndex()
-	if selectedIndex < 0 || selectedIndex >= len(windowController.currentScript.Actions)-1 {
-		return
-	}
-	actions := windowController.currentScript.Actions
-	actions[selectedIndex], actions[selectedIndex+1] = actions[selectedIndex+1], actions[selectedIndex]
-	windowController.refreshActionList()
-	windowController.actionListBox.SetCurrentIndex(selectedIndex + 1)
-}
-
-func describeAction(action model.Action) string {
-	switch action.Type {
-	case model.ActionMouseMove:
-		if action.Source == "found" {
-			return "Mouse Move -> found position"
+	// Select nearest item
+	count := len(wc.allScripts)
+	if count > 0 {
+		if selectedIndex >= count {
+			selectedIndex = count - 1
 		}
-		return fmt.Sprintf("Mouse Move -> (%d, %d)", action.X, action.Y)
-	case model.ActionMouseLeftDown:
-		return "Mouse Left Down"
-	case model.ActionMouseLeftUp:
-		return "Mouse Left Up"
-	case model.ActionMouseRightDown:
-		return "Mouse Right Down"
-	case model.ActionMouseRightUp:
-		return "Mouse Right Up"
-	case model.ActionKeyDown:
-		return "Key Down: " + action.Key
-	case model.ActionKeyUp:
-		return "Key Up: " + action.Key
-	case model.ActionDelay:
-		return fmt.Sprintf("Delay: %dms", action.DelayMs)
-	case model.ActionLoop:
-		countText := "infinite"
-		if action.LoopCount > 0 {
-			countText = fmt.Sprintf("%d times", action.LoopCount)
-		}
-		return fmt.Sprintf("Loop (%s, %d actions)", countText, len(action.Actions))
-	case model.ActionWaitForImage:
-		return fmt.Sprintf("Wait For Image (timeout: %dms)", action.TimeoutMs)
-	case model.ActionIfImage:
-		return fmt.Sprintf("If Image (then: %d, else: %d)", len(action.ThenActions), len(action.ElseActions))
-	default:
-		return action.Type
+		wc.tableView.SetCurrentIndex(selectedIndex)
 	}
+	wc.tableView.SetFocus()
 }

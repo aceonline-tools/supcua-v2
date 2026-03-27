@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -56,16 +57,67 @@ func (scriptExecutor *Executor) Execute(ctx context.Context, script model.Script
 }
 
 func (scriptExecutor *Executor) executeActions(ctx context.Context, actionList []model.Action) error {
-	for _, currentAction := range actionList {
+	i := 0
+	for i < len(actionList) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
+		currentAction := actionList[i]
+
+		if currentAction.Type == "loop_end" {
+			i++
+			continue
+		}
+
+		if currentAction.Type == model.ActionLoop {
+			// If nested actions are stored inside the loop action, use those
+			if len(currentAction.Actions) > 0 {
+				if err := scriptExecutor.executeLoop(ctx, currentAction); err != nil {
+					return err
+				}
+				i++
+				continue
+			}
+			// Otherwise find matching loop_end in the flat list
+			loopStart := i
+			depth := 1
+			j := i + 1
+			for j < len(actionList) && depth > 0 {
+				if actionList[j].Type == model.ActionLoop {
+					depth++
+				} else if actionList[j].Type == "loop_end" {
+					depth--
+				}
+				j++
+			}
+			loopBody := actionList[loopStart+1 : j-1]
+			count := currentAction.LoopCount
+			if count == 0 {
+				for {
+					if err := scriptExecutor.executeActions(ctx, loopBody); err != nil {
+						return err
+					}
+				}
+			} else {
+				for k := 0; k < count; k++ {
+					if err := scriptExecutor.executeActions(ctx, loopBody); err != nil {
+						return err
+					}
+				}
+			}
+			i = j
+			continue
+		}
+
+		log.Printf("executing action: type=%s key=%s x=%d y=%d", currentAction.Type, currentAction.Key, currentAction.X, currentAction.Y)
 		if err := scriptExecutor.executeOneAction(ctx, currentAction); err != nil {
+			log.Printf("action error: %v", err)
 			return err
 		}
+		i++
 	}
 	return nil
 }
@@ -74,6 +126,30 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 	switch currentAction.Type {
 	case model.ActionMouseMove:
 		return scriptExecutor.executeMouseMove(currentAction)
+
+	case model.ActionMouseLeftClick:
+		scriptExecutor.inputSimulator.MouseLeftDown()
+		scriptExecutor.inputSimulator.MouseLeftUp()
+		return nil
+
+	case model.ActionMouseRightClick:
+		scriptExecutor.inputSimulator.MouseRightDown()
+		scriptExecutor.inputSimulator.MouseRightUp()
+		return nil
+
+	case model.ActionMouseLeftDouble:
+		scriptExecutor.inputSimulator.MouseLeftDown()
+		scriptExecutor.inputSimulator.MouseLeftUp()
+		scriptExecutor.inputSimulator.MouseLeftDown()
+		scriptExecutor.inputSimulator.MouseLeftUp()
+		return nil
+
+	case model.ActionMouseRightDouble:
+		scriptExecutor.inputSimulator.MouseRightDown()
+		scriptExecutor.inputSimulator.MouseRightUp()
+		scriptExecutor.inputSimulator.MouseRightDown()
+		scriptExecutor.inputSimulator.MouseRightUp()
+		return nil
 
 	case model.ActionMouseLeftDown:
 		scriptExecutor.inputSimulator.MouseLeftDown()
@@ -90,6 +166,12 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 	case model.ActionMouseRightUp:
 		scriptExecutor.inputSimulator.MouseRightUp()
 		return nil
+
+	case model.ActionKeyPress:
+		if err := scriptExecutor.inputSimulator.KeyDown(currentAction.Key); err != nil {
+			return err
+		}
+		return scriptExecutor.inputSimulator.KeyUp(currentAction.Key)
 
 	case model.ActionKeyDown:
 		return scriptExecutor.inputSimulator.KeyDown(currentAction.Key)

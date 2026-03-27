@@ -1,0 +1,6 @@
+*.exe
+*.exe~
+*.log
+rsrc.syso
+config.json
+scripts/

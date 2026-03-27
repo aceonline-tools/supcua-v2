@@ -4,6 +4,7 @@ package ui
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/lxn/walk"
 
@@ -32,9 +33,17 @@ func NewTrayIcon(mainWindow *walk.MainWindow, appController *app.Controller, ove
 		overlayWindow: overlayWindow,
 	}
 
-	// Set icon from the executable itself, fallback to a stock icon
+	// Set icon from app.ico next to executable or working directory, fallback to stock icon
 	executablePath, _ := os.Executable()
-	appIcon, iconErr := walk.NewIconFromFile(executablePath)
+	appDir := filepath.Dir(executablePath)
+	icoPath := filepath.Join(appDir, "app.ico")
+	if _, statErr := os.Stat(icoPath); statErr != nil {
+		// Fallback to working directory (useful with go run)
+		if wd, wdErr := os.Getwd(); wdErr == nil {
+			icoPath = filepath.Join(wd, "app.ico")
+		}
+	}
+	appIcon, iconErr := walk.NewIconFromFile(icoPath)
 	if iconErr != nil {
 		appIcon, _ = walk.NewIconFromResourceId(3)
 	}

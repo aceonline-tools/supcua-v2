@@ -104,6 +104,9 @@ func (overlayWindow *OverlayWindow) windowProcedure(hwnd win.HWND, message uint3
 	case win.WM_NCHITTEST:
 		// Allow dragging by treating entire window as title bar
 		return win.HTCAPTION
+	case win.WM_MOVE:
+		overlayWindow.positionX = int(int16(lParam & 0xFFFF))
+		overlayWindow.positionY = int(int16((lParam >> 16) & 0xFFFF))
 	}
 	return win.DefWindowProc(hwnd, message, wParam, lParam)
 }

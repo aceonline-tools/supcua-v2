@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"github.com/yanmad27/supcua-v2/executor"
@@ -40,6 +41,7 @@ func NewController(
 		hotkeyManager:  hotkeyManager,
 		scriptStore:    scriptStore,
 		configStore:    configStore,
+		globalActive:   true,
 	}
 }
 
@@ -98,7 +100,11 @@ func (appController *Controller) ClearRunningScript() {
 
 // StartScript launches the executor for a script in a goroutine.
 func (appController *Controller) StartScript(script model.Script) {
+	log.Printf("StartScript called: id=%s name=%s globalActive=%v enabled=%v runningID=%q",
+		script.ID, script.Name, appController.globalActive, script.Enabled, appController.runningScriptID)
 	if !appController.CanStartScript(script) {
+		log.Printf("StartScript blocked: globalActive=%v enabled=%v runningID=%q",
+			appController.globalActive, script.Enabled, appController.runningScriptID)
 		return
 	}
 

@@ -4,34 +4,87 @@ package executor
 
 import (
 	"fmt"
-	"syscall"
+	"log"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var (
-	user32DLL         = syscall.NewLazyDLL("user32.dll")
-	procSetCursorPos  = user32DLL.NewProc("SetCursorPos")
-	procMouseEvent    = user32DLL.NewProc("mouse_event")
-	procKeybdEvent    = user32DLL.NewProc("keybd_event")
-	procMapVirtualKey = user32DLL.NewProc("MapVirtualKeyW")
-	procVkKeyScan     = user32DLL.NewProc("VkKeyScanW")
+	user32DLL              = windows.NewLazySystemDLL("user32.dll")
+	procSetCursorPos       = user32DLL.NewProc("SetCursorPos")
+	procSendInput          = user32DLL.NewProc("SendInput")
+	procMapVirtualKey      = user32DLL.NewProc("MapVirtualKeyW")
+	procVkKeyScan          = user32DLL.NewProc("VkKeyScanW")
+	procGetForegroundWindow = user32DLL.NewProc("GetForegroundWindow")
+	procGetWindowTextW     = user32DLL.NewProc("GetWindowTextW")
 )
 
-// Mouse event flags
+// INPUT type constants
 const (
-	mouseEventFlagLeftDown  = 0x0002
-	mouseEventFlagLeftUp    = 0x0004
-	mouseEventFlagRightDown = 0x0008
-	mouseEventFlagRightUp   = 0x0010
+	inputTypeMouse    uint32 = 0
+	inputTypeKeyboard uint32 = 1
 )
 
-// Keyboard event flags
+// MOUSEINPUT dwFlags
 const (
-	keyEventFlagExtendedKey = 0x0001
-	keyEventFlagKeyUp       = 0x0002
+	mouseEventFlagLeftDown  uint32 = 0x0002
+	mouseEventFlagLeftUp    uint32 = 0x0004
+	mouseEventFlagRightDown uint32 = 0x0008
+	mouseEventFlagRightUp   uint32 = 0x0010
 )
 
-// Virtual key codes for modifier and special keys
+// KEYBDINPUT dwFlags
+const (
+	keyEventFlagKeyUp uint32 = 0x0002
+)
+
+// These mirror the Win32 INPUT structure layout exactly on 64-bit Windows.
+// INPUT = 40 bytes: type(4) + pad(4) + union(32)
+// MOUSEINPUT union layout: dx(4)+dy(4)+mouseData(4)+dwFlags(4)+time(4)+pad(4)+extra(8)
+// KEYBDINPUT union layout: wVk(2)+wScan(2)+dwFlags(4)+time(4)+pad(4)+extra(8)+pad(8)
+
+type mouseINPUT struct {
+	typ       uint32
+	_         uint32 // padding
+	dx        int32
+	dy        int32
+	mouseData uint32
+	dwFlags   uint32
+	time      uint32
+	_2        uint32 // padding before extraInfo
+	extraInfo uint64
+}
+
+type keyboardINPUT struct {
+	typ       uint32
+	_         uint32 // padding
+	wVk       uint16
+	wScan     uint16
+	dwFlags   uint32
+	time      uint32
+	_2        uint32 // padding before extraInfo
+	extraInfo uint64
+	_3        uint32 // pad to 40 bytes total
+}
+
+func sendMouseInput(dwFlags uint32) {
+	inp := mouseINPUT{typ: inputTypeMouse, dwFlags: dwFlags}
+	ret, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		log.Printf("SendInput mouse failed: %v", err)
+	}
+}
+
+func sendKeyInput(vk uint16, sc uint16, flags uint32) {
+	inp := keyboardINPUT{typ: inputTypeKeyboard, wVk: vk, wScan: sc, dwFlags: flags}
+	ret, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		log.Printf("SendInput key failed vk=%d flags=%d: %v", vk, flags, err)
+	}
+}
+
+// Virtual key codes
 var virtualKeyCodeMap = map[string]uint16{
 	"ctrl": 0x11, "lctrl": 0xA2, "rctrl": 0xA3,
 	"shift": 0x10, "lshift": 0xA0, "rshift": 0xA1,
@@ -56,86 +109,71 @@ var virtualKeyCodeMap = map[string]uint16{
 	"z": 0x5A,
 }
 
-// InputSimulator provides methods to simulate mouse and keyboard input via Win32 API.
+// InputSimulator provides methods to simulate mouse and keyboard input.
 type InputSimulator struct{}
 
-// NewInputSimulator creates an InputSimulator.
-func NewInputSimulator() *InputSimulator {
-	return &InputSimulator{}
-}
+func NewInputSimulator() *InputSimulator { return &InputSimulator{} }
 
-// MoveMouse sets the cursor to absolute screen coordinates.
-func (inputSimulator *InputSimulator) MoveMouse(positionX, positionY int) error {
-	returnValue, _, _ := procSetCursorPos.Call(uintptr(positionX), uintptr(positionY))
-	if returnValue == 0 {
-		return fmt.Errorf("SetCursorPos failed for (%d, %d)", positionX, positionY)
+func (s *InputSimulator) MoveMouse(x, y int) error {
+	ret, _, _ := procSetCursorPos.Call(uintptr(x), uintptr(y))
+	if ret == 0 {
+		return fmt.Errorf("SetCursorPos failed for (%d, %d)", x, y)
 	}
 	return nil
 }
 
-// MouseLeftDown presses the left mouse button.
-func (inputSimulator *InputSimulator) MouseLeftDown() {
-	procMouseEvent.Call(mouseEventFlagLeftDown, 0, 0, 0)
-}
+func (s *InputSimulator) MouseLeftDown()  { sendMouseInput(mouseEventFlagLeftDown) }
+func (s *InputSimulator) MouseLeftUp()    { sendMouseInput(mouseEventFlagLeftUp) }
+func (s *InputSimulator) MouseRightDown() { sendMouseInput(mouseEventFlagRightDown) }
+func (s *InputSimulator) MouseRightUp()   { sendMouseInput(mouseEventFlagRightUp) }
 
-// MouseLeftUp releases the left mouse button.
-func (inputSimulator *InputSimulator) MouseLeftUp() {
-	procMouseEvent.Call(mouseEventFlagLeftUp, 0, 0, 0)
-}
-
-// MouseRightDown presses the right mouse button.
-func (inputSimulator *InputSimulator) MouseRightDown() {
-	procMouseEvent.Call(mouseEventFlagRightDown, 0, 0, 0)
-}
-
-// MouseRightUp releases the right mouse button.
-func (inputSimulator *InputSimulator) MouseRightUp() {
-	procMouseEvent.Call(mouseEventFlagRightUp, 0, 0, 0)
-}
-
-// resolveVirtualKeyCode converts a key name string to a Win32 virtual key code.
 func resolveVirtualKeyCode(keyName string) (uint16, error) {
-	if virtualKeyCode, exists := virtualKeyCodeMap[keyName]; exists {
-		return virtualKeyCode, nil
+	if vk, ok := virtualKeyCodeMap[keyName]; ok {
+		return vk, nil
 	}
 	if len(keyName) == 1 {
-		charRune := []rune(keyName)[0]
-		returnValue, _, _ := procVkKeyScan.Call(uintptr(charRune))
-		virtualKeyCode := uint16(returnValue & 0xFF)
-		if virtualKeyCode == 0xFF {
+		r := []rune(keyName)[0]
+		ret, _, _ := procVkKeyScan.Call(uintptr(r))
+		vk := uint16(ret & 0xFF)
+		if vk == 0xFF {
 			return 0, fmt.Errorf("unknown key: %s", keyName)
 		}
-		return virtualKeyCode, nil
+		return vk, nil
 	}
 	return 0, fmt.Errorf("unknown key: %s", keyName)
 }
 
-// KeyDown presses a key (does not release it).
-func (inputSimulator *InputSimulator) KeyDown(keyName string) error {
-	virtualKeyCode, err := resolveVirtualKeyCode(keyName)
+func mapVirtualKeyToScanCode(vk uint16) uint16 {
+	ret, _, _ := procMapVirtualKey.Call(uintptr(vk), 0)
+	return uint16(ret)
+}
+
+func logForegroundWindow() {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	buf := make([]uint16, 256)
+	procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 256)
+	title := windows.UTF16ToString(buf)
+	log.Printf("foreground window: hwnd=0x%X title=%q", hwnd, title)
+}
+
+func (s *InputSimulator) KeyDown(keyName string) error {
+	vk, err := resolveVirtualKeyCode(keyName)
 	if err != nil {
 		return err
 	}
-	scanCode := mapVirtualKeyToScanCode(virtualKeyCode)
-	procKeybdEvent.Call(uintptr(virtualKeyCode), uintptr(scanCode), 0, 0)
+	sc := mapVirtualKeyToScanCode(vk)
+	logForegroundWindow()
+	log.Printf("KeyDown vk=0x%02X sc=0x%02X name=%s", vk, sc, keyName)
+	sendKeyInput(vk, sc, 0)
 	return nil
 }
 
-// KeyUp releases a previously pressed key.
-func (inputSimulator *InputSimulator) KeyUp(keyName string) error {
-	virtualKeyCode, err := resolveVirtualKeyCode(keyName)
+func (s *InputSimulator) KeyUp(keyName string) error {
+	vk, err := resolveVirtualKeyCode(keyName)
 	if err != nil {
 		return err
 	}
-	scanCode := mapVirtualKeyToScanCode(virtualKeyCode)
-	procKeybdEvent.Call(uintptr(virtualKeyCode), uintptr(scanCode), keyEventFlagKeyUp, 0)
+	sc := mapVirtualKeyToScanCode(vk)
+	sendKeyInput(vk, sc, keyEventFlagKeyUp)
 	return nil
 }
-
-func mapVirtualKeyToScanCode(virtualKeyCode uint16) uint16 {
-	returnValue, _, _ := procMapVirtualKey.Call(uintptr(virtualKeyCode), 0)
-	return uint16(returnValue)
-}
-
-// Ensure unsafe is used (needed for potential future use, satisfying import)
-var _ = unsafe.Sizeof(0)

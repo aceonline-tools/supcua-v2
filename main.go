@@ -53,7 +53,7 @@ func main() {
 	appController := app.NewController(scriptExecutor, hotkeyManager, scriptStore, configStore)
 
 	// UI
-	mainWindow, _, err := ui.CreateMainWindow(scriptStore)
+	mainWindow, mainWindowController, err := ui.CreateMainWindow(scriptStore, configStore, appConfig.MainWindowPos)
 	if err != nil {
 		log.Fatalf("failed to create main window: %v", err)
 	}
@@ -79,33 +79,55 @@ func main() {
 	}
 	defer trayIcon.Dispose()
 
-	// Status change callback — refresh overlay and tray
+	// Wire up global toggler
+	mainWindowController.SetScriptRunner(appController)
+
+	// Status change callback — refresh overlay, tray, and main window
 	appController.OnStatusChange = func() {
 		if overlayWindow != nil {
 			overlayWindow.Refresh()
 		}
 		trayIcon.UpdateTooltip()
+		mainWindowController.RefreshActiveState()
 	}
 
+	// Start hotkey listener first (Register sends to its channel)
+	go hotkeyManager.ListenForHotkeys()
+
 	// Register global hotkey
-	_, err = hotkeyManager.Register(appConfig.GlobalHotkey, func(hotkeyID int) {
+	globalHotkeyID, err := hotkeyManager.Register(appConfig.GlobalHotkey, func(hotkeyID int) {
 		appController.ToggleGlobalStatus()
 	})
 	if err != nil {
 		log.Printf("warning: failed to register global hotkey: %v", err)
+		globalHotkeyID = 0
 	}
 
-	// Start hotkey listener in background
-	go hotkeyManager.ListenForHotkeys()
-
 	// Register script hotkeys
-	registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+	scriptHotkeyIDs := registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+
+	// Re-register script hotkeys whenever scripts change
+	mainWindowController.OnScriptsChanged = func() {
+		// Unregister previous script hotkeys only
+		for _, id := range scriptHotkeyIDs {
+			hotkeyManager.Unregister(id)
+		}
+		_ = globalHotkeyID // keep global hotkey alive
+		scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+	}
 
 	// Run the Walk message loop (blocks until window closed)
 	mainWindow.Run()
 
-	// Cleanup
+	// Save overlay position before destroying
 	if overlayWindow != nil {
+		cfg, err := configStore.Load()
+		if err == nil {
+			ox, oy := overlayWindow.GetPosition()
+			cfg.OverlayPosition.X = ox
+			cfg.OverlayPosition.Y = oy
+			configStore.Save(cfg)
+		}
 		overlayWindow.Destroy()
 	}
 	log.Println("supcua-v2 exiting")
@@ -115,12 +137,14 @@ func registerScriptHotkeys(
 	appController *app.Controller,
 	hotkeyManager *hotkey.Manager,
 	scriptStore *storage.ScriptStore,
-) {
+) []int {
 	allScripts, err := scriptStore.List()
 	if err != nil {
 		log.Printf("warning: failed to list scripts for hotkey registration: %v", err)
-		return
+		return nil
 	}
+
+	var registeredIDs []int
 
 	for _, script := range allScripts {
 		if !script.Enabled {
@@ -131,27 +155,43 @@ func registerScriptHotkeys(
 		switch script.HotkeyMode {
 		case "toggle":
 			if script.ToggleHotkey != nil {
-				hotkeyManager.Register(*script.ToggleHotkey, func(hotkeyID int) {
+				id, err := hotkeyManager.Register(*script.ToggleHotkey, func(hotkeyID int) {
 					if appController.GetRunningScriptID() == currentScript.ID {
 						appController.StopRunningScript()
 					} else {
 						appController.StartScript(currentScript)
 					}
 				})
+				if err != nil {
+					log.Printf("warning: failed to register toggle hotkey for script %s: %v", currentScript.Name, err)
+				} else {
+					registeredIDs = append(registeredIDs, id)
+				}
 			}
 		case "separate":
 			if script.StartHotkey != nil {
-				hotkeyManager.Register(*script.StartHotkey, func(hotkeyID int) {
+				id, err := hotkeyManager.Register(*script.StartHotkey, func(hotkeyID int) {
 					appController.StartScript(currentScript)
 				})
+				if err != nil {
+					log.Printf("warning: failed to register start hotkey for script %s: %v", currentScript.Name, err)
+				} else {
+					registeredIDs = append(registeredIDs, id)
+				}
 			}
 			if script.StopHotkey != nil {
-				hotkeyManager.Register(*script.StopHotkey, func(hotkeyID int) {
+				id, err := hotkeyManager.Register(*script.StopHotkey, func(hotkeyID int) {
 					if appController.GetRunningScriptID() == currentScript.ID {
 						appController.StopRunningScript()
 					}
 				})
+				if err != nil {
+					log.Printf("warning: failed to register stop hotkey for script %s: %v", currentScript.Name, err)
+				} else {
+					registeredIDs = append(registeredIDs, id)
+				}
 			}
 		}
 	}
+	return registeredIDs
 }
