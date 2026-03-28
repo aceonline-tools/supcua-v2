@@ -22,6 +22,7 @@ type scriptEditController struct {
 	dialog      *walk.Dialog
 	script      *model.Script
 	scriptStore *storage.ScriptStore
+	captureVK   uint32
 	saved       bool
 
 	// Fields
@@ -56,10 +57,11 @@ type scriptEditController struct {
 
 // ShowScriptEditDialog opens a dialog to create or edit a script.
 // Returns true if the script was saved.
-func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.ScriptStore, configStore *storage.ConfigStore) bool {
+func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.ScriptStore, configStore *storage.ConfigStore, captureVK uint32) bool {
 	ctrl := &scriptEditController{
 		script:      script,
 		scriptStore: store,
+		captureVK:   captureVK,
 	}
 
 	title := "Edit Script"
@@ -135,45 +137,25 @@ func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.
 										AssignTo: &ctrl.toggleHotkeyEdit,
 										ReadOnly: true,
 									},
-									PushButton{
-										Text:    "Clear",
-										MaxSize: Size{Width: 55},
-										OnClicked: func() {
-											ctrl.script.ToggleHotkey = nil
-											ctrl.toggleHotkeyEdit.SetText("(none)")
-										},
-									},
 								},
 							},
 							GroupBox{
 								AssignTo: &ctrl.separateHotkeyGroup,
 								Title:    "Start / Stop Hotkeys (click & press keys)",
-								Layout:   Grid{Columns: 3},
+								Layout:   Grid{Columns: 2},
 								Children: []Widget{
-									Label{Text: "Start:"},
-									LineEdit{
-										AssignTo: &ctrl.startHotkeyEdit,
-										ReadOnly: true,
-									},
-									PushButton{
-										Text:    "Clear",
-										MaxSize: Size{Width: 55},
-										OnClicked: func() {
-											ctrl.script.StartHotkey = nil
-											ctrl.startHotkeyEdit.SetText("(none)")
+									Composite{
+										Layout: VBox{MarginsZero: true, Spacing: 2},
+										Children: []Widget{
+											Label{Text: "Start:"},
+											LineEdit{AssignTo: &ctrl.startHotkeyEdit, ReadOnly: true},
 										},
 									},
-									Label{Text: "Stop:"},
-									LineEdit{
-										AssignTo: &ctrl.stopHotkeyEdit,
-										ReadOnly: true,
-									},
-									PushButton{
-										Text:    "Clear",
-										MaxSize: Size{Width: 55},
-										OnClicked: func() {
-											ctrl.script.StopHotkey = nil
-											ctrl.stopHotkeyEdit.SetText("(none)")
+									Composite{
+										Layout: VBox{MarginsZero: true, Spacing: 2},
+										Children: []Widget{
+											Label{Text: "Stop:"},
+											LineEdit{AssignTo: &ctrl.stopHotkeyEdit, ReadOnly: true},
 										},
 									},
 								},
@@ -424,7 +406,11 @@ func (ctrl *scriptEditController) registerPickHotkey() {
 				return
 			default:
 			}
-			ret, _, _ := procGetAsyncKeyState.Call(uintptr(0x50)) // 0x50 = 'P'
+			if ctrl.captureVK == 0 {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			ret, _, _ := procGetAsyncKeyState.Call(uintptr(ctrl.captureVK))
 			// Bit 0 means key was pressed since last call
 			if ret&1 != 0 {
 				x, y, err := capture.GetCurrentMousePosition()

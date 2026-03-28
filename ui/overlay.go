@@ -121,9 +121,9 @@ func (overlayWindow *OverlayWindow) paint() {
 	if overlayWindow.appController.IsGlobalActive() {
 		backgroundColor = colorGreenActive
 		statusText = "ACTIVE"
-		runningScriptID := overlayWindow.appController.GetRunningScriptID()
-		if runningScriptID != "" {
-			statusText = "RUN: " + runningScriptID
+		runningScriptName := overlayWindow.appController.GetRunningScriptName()
+		if runningScriptName != "" {
+			statusText = "RUN: " + runningScriptName
 		}
 	} else {
 		backgroundColor = colorRedInactive

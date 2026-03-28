@@ -53,7 +53,8 @@ func main() {
 	appController := app.NewController(scriptExecutor, hotkeyManager, scriptStore, configStore)
 
 	// UI
-	mainWindow, mainWindowController, err := ui.CreateMainWindow(scriptStore, configStore, appConfig.MainWindowPos)
+	captureVK := hotkey.KeyNameToVirtualKeyCode(appConfig.CaptureHotkey.Key)
+	mainWindow, mainWindowController, err := ui.CreateMainWindow(scriptStore, configStore, appConfig.MainWindowPos, captureVK)
 	if err != nil {
 		log.Fatalf("failed to create main window: %v", err)
 	}

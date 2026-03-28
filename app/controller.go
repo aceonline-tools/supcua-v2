@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
@@ -19,6 +21,7 @@ type Controller struct {
 	stateMutex          sync.RWMutex
 	globalActive        bool
 	runningScriptID     string
+	runningScriptName   string
 	cancelRunningScript context.CancelFunc
 
 	scriptExecutor *executor.Executor
@@ -83,6 +86,24 @@ func (appController *Controller) GetRunningScriptID() string {
 	return appController.runningScriptID
 }
 
+// GetRunningScriptName returns the camelCase name of the currently running script, or empty.
+func (appController *Controller) GetRunningScriptName() string {
+	appController.stateMutex.RLock()
+	defer appController.stateMutex.RUnlock()
+	return appController.runningScriptName
+}
+
+// toSnakeCase converts a string to snake_case.
+func toSnakeCase(s string) string {
+	words := strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for i, w := range words {
+		words[i] = strings.ToLower(w)
+	}
+	return strings.Join(words, "_")
+}
+
 // SetRunningScriptID marks a script as currently running.
 func (appController *Controller) SetRunningScriptID(scriptID string) {
 	appController.stateMutex.Lock()
@@ -95,6 +116,7 @@ func (appController *Controller) ClearRunningScript() {
 	appController.stateMutex.Lock()
 	defer appController.stateMutex.Unlock()
 	appController.runningScriptID = ""
+	appController.runningScriptName = ""
 	appController.cancelRunningScript = nil
 }
 
@@ -112,6 +134,7 @@ func (appController *Controller) StartScript(script model.Script) {
 
 	appController.stateMutex.Lock()
 	appController.runningScriptID = script.ID
+	appController.runningScriptName = toSnakeCase(script.Name)
 	appController.cancelRunningScript = cancelFunction
 	appController.stateMutex.Unlock()
 

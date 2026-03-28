@@ -19,6 +19,7 @@ var (
 	procRegisterHotKey   = user32DLL.NewProc("RegisterHotKey")
 	procUnregisterHotKey = user32DLL.NewProc("UnregisterHotKey")
 	procPeekMessage      = user32DLL.NewProc("PeekMessageW")
+	procGetAsyncKeyState = user32DLL.NewProc("GetAsyncKeyState")
 )
 
 const (
@@ -30,6 +31,19 @@ const (
 	wmHotkey = 0x0312
 	pmRemove = 0x0001
 )
+
+// bareModifierVKCodes are keys that RegisterHotKey cannot use as the hotkey key
+// because Windows consumes them as modifiers before hotkey processing.
+var bareModifierVKCodes = map[uint32]bool{
+	0xA0: true, // VK_LSHIFT
+	0xA1: true, // VK_RSHIFT
+	0xA2: true, // VK_LCONTROL
+	0xA3: true, // VK_RCONTROL
+	0xA4: true, // VK_LMENU (LAlt)
+	0xA5: true, // VK_RMENU (RAlt)
+	0x5B: true, // VK_LWIN
+	0x5C: true, // VK_RWIN
+}
 
 // HotkeyCallback is invoked when a registered hotkey is pressed.
 type HotkeyCallback func(hotkeyID int)
@@ -50,14 +64,24 @@ type unregRequest struct {
 	reply chan error
 }
 
+type pollKeyEntry struct {
+	id       int
+	vkCode   uint32
+	callback HotkeyCallback
+	wasDown  bool
+}
+
 // Manager handles global hotkey registration and dispatching on Windows.
 // All Win32 calls happen on a single locked OS thread.
 type Manager struct {
-	mu          sync.RWMutex
-	callbacks   map[int]HotkeyCallback
-	nextID      int
-	registerCh  chan regRequest
+	mu           sync.RWMutex
+	callbacks    map[int]HotkeyCallback
+	nextID       int
+	registerCh   chan regRequest
 	unregisterCh chan unregRequest
+
+	pollMu   sync.Mutex
+	pollKeys []pollKeyEntry
 }
 
 // NewManager creates a hotkey Manager.
@@ -87,6 +111,11 @@ func convertModifiersToFlags(modifierNames []string) uint32 {
 	return combinedFlags
 }
 
+// KeyNameToVirtualKeyCode converts a key name string to a Win32 virtual key code.
+func KeyNameToVirtualKeyCode(keyName string) uint32 {
+	return convertKeyNameToVirtualKeyCode(keyName)
+}
+
 func convertKeyNameToVirtualKeyCode(keyName string) uint32 {
 	keyNameLower := strings.ToLower(keyName)
 	virtualKeyCodeMap := map[string]uint32{
@@ -102,6 +131,10 @@ func convertKeyNameToVirtualKeyCode(keyName string) uint32 {
 		"u": 0x55, "v": 0x56, "w": 0x57, "x": 0x58, "y": 0x59,
 		"z": 0x5A,
 		"space": 0x20, "enter": 0x0D, "escape": 0x1B, "tab": 0x09,
+		"lctrl": 0xA2, "rctrl": 0xA3,
+		"lshift": 0xA0, "rshift": 0xA1,
+		"lalt": 0xA4, "ralt": 0xA5,
+		"lwin": 0x5B, "rwin": 0x5C,
 	}
 	if virtualKeyCode, exists := virtualKeyCodeMap[keyNameLower]; exists {
 		return virtualKeyCode
@@ -157,7 +190,7 @@ func (m *Manager) ListenForHotkeys() {
 	}
 
 	for {
-		// Process pending registrations
+		// Process pending registrations/unregistrations
 		for {
 			select {
 			case req := <-m.registerCh:
@@ -165,16 +198,41 @@ func (m *Manager) ListenForHotkeys() {
 				m.nextID++
 				modFlags := convertModifiersToFlags(req.hotkey.Modifiers)
 				vk := convertKeyNameToVirtualKeyCode(req.hotkey.Key)
-				ret, _, err := procRegisterHotKey.Call(0, uintptr(id), uintptr(modFlags), uintptr(vk))
-				if ret == 0 {
-					req.reply <- regReply{0, fmt.Errorf("RegisterHotKey failed for %+v: %v", req.hotkey, err)}
-				} else {
-					m.mu.Lock()
-					m.callbacks[id] = req.callback
-					m.mu.Unlock()
+
+				// Bare modifier keys can't use RegisterHotKey — use GetAsyncKeyState polling.
+				if modFlags == 0 && bareModifierVKCodes[vk] {
+					m.pollMu.Lock()
+					m.pollKeys = append(m.pollKeys, pollKeyEntry{id: id, vkCode: vk, callback: req.callback})
+					m.pollMu.Unlock()
 					req.reply <- regReply{id, nil}
+				} else {
+					ret, _, err := procRegisterHotKey.Call(0, uintptr(id), uintptr(modFlags), uintptr(vk))
+					if ret == 0 {
+						req.reply <- regReply{0, fmt.Errorf("RegisterHotKey failed for %+v: %v", req.hotkey, err)}
+					} else {
+						m.mu.Lock()
+						m.callbacks[id] = req.callback
+						m.mu.Unlock()
+						req.reply <- regReply{id, nil}
+					}
 				}
+
 			case req := <-m.unregisterCh:
+				// Check poll keys first
+				m.pollMu.Lock()
+				found := false
+				for i, pk := range m.pollKeys {
+					if pk.id == req.id {
+						m.pollKeys = append(m.pollKeys[:i], m.pollKeys[i+1:]...)
+						found = true
+						break
+					}
+				}
+				m.pollMu.Unlock()
+				if found {
+					req.reply <- nil
+					continue
+				}
 				ret, _, err := procUnregisterHotKey.Call(0, uintptr(req.id))
 				if ret == 0 {
 					req.reply <- fmt.Errorf("UnregisterHotKey failed for ID %d: %v", req.id, err)
@@ -190,7 +248,7 @@ func (m *Manager) ListenForHotkeys() {
 		}
 	doneChannels:
 
-		// Check for hotkey messages (non-blocking)
+		// Check for WM_HOTKEY messages (non-blocking)
 		var msg msgStruct
 		ret, _, _ := procPeekMessage.Call(
 			uintptr(unsafe.Pointer(&msg)), 0, 0, 0, pmRemove,
@@ -204,6 +262,21 @@ func (m *Manager) ListenForHotkeys() {
 				go cb(pressedID)
 			}
 		}
+
+		// Poll bare modifier keys via GetAsyncKeyState, fire on key-up.
+		m.pollMu.Lock()
+		for i := range m.pollKeys {
+			pk := &m.pollKeys[i]
+			state, _, _ := procGetAsyncKeyState.Call(uintptr(pk.vkCode))
+			isDown := uint16(state)&0x8000 != 0
+			if pk.wasDown && !isDown {
+				cb := pk.callback
+				id := pk.id
+				go cb(id)
+			}
+			pk.wasDown = isDown
+		}
+		m.pollMu.Unlock()
 
 		time.Sleep(10 * time.Millisecond)
 	}

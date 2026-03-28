@@ -29,6 +29,7 @@ type MainWindowController struct {
 	mainWindow     *walk.MainWindow
 	scriptStore    *storage.ScriptStore
 	configStore    *storage.ConfigStore
+	captureVK      uint32
 	tableView      *walk.TableView
 	tableModel     *scriptTableModel
 	activeCheckbox *walk.CheckBox
@@ -65,9 +66,10 @@ type scriptTableModel struct {
 }
 
 type scriptRow struct {
-	name    string
-	hotkey  string
-	runMode string
+	name      string
+	startKey  string
+	stopKey   string
+	runMode   string
 }
 
 func (m *scriptTableModel) RowCount() int { return len(m.items) }
@@ -80,8 +82,10 @@ func (m *scriptTableModel) Value(row, col int) interface{} {
 	case 0:
 		return m.items[row].name
 	case 1:
-		return m.items[row].hotkey
+		return m.items[row].startKey
 	case 2:
+		return m.items[row].stopKey
+	case 3:
 		return m.items[row].runMode
 	}
 	return ""
@@ -104,10 +108,11 @@ func (m *scriptTableModel) SetChecked(index int, checked bool) error {
 }
 
 // CreateMainWindow builds and returns the main application window.
-func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.ConfigStore, savedPos model.WindowPos) (*walk.MainWindow, *MainWindowController, error) {
+func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.ConfigStore, savedPos model.WindowPos, captureVK uint32) (*walk.MainWindow, *MainWindowController, error) {
 	wc := &MainWindowController{
 		scriptStore: scriptStore,
 		configStore: configStore,
+		captureVK:   captureVK,
 		tableModel:  &scriptTableModel{checked: map[int]bool{}, wc: nil},
 	}
 
@@ -130,7 +135,8 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 				Model:            wc.tableModel,
 				Columns: []TableViewColumn{
 					{Title: "Name", Width: 200},
-					{Title: "Hotkey", Width: 160},
+					{Title: "Start", Width: 100},
+					{Title: "Stop", Width: 100},
 					{Title: "Mode", Width: 80},
 				},
 				OnItemActivated: func() { wc.onEditScript() },
@@ -215,18 +221,19 @@ func (wc *MainWindowController) resizeTableColumns() {
 	if totalWidth <= 0 {
 		return
 	}
-	// Fixed widths for Hotkey and Mode columns
-	hotkeyWidth := 160
+	startWidth := 100
+	stopWidth := 100
 	modeWidth := 80
-	nameWidth := totalWidth - hotkeyWidth - modeWidth - 4 // 4px for scrollbar margin
+	nameWidth := totalWidth - startWidth - stopWidth - modeWidth - 4
 	if nameWidth < 80 {
 		nameWidth = 80
 	}
 	cols := wc.tableView.Columns()
-	if cols.Len() >= 3 {
+	if cols.Len() >= 4 {
 		cols.At(0).SetWidth(nameWidth)
-		cols.At(1).SetWidth(hotkeyWidth)
-		cols.At(2).SetWidth(modeWidth)
+		cols.At(1).SetWidth(startWidth)
+		cols.At(2).SetWidth(stopWidth)
+		cols.At(3).SetWidth(modeWidth)
 	}
 }
 
@@ -251,9 +258,11 @@ func (wc *MainWindowController) refreshScriptList() {
 	rows := make([]scriptRow, len(wc.allScripts))
 	checked := map[int]bool{}
 	for i, script := range wc.allScripts {
+		start, stop := formatScriptHotkeys(script)
 		rows[i] = scriptRow{
 			name:    script.Name,
-			hotkey:  formatScriptHotkey(script),
+			startKey: start,
+			stopKey:  stop,
 			runMode: script.RunMode,
 		}
 		if script.Enabled {
@@ -265,23 +274,24 @@ func (wc *MainWindowController) refreshScriptList() {
 	wc.tableModel.PublishRowsReset()
 }
 
-func formatScriptHotkey(script model.Script) string {
+// formatScriptHotkeys returns (start, stop) display strings for the table.
+func formatScriptHotkeys(script model.Script) (string, string) {
 	switch script.HotkeyMode {
 	case model.HotkeyModeToggle:
 		if script.ToggleHotkey != nil {
-			return formatHotkey(script.ToggleHotkey)
+			return formatHotkey(script.ToggleHotkey), ""
 		}
 	case model.HotkeyModeSeparate:
-		parts := []string{}
+		start, stop := "", ""
 		if script.StartHotkey != nil {
-			parts = append(parts, "Start: "+formatHotkey(script.StartHotkey))
+			start = formatHotkey(script.StartHotkey)
 		}
 		if script.StopHotkey != nil {
-			parts = append(parts, "Stop: "+formatHotkey(script.StopHotkey))
+			stop = formatHotkey(script.StopHotkey)
 		}
-		return strings.Join(parts, " | ")
+		return start, stop
 	}
-	return ""
+	return "", ""
 }
 
 func formatHotkey(hk *model.Hotkey) string {
@@ -302,7 +312,7 @@ func (wc *MainWindowController) onNewScript() {
 		Actions:    []model.Action{},
 	}
 
-	saved := ShowScriptEditDialog(wc.mainWindow, &newScript, wc.scriptStore, wc.configStore)
+	saved := ShowScriptEditDialog(wc.mainWindow, &newScript, wc.scriptStore, wc.configStore, wc.captureVK)
 	if saved {
 		wc.refreshScriptList()
 		wc.notifyScriptsChanged()
@@ -322,7 +332,7 @@ func (wc *MainWindowController) onEditScript() {
 	}
 	scriptCopy := wc.allScripts[selectedIndex]
 
-	saved := ShowScriptEditDialog(wc.mainWindow, &scriptCopy, wc.scriptStore, wc.configStore)
+	saved := ShowScriptEditDialog(wc.mainWindow, &scriptCopy, wc.scriptStore, wc.configStore, wc.captureVK)
 	if saved {
 		wc.refreshScriptList()
 		wc.notifyScriptsChanged()
