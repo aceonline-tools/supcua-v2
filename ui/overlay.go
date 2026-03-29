@@ -21,12 +21,13 @@ var (
 )
 
 const (
-	overlayWidth  = 100
+	overlayWidth  = 136
 	overlayHeight = 32
 
 	colorBackground  = 0x00404040 // dark gray (BGR)
 	colorGreenActive = 0x0000FF00 // green text (BGR)
 	colorRedInactive = 0x000000FF // red text (BGR)
+	colorGrayIdle    = 0x00808080 // gray text (BGR)
 
 	layeredWindowAttributeAlpha = 0x02
 )
@@ -120,15 +121,16 @@ func (overlayWindow *OverlayWindow) paint() {
 	var textColor uint32
 	var statusText string
 	if overlayWindow.appController.IsGlobalActive() {
-		textColor = colorGreenActive
-		statusText = "ACTIVE"
+		textColor = colorGrayIdle
+		statusText = ". IDLE"
 		runningScriptName := overlayWindow.appController.GetRunningScriptName()
 		if runningScriptName != "" {
+			textColor = colorGreenActive
 			statusText = "RUN: " + runningScriptName
 		}
 	} else {
 		textColor = colorRedInactive
-		statusText = "INACTIVE"
+		statusText = ". DISABLE"
 	}
 
 	brushHandle, _, _ := procCreateSolidBrush.Call(uintptr(colorBackground))
