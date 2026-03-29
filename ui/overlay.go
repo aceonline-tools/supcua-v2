@@ -21,12 +21,12 @@ var (
 )
 
 const (
-	overlayWidth  = 180
+	overlayWidth  = 100
 	overlayHeight = 32
 
-	colorGreenActive = 0x0000FF00
-	colorRedInactive = 0x000000FF
-	colorWhiteText   = 0x00FFFFFF
+	colorBackground  = 0x00404040 // dark gray (BGR)
+	colorGreenActive = 0x0000FF00 // green text (BGR)
+	colorRedInactive = 0x000000FF // red text (BGR)
 
 	layeredWindowAttributeAlpha = 0x02
 )
@@ -38,6 +38,7 @@ type OverlayWindow struct {
 	positionX     int
 	positionY     int
 	isVisible     bool
+	isDraggable   bool
 }
 
 // NewOverlayWindow creates the HUD overlay as a layered, topmost, toolwindow.
@@ -65,7 +66,7 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 
 	windowTitle, _ := syscall.UTF16PtrFromString("supcua-v2 Overlay")
 
-	extendedStyle := uint32(win.WS_EX_TOPMOST | win.WS_EX_TOOLWINDOW | win.WS_EX_LAYERED)
+	extendedStyle := uint32(win.WS_EX_TOPMOST | win.WS_EX_TOOLWINDOW | win.WS_EX_LAYERED | win.WS_EX_TRANSPARENT)
 
 	overlayWindow.windowHandle = win.CreateWindowEx(
 		extendedStyle,
@@ -116,27 +117,27 @@ func (overlayWindow *OverlayWindow) paint() {
 	deviceContext := win.BeginPaint(overlayWindow.windowHandle, &paintStruct)
 	defer win.EndPaint(overlayWindow.windowHandle, &paintStruct)
 
-	var backgroundColor uint32
+	var textColor uint32
 	var statusText string
 	if overlayWindow.appController.IsGlobalActive() {
-		backgroundColor = colorGreenActive
+		textColor = colorGreenActive
 		statusText = "ACTIVE"
 		runningScriptName := overlayWindow.appController.GetRunningScriptName()
 		if runningScriptName != "" {
 			statusText = "RUN: " + runningScriptName
 		}
 	} else {
-		backgroundColor = colorRedInactive
+		textColor = colorRedInactive
 		statusText = "INACTIVE"
 	}
 
-	brushHandle, _, _ := procCreateSolidBrush.Call(uintptr(backgroundColor))
+	brushHandle, _, _ := procCreateSolidBrush.Call(uintptr(colorBackground))
 	clientRect := win.RECT{Left: 0, Top: 0, Right: overlayWidth, Bottom: overlayHeight}
 	procFillRect.Call(uintptr(deviceContext), uintptr(unsafe.Pointer(&clientRect)), brushHandle)
 	win.DeleteObject(win.HGDIOBJ(brushHandle))
 
 	win.SetBkMode(deviceContext, win.TRANSPARENT)
-	win.SetTextColor(deviceContext, win.COLORREF(colorWhiteText))
+	win.SetTextColor(deviceContext, win.COLORREF(textColor))
 
 	textUTF16, _ := syscall.UTF16FromString(statusText)
 	textRect := clientRect
@@ -167,6 +168,23 @@ func (overlayWindow *OverlayWindow) IsVisible() bool {
 // GetPosition returns the current overlay position.
 func (overlayWindow *OverlayWindow) GetPosition() (int, int) {
 	return overlayWindow.positionX, overlayWindow.positionY
+}
+
+// ToggleDraggable switches the overlay between click-through and draggable mode.
+func (overlayWindow *OverlayWindow) ToggleDraggable() {
+	overlayWindow.isDraggable = !overlayWindow.isDraggable
+	exStyle := win.GetWindowLong(overlayWindow.windowHandle, win.GWL_EXSTYLE)
+	if overlayWindow.isDraggable {
+		exStyle &^= win.WS_EX_TRANSPARENT
+	} else {
+		exStyle |= win.WS_EX_TRANSPARENT
+	}
+	win.SetWindowLong(overlayWindow.windowHandle, win.GWL_EXSTYLE, exStyle)
+}
+
+// IsDraggable returns whether the overlay is currently draggable.
+func (overlayWindow *OverlayWindow) IsDraggable() bool {
+	return overlayWindow.isDraggable
 }
 
 // Destroy cleans up the overlay window.

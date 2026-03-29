@@ -312,7 +312,16 @@ func (wc *MainWindowController) onNewScript() {
 		Actions:    []model.Action{},
 	}
 
+	wasActive := wc.scriptRunner != nil && wc.scriptRunner.IsGlobalActive()
+	if wasActive {
+		wc.scriptRunner.ToggleGlobalStatus()
+	}
+	wc.mainWindow.Hide()
 	saved := ShowScriptEditDialog(wc.mainWindow, &newScript, wc.scriptStore, wc.configStore, wc.captureVK)
+	wc.mainWindow.Show()
+	if wasActive {
+		wc.scriptRunner.ToggleGlobalStatus()
+	}
 	if saved {
 		wc.refreshScriptList()
 		wc.notifyScriptsChanged()
@@ -332,7 +341,16 @@ func (wc *MainWindowController) onEditScript() {
 	}
 	scriptCopy := wc.allScripts[selectedIndex]
 
+	wasActive := wc.scriptRunner != nil && wc.scriptRunner.IsGlobalActive()
+	if wasActive {
+		wc.scriptRunner.ToggleGlobalStatus()
+	}
+	wc.mainWindow.Hide()
 	saved := ShowScriptEditDialog(wc.mainWindow, &scriptCopy, wc.scriptStore, wc.configStore, wc.captureVK)
+	wc.mainWindow.Show()
+	if wasActive {
+		wc.scriptRunner.ToggleGlobalStatus()
+	}
 	if saved {
 		wc.refreshScriptList()
 		wc.notifyScriptsChanged()

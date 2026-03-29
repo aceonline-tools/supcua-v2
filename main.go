@@ -83,8 +83,28 @@ func main() {
 	// Wire up global toggler
 	mainWindowController.SetScriptRunner(appController)
 
-	// Status change callback — refresh overlay, tray, and main window
+	// Declare hotkey state before closures that reference it
+	var scriptHotkeyIDs []int
+
+	unregisterScriptHotkeys := func() {
+		for _, id := range scriptHotkeyIDs {
+			hotkeyManager.Unregister(id)
+		}
+		scriptHotkeyIDs = nil
+	}
+
+	// Track previous active state to only re-register hotkeys on global toggle, not script start/stop
+	prevActive := true // initial state is active
 	appController.OnStatusChange = func() {
+		isActive := appController.IsGlobalActive()
+		if isActive != prevActive {
+			prevActive = isActive
+			if isActive {
+				scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+			} else {
+				unregisterScriptHotkeys()
+			}
+		}
 		if overlayWindow != nil {
 			overlayWindow.Refresh()
 		}
@@ -104,17 +124,16 @@ func main() {
 		globalHotkeyID = 0
 	}
 
-	// Register script hotkeys
-	scriptHotkeyIDs := registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+	// Register script hotkeys (only when global is active)
+	scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
 
 	// Re-register script hotkeys whenever scripts change
 	mainWindowController.OnScriptsChanged = func() {
-		// Unregister previous script hotkeys only
-		for _, id := range scriptHotkeyIDs {
-			hotkeyManager.Unregister(id)
-		}
+		unregisterScriptHotkeys()
 		_ = globalHotkeyID // keep global hotkey alive
-		scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+		if appController.IsGlobalActive() {
+			scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+		}
 	}
 
 	// Run the Walk message loop (blocks until window closed)

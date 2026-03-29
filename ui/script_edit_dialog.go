@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
@@ -380,17 +381,19 @@ func (ctrl *scriptEditController) loadFields() {
 	})
 
 	// Attach key capture handlers to hotkey fields
-	attachHotkeyCapture(ctrl.toggleHotkeyEdit, &ctrl.script.ToggleHotkey)
-	attachHotkeyCapture(ctrl.startHotkeyEdit, &ctrl.script.StartHotkey)
-	attachHotkeyCapture(ctrl.stopHotkeyEdit, &ctrl.script.StopHotkey)
+	ctrl.attachHotkeyCaptures()
 
 	ctrl.onHotkeyModeChanged()
 	ctrl.refreshActionList()
 }
 
 var (
-	user32Pick           = syscall.NewLazyDLL("user32.dll")
-	procGetAsyncKeyState = user32Pick.NewProc("GetAsyncKeyState")
+	user32Pick              = syscall.NewLazyDLL("user32.dll")
+	procGetAsyncKeyState    = user32Pick.NewProc("GetAsyncKeyState")
+	procSetWindowsHookExW   = user32Pick.NewProc("SetWindowsHookExW")
+	procCallNextHookEx      = user32Pick.NewProc("CallNextHookEx")
+	procUnhookWindowsHookEx = user32Pick.NewProc("UnhookWindowsHookEx")
+	procGetForegroundWindow = user32Pick.NewProc("GetForegroundWindow")
 )
 
 const pickHotkeyID = 0x7F00 // unique ID for pick hotkey
@@ -434,32 +437,138 @@ func (ctrl *scriptEditController) registerPickHotkey() {
 	})
 }
 
-func attachHotkeyCapture(edit *walk.LineEdit, target **model.Hotkey) {
-	edit.KeyDown().Attach(func(key walk.Key) {
-		keyName := keyToString(key)
-		if keyName == "" {
-			return
-		}
-		// Ignore bare modifier keys — wait for the actual key
-		if keyName == "ctrl" || keyName == "shift" || keyName == "alt" {
-			return
+// hotkeyVKEntries maps Win32 VK codes to key name strings for hotkey capture.
+var hotkeyVKEntries = func() []struct {
+	vk   uint32
+	name string
+} {
+	entries := []struct {
+		vk   uint32
+		name string
+	}{
+		{0x20, "space"}, {0x0D, "enter"}, {0x1B, "escape"}, {0x09, "tab"},
+		{0x08, "backspace"}, {0x2E, "delete"}, {0x2D, "insert"},
+		{0x24, "home"}, {0x23, "end"}, {0x21, "pageup"}, {0x22, "pagedown"},
+		{0x25, "left"}, {0x26, "up"}, {0x27, "right"}, {0x28, "down"},
+	}
+	for i := 0; i <= 9; i++ {
+		entries = append(entries, struct {
+			vk   uint32
+			name string
+		}{uint32(0x30 + i), string(rune('0' + i))})
+	}
+	for i := 0; i < 26; i++ {
+		entries = append(entries, struct {
+			vk   uint32
+			name string
+		}{uint32(0x41 + i), string(rune('a' + i))})
+	}
+	for i := 1; i <= 12; i++ {
+		entries = append(entries, struct {
+			vk   uint32
+			name string
+		}{uint32(0x6F + i), fmt.Sprintf("f%d", i)})
+	}
+	return entries
+}()
+
+type kbdllhookstruct struct {
+	vkCode      uint32
+	scanCode    uint32
+	flags       uint32
+	time        uint32
+	dwExtraInfo uintptr
+}
+
+// attachHotkeyCaptures installs a WH_KEYBOARD_LL hook for the dialog lifetime.
+// The hook fires for all key events regardless of focus, so ReadOnly fields work too.
+func (ctrl *scriptEditController) attachHotkeyCaptures() {
+	type fieldEntry struct {
+		edit   *walk.LineEdit
+		target **model.Hotkey
+	}
+	fields := []fieldEntry{
+		{ctrl.toggleHotkeyEdit, &ctrl.script.ToggleHotkey},
+		{ctrl.startHotkeyEdit, &ctrl.script.StartHotkey},
+		{ctrl.stopHotkeyEdit, &ctrl.script.StopHotkey},
+	}
+
+	// Track which field was last clicked (set on UI thread via MouseDown).
+	var lastField *fieldEntry
+	for i := range fields {
+		f := &fields[i]
+		f.edit.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
+			lastField = f
+		})
+	}
+
+	dialogHWND := ctrl.dialog.Handle()
+	var hookHandle uintptr
+
+	hookProc := syscall.NewCallback(func(nCode int, wParam, lParam uintptr) uintptr {
+		const wmKeydown    = 0x0100
+		const wmKeyup      = 0x0101
+		const wmSyskeydown = 0x0104
+		const wmSyskeyup   = 0x0105
+
+		if nCode >= 0 && lastField != nil {
+			fg, _, _ := procGetForegroundWindow.Call()
+			if uintptr(dialogHWND) == fg {
+				kbs := (*kbdllhookstruct)(unsafe.Pointer(lParam))
+				vk := kbs.vkCode
+				isAlt := vk == 0x12 || vk == 0xA4 || vk == 0xA5 // VK_MENU, VK_LMENU, VK_RMENU
+
+				// Suppress Alt key so Windows doesn't enter menu mode
+				if isAlt {
+					return 1
+				}
+
+				if wParam == wmKeydown || wParam == wmSyskeydown {
+					switch vk {
+					case 0x10, 0x11, 0xA0, 0xA1, 0xA2, 0xA3: // other modifiers — skip
+					default:
+						keyName := vkCodeToName(vk)
+						if keyName != "" {
+							modifiers := []string{}
+							if s, _, _ := procGetAsyncKeyState.Call(0x11); uint16(s)&0x8000 != 0 {
+								modifiers = append(modifiers, "ctrl")
+							}
+							if s, _, _ := procGetAsyncKeyState.Call(0x10); uint16(s)&0x8000 != 0 {
+								modifiers = append(modifiers, "shift")
+							}
+							if s, _, _ := procGetAsyncKeyState.Call(0x12); uint16(s)&0x8000 != 0 {
+								modifiers = append(modifiers, "alt")
+							}
+							hk := &model.Hotkey{Modifiers: modifiers, Key: keyName}
+							*lastField.target = hk
+							lastField.edit.SetText(formatHotkeyDisplay(hk))
+						}
+					}
+				}
+			}
 		}
 
-		modifiers := []string{}
-		if walk.ControlDown() {
-			modifiers = append(modifiers, "ctrl")
-		}
-		if walk.ShiftDown() {
-			modifiers = append(modifiers, "shift")
-		}
-		if walk.AltDown() {
-			modifiers = append(modifiers, "alt")
-		}
-
-		hk := &model.Hotkey{Modifiers: modifiers, Key: keyName}
-		*target = hk
-		edit.SetText(formatHotkeyDisplay(hk))
+		ret, _, _ := procCallNextHookEx.Call(hookHandle, uintptr(nCode), wParam, lParam)
+		return ret
 	})
+
+	hookHandle, _, _ = procSetWindowsHookExW.Call(13, hookProc, 0, 0) // WH_KEYBOARD_LL = 13
+
+	ctrl.dialog.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		if hookHandle != 0 {
+			procUnhookWindowsHookEx.Call(hookHandle)
+			hookHandle = 0
+		}
+	})
+}
+
+func vkCodeToName(vk uint32) string {
+	for _, kv := range hotkeyVKEntries {
+		if kv.vk == vk {
+			return kv.name
+		}
+	}
+	return ""
 }
 
 func keyToString(key walk.Key) string {

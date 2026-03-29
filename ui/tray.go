@@ -95,6 +95,18 @@ func (trayIcon *TrayIcon) buildContextMenu() {
 			trayIcon.overlayWindow.ToggleVisibility()
 		})
 		contextMenu.Actions().Add(toggleOverlayAction)
+
+		dragOverlayAction := walk.NewAction()
+		dragOverlayAction.SetText("Overlay: Drag OFF")
+		dragOverlayAction.Triggered().Attach(func() {
+			trayIcon.overlayWindow.ToggleDraggable()
+			if trayIcon.overlayWindow.IsDraggable() {
+				dragOverlayAction.SetText("Overlay: Drag ON")
+			} else {
+				dragOverlayAction.SetText("Overlay: Drag OFF")
+			}
+		})
+		contextMenu.Actions().Add(dragOverlayAction)
 	}
 
 	separatorAction := walk.NewSeparatorAction()
