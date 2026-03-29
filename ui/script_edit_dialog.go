@@ -670,6 +670,15 @@ func (ctrl *scriptEditController) readFieldsIntoScript() {
 func (ctrl *scriptEditController) onSave() {
 	ctrl.readFieldsIntoScript()
 
+	if ctrl.script.Name == "" {
+		walk.MsgBox(ctrl.dialog, "Error", "Script name cannot be empty.", walk.MsgBoxIconError)
+		return
+	}
+	if ctrl.scriptStore.NameExists(ctrl.script.Name, ctrl.script.ID) {
+		walk.MsgBox(ctrl.dialog, "Error", "A script named \""+ctrl.script.Name+"\" already exists.", walk.MsgBoxIconError)
+		return
+	}
+
 	err := ctrl.scriptStore.Save(*ctrl.script)
 	if err != nil {
 		walk.MsgBox(ctrl.dialog, "Error", "Failed to save: "+err.Error(), walk.MsgBoxIconError)

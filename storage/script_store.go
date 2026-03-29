@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -20,39 +21,78 @@ func NewScriptStore(scriptsDirectory string) *ScriptStore {
 	return &ScriptStore{scriptsDirectory: scriptsDirectory}
 }
 
-func (scriptStore *ScriptStore) scriptFilePath(scriptID string) string {
-	return filepath.Join(scriptStore.scriptsDirectory, scriptID+".json")
+// sanitizeName converts a script name to a safe filename (lowercase, underscores).
+func sanitizeName(name string) string {
+	result := strings.ToLower(name)
+	result = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, result)
+	for strings.Contains(result, "__") {
+		result = strings.ReplaceAll(result, "__", "_")
+	}
+	return strings.Trim(result, "_")
 }
 
-// Save writes a script to disk as a JSON file named by its ID.
+func (scriptStore *ScriptStore) scriptFilePath(name string) string {
+	return filepath.Join(scriptStore.scriptsDirectory, sanitizeName(name)+".json")
+}
+
+// NameExists returns true if a script with the given name exists, excluding the script with excludeID.
+func (scriptStore *ScriptStore) NameExists(name string, excludeID string) bool {
+	scripts, err := scriptStore.List()
+	if err != nil {
+		return false
+	}
+	for _, s := range scripts {
+		if strings.EqualFold(s.Name, name) && s.ID != excludeID {
+			return true
+		}
+	}
+	return false
+}
+
+// Save writes a script using its name as the filename.
+// If the script was previously saved with a different name, the old file is removed.
 func (scriptStore *ScriptStore) Save(script model.Script) error {
 	if err := os.MkdirAll(scriptStore.scriptsDirectory, 0755); err != nil {
 		return fmt.Errorf("create scripts directory: %w", err)
+	}
+
+	// Remove old file if script was renamed or previously had UUID-based filename
+	entries, _ := os.ReadDir(scriptStore.scriptsDirectory)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		filePath := filepath.Join(scriptStore.scriptsDirectory, entry.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+		var existing model.Script
+		if err := json.Unmarshal(data, &existing); err != nil {
+			continue
+		}
+		if existing.ID == script.ID {
+			newPath := scriptStore.scriptFilePath(script.Name)
+			if filePath != newPath {
+				os.Remove(filePath)
+			}
+			break
+		}
 	}
 
 	data, err := json.MarshalIndent(script, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal script: %w", err)
 	}
-
-	return os.WriteFile(scriptStore.scriptFilePath(script.ID), data, 0644)
+	return os.WriteFile(scriptStore.scriptFilePath(script.Name), data, 0644)
 }
 
-// Get reads a single script by ID.
-func (scriptStore *ScriptStore) Get(scriptID string) (model.Script, error) {
-	data, err := os.ReadFile(scriptStore.scriptFilePath(scriptID))
-	if err != nil {
-		return model.Script{}, fmt.Errorf("read script %s: %w", scriptID, err)
-	}
-
-	var script model.Script
-	if err := json.Unmarshal(data, &script); err != nil {
-		return model.Script{}, fmt.Errorf("unmarshal script %s: %w", scriptID, err)
-	}
-	return script, nil
-}
-
-// List reads all scripts from the directory.
+// List reads all scripts from the directory, sorted alphabetically by name.
 func (scriptStore *ScriptStore) List() ([]model.Script, error) {
 	entries, err := os.ReadDir(scriptStore.scriptsDirectory)
 	if err != nil {
@@ -67,21 +107,43 @@ func (scriptStore *ScriptStore) List() ([]model.Script, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		scriptID := strings.TrimSuffix(entry.Name(), ".json")
-		script, err := scriptStore.Get(scriptID)
+		filePath := filepath.Join(scriptStore.scriptsDirectory, entry.Name())
+		data, err := os.ReadFile(filePath)
 		if err != nil {
+			continue
+		}
+		var script model.Script
+		if err := json.Unmarshal(data, &script); err != nil {
 			continue
 		}
 		allScripts = append(allScripts, script)
 	}
+
+	sort.Slice(allScripts, func(i, j int) bool {
+		return strings.ToLower(allScripts[i].Name) < strings.ToLower(allScripts[j].Name)
+	})
 	return allScripts, nil
 }
 
 // Delete removes a script file by ID.
 func (scriptStore *ScriptStore) Delete(scriptID string) error {
-	filePath := scriptStore.scriptFilePath(scriptID)
-	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("delete script %s: %w", scriptID, err)
+	entries, _ := os.ReadDir(scriptStore.scriptsDirectory)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		filePath := filepath.Join(scriptStore.scriptsDirectory, entry.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+		var script model.Script
+		if err := json.Unmarshal(data, &script); err != nil {
+			continue
+		}
+		if script.ID == scriptID {
+			return os.Remove(filePath)
+		}
 	}
-	return nil
+	return fmt.Errorf("script %s not found", scriptID)
 }
