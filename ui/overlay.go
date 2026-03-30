@@ -122,7 +122,7 @@ func (overlayWindow *OverlayWindow) paint() {
 	var statusText string
 	if overlayWindow.appController.IsGlobalActive() {
 		textColor = colorGrayIdle
-		statusText = ". IDLE"
+		statusText = "• IDLE"
 		runningScriptName := overlayWindow.appController.GetRunningScriptName()
 		if runningScriptName != "" {
 			textColor = colorGreenActive
@@ -130,7 +130,7 @@ func (overlayWindow *OverlayWindow) paint() {
 		}
 	} else {
 		textColor = colorRedInactive
-		statusText = ". DISABLE"
+		statusText = "• DISABLE"
 	}
 
 	brushHandle, _, _ := procCreateSolidBrush.Call(uintptr(colorBackground))

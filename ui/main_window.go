@@ -13,6 +13,7 @@ import (
 
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
+	"github.com/yanmad27/supcua-v2/version"
 )
 
 // ScriptRunner can start/stop scripts.
@@ -168,6 +169,15 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 					PushButton{
 						Text:      "Delete",
 						OnClicked: func() { wc.onDeleteScript() },
+					},
+				},
+			},
+			Composite{
+				Layout: HBox{MarginsZero: true},
+				Children: []Widget{
+					HSpacer{},
+					Label{
+						Text: "v" + version.Version,
 					},
 				},
 			},

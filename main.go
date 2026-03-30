@@ -14,6 +14,8 @@ import (
 	"github.com/yanmad27/supcua-v2/license"
 	"github.com/yanmad27/supcua-v2/storage"
 	"github.com/yanmad27/supcua-v2/ui"
+	"github.com/yanmad27/supcua-v2/updater"
+	"github.com/yanmad27/supcua-v2/version"
 )
 
 func main() {
@@ -41,6 +43,24 @@ func main() {
 		ui.ShowNotLicensedDialog(license.GetMacAddresses())
 		return
 	}
+
+	// Auto-update check
+	go func() {
+		latestTag, downloadURL, err := updater.CheckUpdate(version.Version)
+		if err != nil {
+			log.Printf("update check error: %v", err)
+			return
+		}
+		if latestTag == "" {
+			return
+		}
+		log.Printf("update available: %s", latestTag)
+		if ui.ShowUpdateDialog(latestTag) && downloadURL != "" {
+			if err := updater.DownloadAndReplace(downloadURL, executablePath); err != nil {
+				log.Printf("update failed: %v", err)
+			}
+		}
+	}()
 
 	// Storage
 	configStore := storage.NewConfigStore(filepath.Join(applicationDirectory, "config.json"))

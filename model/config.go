@@ -20,7 +20,7 @@ type AppConfig struct {
 // DefaultConfig returns sensible defaults for a fresh install.
 func DefaultConfig() AppConfig {
 	return AppConfig{
-		GlobalHotkey:    Hotkey{Modifiers: []string{"ctrl", "shift"}, Key: "f1"},
+		GlobalHotkey:    Hotkey{Modifiers: []string{}, Key: "rctrl"},
 		CaptureHotkey:   Hotkey{Modifiers: []string{"ctrl", "shift"}, Key: "f2"},
 		OverlayEnabled:  true,
 		OverlayPosition: WindowPos{X: 10, Y: 10},
