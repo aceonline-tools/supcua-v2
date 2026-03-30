@@ -11,6 +11,7 @@ import (
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	imagedetector "github.com/yanmad27/supcua-v2/image"
+	"github.com/yanmad27/supcua-v2/license"
 	"github.com/yanmad27/supcua-v2/storage"
 	"github.com/yanmad27/supcua-v2/ui"
 )
@@ -29,6 +30,17 @@ func main() {
 		defer logFile.Close()
 	}
 	log.Println("supcua-v2 starting...")
+
+	// License check
+	allowed, err := license.CheckLicense()
+	if err != nil {
+		log.Printf("license check error: %v", err)
+	}
+	if !allowed {
+		log.Println("not licensed, showing MAC dialog")
+		ui.ShowNotLicensedDialog(license.GetMacAddresses())
+		return
+	}
 
 	// Storage
 	configStore := storage.NewConfigStore(filepath.Join(applicationDirectory, "config.json"))

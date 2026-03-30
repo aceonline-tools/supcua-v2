@@ -450,6 +450,8 @@ var hotkeyVKEntries = func() []struct {
 		{0x08, "backspace"}, {0x2E, "delete"}, {0x2D, "insert"},
 		{0x24, "home"}, {0x23, "end"}, {0x21, "pageup"}, {0x22, "pagedown"},
 		{0x25, "left"}, {0x26, "up"}, {0x27, "right"}, {0x28, "down"},
+		{0xBA, ";"}, {0xBB, "="}, {0xBC, ","}, {0xBD, "-"}, {0xBE, "."}, {0xBF, "/"},
+		{0xC0, "`"}, {0xDB, "["}, {0xDC, `\`}, {0xDD, "]"}, {0xDE, "'"},
 	}
 	for i := 0; i <= 9; i++ {
 		entries = append(entries, struct {

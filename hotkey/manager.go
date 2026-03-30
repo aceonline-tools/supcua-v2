@@ -135,6 +135,8 @@ func convertKeyNameToVirtualKeyCode(keyName string) uint32 {
 		"lshift": 0xA0, "rshift": 0xA1,
 		"lalt": 0xA4, "ralt": 0xA5,
 		"lwin": 0x5B, "rwin": 0x5C,
+		";": 0xBA, "=": 0xBB, ",": 0xBC, "-": 0xBD, ".": 0xBE, "/": 0xBF,
+		"`": 0xC0, "[": 0xDB, `\`: 0xDC, "]": 0xDD, "'": 0xDE,
 	}
 	if virtualKeyCode, exists := virtualKeyCodeMap[keyNameLower]; exists {
 		return virtualKeyCode
