@@ -12,6 +12,7 @@ import (
 // InputSimulatorInterface abstracts input simulation for testing.
 type InputSimulatorInterface interface {
 	MoveMouse(positionX, positionY int) error
+	GetCursorPos() (int, int)
 	MouseLeftDown()
 	MouseLeftUp()
 	MouseRightDown()
@@ -30,10 +31,12 @@ type StatusCallback func(scriptID string, status string, errorMessage string)
 
 // Executor runs script actions line by line.
 type Executor struct {
-	inputSimulator InputSimulatorInterface
-	imageDetector  ImageDetectorInterface
-	foundPositionX int
-	foundPositionY int
+	inputSimulator  InputSimulatorInterface
+	imageDetector   ImageDetectorInterface
+	foundPositionX  int
+	foundPositionY  int
+	storedPositionX int
+	storedPositionY int
 }
 
 // NewExecutor creates an Executor with the given input simulator and image detector.
@@ -126,6 +129,16 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 	switch currentAction.Type {
 	case model.ActionMouseMove:
 		return scriptExecutor.executeMouseMove(currentAction)
+
+	case model.ActionMouseStorePos:
+		x, y := scriptExecutor.inputSimulator.GetCursorPos()
+		scriptExecutor.storedPositionX = x
+		scriptExecutor.storedPositionY = y
+		log.Printf("mouse position stored: (%d, %d)", x, y)
+		return nil
+
+	case model.ActionMouseMoveStored:
+		return scriptExecutor.inputSimulator.MoveMouse(scriptExecutor.storedPositionX, scriptExecutor.storedPositionY)
 
 	case model.ActionMouseLeftClick:
 		scriptExecutor.inputSimulator.MouseLeftDown()

@@ -23,7 +23,7 @@ type AppConfig struct {
 func DefaultConfig() AppConfig {
 	return AppConfig{
 		GlobalHotkey:    Hotkey{Modifiers: []string{}, Key: "rctrl"},
-		CaptureHotkey:   Hotkey{Modifiers: []string{"ctrl", "shift"}, Key: "f2"},
+		CaptureHotkey:   Hotkey{Modifiers: []string{}, Key: "p"},
 		OverlayEnabled:  true,
 		OverlayPosition: WindowPos{X: 10, Y: 10},
 		ScriptsDir:      "./scripts",

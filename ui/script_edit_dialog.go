@@ -190,6 +190,8 @@ func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.
 										PushButton{Text: "Right Down",   OnClicked: func() { ctrl.addSimpleAction(model.ActionMouseRightDown) }},
 										PushButton{Text: "Left Up",      OnClicked: func() { ctrl.addSimpleAction(model.ActionMouseLeftUp) }},
 										PushButton{Text: "Right Up",     OnClicked: func() { ctrl.addSimpleAction(model.ActionMouseRightUp) }},
+										PushButton{Text: "Store Pos",    OnClicked: func() { ctrl.addSimpleAction(model.ActionMouseStorePos) }},
+										PushButton{Text: "Move Stored",  OnClicked: func() { ctrl.addSimpleAction(model.ActionMouseMoveStored) }},
 									},
 								},
 							},
@@ -868,6 +870,10 @@ func describeAction(action model.Action) string {
 		return "Mouse Right Down"
 	case model.ActionMouseRightUp:
 		return "Mouse Right Up"
+	case model.ActionMouseStorePos:
+		return "Mouse Store Position"
+	case model.ActionMouseMoveStored:
+		return "Mouse Move to Stored"
 	case model.ActionKeyPress:
 		return "Key Press: " + action.Key
 	case model.ActionKeyDown:

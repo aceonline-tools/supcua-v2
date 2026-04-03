@@ -25,6 +25,7 @@ type Controller struct {
 	runningScriptID     string
 	runningScriptName   string
 	cancelRunningScript context.CancelFunc
+	scriptQueue         []model.Script
 
 	scriptExecutor *executor.Executor
 	hotkeyManager  *hotkey.Manager
@@ -133,43 +134,74 @@ func (appController *Controller) ClearRunningScript() {
 	appController.cancelRunningScript = nil
 }
 
-// StartScript launches the executor for a script in a goroutine.
+// GetQueueLength returns the number of scripts waiting in the queue.
+func (appController *Controller) GetQueueLength() int {
+	appController.stateMutex.RLock()
+	defer appController.stateMutex.RUnlock()
+	return len(appController.scriptQueue)
+}
+
+// launchLocked starts a script immediately. Must be called with stateMutex held.
+func (appController *Controller) launchLocked(script model.Script) {
+	ctx, cancel := context.WithCancel(context.Background())
+	appController.runningScriptID = script.ID
+	appController.runningScriptName = toSnakeCase(script.Name)
+	appController.cancelRunningScript = cancel
+	go func() {
+		defer appController.dequeueNext()
+		appController.scriptExecutor.Execute(ctx, script)
+	}()
+}
+
+// dequeueNext is called when a script finishes. It clears running state and
+// starts the next queued script if any.
+func (appController *Controller) dequeueNext() {
+	time.Sleep(100 * time.Millisecond)
+	appController.stateMutex.Lock()
+	appController.runningScriptID = ""
+	appController.runningScriptName = ""
+	appController.cancelRunningScript = nil
+	if len(appController.scriptQueue) > 0 && appController.globalActive && !appController.editDialogOpen {
+		next := appController.scriptQueue[0]
+		appController.scriptQueue = appController.scriptQueue[1:]
+		if next.Enabled {
+			appController.launchLocked(next)
+		}
+	}
+	appController.stateMutex.Unlock()
+	if appController.OnStatusChange != nil {
+		appController.OnStatusChange()
+	}
+}
+
+// StartScript launches a script or queues it if one is already running.
 func (appController *Controller) StartScript(script model.Script) {
 	log.Printf("StartScript called: id=%s name=%s globalActive=%v enabled=%v runningID=%q",
 		script.ID, script.Name, appController.globalActive, script.Enabled, appController.runningScriptID)
-	if !appController.CanStartScript(script) {
-		log.Printf("StartScript blocked: globalActive=%v enabled=%v runningID=%q",
-			appController.globalActive, script.Enabled, appController.runningScriptID)
-		return
-	}
-
-	executionContext, cancelFunction := context.WithCancel(context.Background())
 
 	appController.stateMutex.Lock()
-	appController.runningScriptID = script.ID
-	appController.runningScriptName = toSnakeCase(script.Name)
-	appController.cancelRunningScript = cancelFunction
+	if !appController.globalActive || appController.editDialogOpen || !script.Enabled {
+		appController.stateMutex.Unlock()
+		return
+	}
+	if appController.runningScriptID != "" {
+		log.Printf("StartScript queued: id=%s name=%s queueLen=%d", script.ID, script.Name, len(appController.scriptQueue)+1)
+		appController.scriptQueue = append(appController.scriptQueue, script)
+		appController.stateMutex.Unlock()
+		return
+	}
+	appController.launchLocked(script)
 	appController.stateMutex.Unlock()
 
 	if appController.OnStatusChange != nil {
 		appController.OnStatusChange()
 	}
-
-	go func() {
-		defer func() {
-			time.Sleep(100 * time.Millisecond)
-			appController.ClearRunningScript()
-			if appController.OnStatusChange != nil {
-				appController.OnStatusChange()
-			}
-		}()
-		appController.scriptExecutor.Execute(executionContext, script)
-	}()
 }
 
-// StopRunningScript cancels the currently running script.
+// StopRunningScript cancels the currently running script and clears the queue.
 func (appController *Controller) StopRunningScript() {
 	appController.stateMutex.Lock()
+	appController.scriptQueue = nil
 	if appController.cancelRunningScript != nil {
 		appController.cancelRunningScript()
 	}

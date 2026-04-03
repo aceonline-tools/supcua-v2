@@ -11,6 +11,8 @@ const (
 	ActionMouseLeftUp      = "mouse_left_up"
 	ActionMouseRightDown   = "mouse_right_down"
 	ActionMouseRightUp     = "mouse_right_up"
+	ActionMouseStorePos    = "mouse_store_pos"
+	ActionMouseMoveStored  = "mouse_move_stored"
 	ActionKeyPress       = "key_press"
 	ActionKeyDown        = "key_down"
 	ActionKeyUp          = "key_up"

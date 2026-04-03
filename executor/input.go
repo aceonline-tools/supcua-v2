@@ -13,6 +13,7 @@ import (
 var (
 	user32DLL              = windows.NewLazySystemDLL("user32.dll")
 	procSetCursorPos       = user32DLL.NewProc("SetCursorPos")
+	procGetCursorPos       = user32DLL.NewProc("GetCursorPos")
 	procSendInput          = user32DLL.NewProc("SendInput")
 	procMapVirtualKey      = user32DLL.NewProc("MapVirtualKeyW")
 	procVkKeyScan          = user32DLL.NewProc("VkKeyScanW")
@@ -134,6 +135,12 @@ var virtualKeyCodeMap = map[string]uint16{
 type InputSimulator struct{}
 
 func NewInputSimulator() *InputSimulator { return &InputSimulator{} }
+
+func (s *InputSimulator) GetCursorPos() (int, int) {
+	var pt struct{ x, y int32 }
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	return int(pt.x), int(pt.y)
+}
 
 func (s *InputSimulator) MoveMouse(x, y int) error {
 	ret, _, _ := procSetCursorPos.Call(uintptr(x), uintptr(y))

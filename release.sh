@@ -18,7 +18,7 @@ TAG="v$VERSION"
 EXE="supcua-v2.exe"
 
 echo "==> Regenerating icon resource..."
-rsrc -ico app.ico -o rsrc.syso
+rsrc -ico app.ico -manifest main.manifest -o rsrc.syso
 
 echo "==> Building $EXE $TAG..."
 go build -ldflags="-H windowsgui -X github.com/yanmad27/supcua-v2/version.Version=$VERSION" -o "$EXE" .
