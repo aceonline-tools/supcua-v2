@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/yanmad27/supcua-v2/executor"
@@ -20,6 +21,7 @@ type StatusChangeCallback func()
 type Controller struct {
 	stateMutex          sync.RWMutex
 	globalActive        bool
+	editDialogOpen      bool
 	runningScriptID     string
 	runningScriptName   string
 	cancelRunningScript context.CancelFunc
@@ -76,7 +78,18 @@ func (appController *Controller) ToggleGlobalStatus() {
 func (appController *Controller) CanStartScript(script model.Script) bool {
 	appController.stateMutex.RLock()
 	defer appController.stateMutex.RUnlock()
-	return appController.globalActive && script.Enabled && appController.runningScriptID == ""
+	return appController.globalActive && !appController.editDialogOpen && script.Enabled && appController.runningScriptID == ""
+}
+
+// SetEditDialogOpen blocks or unblocks script execution while an edit dialog is open.
+// It also stops any running script when the dialog opens.
+func (appController *Controller) SetEditDialogOpen(open bool) {
+	appController.stateMutex.Lock()
+	appController.editDialogOpen = open
+	appController.stateMutex.Unlock()
+	if open {
+		appController.StopRunningScript()
+	}
 }
 
 // GetRunningScriptID returns the ID of the currently running script, or empty.
@@ -144,6 +157,7 @@ func (appController *Controller) StartScript(script model.Script) {
 
 	go func() {
 		defer func() {
+			time.Sleep(100 * time.Millisecond)
 			appController.ClearRunningScript()
 			if appController.OnStatusChange != nil {
 				appController.OnStatusChange()

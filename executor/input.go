@@ -36,8 +36,29 @@ const (
 
 // KEYBDINPUT dwFlags
 const (
-	keyEventFlagKeyUp uint32 = 0x0002
+	keyEventFlagExtendedKey uint32 = 0x0001
+	keyEventFlagKeyUp       uint32 = 0x0002
 )
+
+// extendedVKCodes are keys that require KEYEVENTF_EXTENDEDKEY to work correctly.
+var extendedVKCodes = map[uint16]bool{
+	0xA2: true, // VK_LCONTROL
+	0xA3: true, // VK_RCONTROL
+	0xA4: true, // VK_LMENU (LAlt)
+	0xA5: true, // VK_RMENU (RAlt)
+	0x2D: true, // VK_INSERT
+	0x2E: true, // VK_DELETE
+	0x24: true, // VK_HOME
+	0x23: true, // VK_END
+	0x21: true, // VK_PRIOR (PageUp)
+	0x22: true, // VK_NEXT (PageDown)
+	0x25: true, // VK_LEFT
+	0x26: true, // VK_UP
+	0x27: true, // VK_RIGHT
+	0x28: true, // VK_DOWN
+	0x5B: true, // VK_LWIN
+	0x5C: true, // VK_RWIN
+}
 
 // These mirror the Win32 INPUT structure layout exactly on 64-bit Windows.
 // INPUT = 40 bytes: type(4) + pad(4) + union(32)
@@ -156,6 +177,13 @@ func logForegroundWindow() {
 	log.Printf("foreground window: hwnd=0x%X title=%q", hwnd, title)
 }
 
+func extendedFlags(vk uint16, base uint32) uint32 {
+	if extendedVKCodes[vk] {
+		return base | keyEventFlagExtendedKey
+	}
+	return base
+}
+
 func (s *InputSimulator) KeyDown(keyName string) error {
 	vk, err := resolveVirtualKeyCode(keyName)
 	if err != nil {
@@ -164,7 +192,7 @@ func (s *InputSimulator) KeyDown(keyName string) error {
 	sc := mapVirtualKeyToScanCode(vk)
 	logForegroundWindow()
 	log.Printf("KeyDown vk=0x%02X sc=0x%02X name=%s", vk, sc, keyName)
-	sendKeyInput(vk, sc, 0)
+	sendKeyInput(vk, sc, extendedFlags(vk, 0))
 	return nil
 }
 
@@ -174,6 +202,6 @@ func (s *InputSimulator) KeyUp(keyName string) error {
 		return err
 	}
 	sc := mapVirtualKeyToScanCode(vk)
-	sendKeyInput(vk, sc, keyEventFlagKeyUp)
+	sendKeyInput(vk, sc, extendedFlags(vk, keyEventFlagKeyUp))
 	return nil
 }

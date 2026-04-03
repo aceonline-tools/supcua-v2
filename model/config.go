@@ -1,9 +1,11 @@
 package model
 
-// WindowPos stores a window's screen position.
+// WindowPos stores a window's screen position and size.
 type WindowPos struct {
-	X int `json:"x"`
-	Y int `json:"y"`
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 }
 
 // AppConfig holds global application settings.

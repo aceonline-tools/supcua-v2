@@ -300,12 +300,8 @@ func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.
 				Children: []Widget{
 					HSpacer{},
 					PushButton{
-						Text:      "Save",
+						Text:      "Close",
 						OnClicked: func() { ctrl.onSave() },
-					},
-					PushButton{
-						Text:      "Cancel",
-						OnClicked: func() { ctrl.dialog.Cancel() },
 					},
 				},
 			},
@@ -334,6 +330,10 @@ func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.
 			}
 		})
 	}
+
+	ctrl.dialog.Closing().Attach(func(cancelled *bool, reason walk.CloseReason) {
+		ctrl.autoSave()
+	})
 
 	ctrl.loadFields()
 	ctrl.dialog.Run()
@@ -375,7 +375,7 @@ func (ctrl *scriptEditController) loadFields() {
 	// Attach key capture to keyboard input field
 	ctrl.keyEdit.KeyDown().Attach(func(key walk.Key) {
 		keyName := keyToString(key)
-		if keyName != "" && keyName != "ctrl" && keyName != "shift" && keyName != "alt" {
+		if keyName != "" {
 			ctrl.keyEdit.SetText(keyName)
 		}
 	})
@@ -513,7 +513,7 @@ func (ctrl *scriptEditController) attachHotkeyCaptures() {
 		const wmSyskeydown = 0x0104
 		const wmSyskeyup   = 0x0105
 
-		if nCode >= 0 && lastField != nil {
+		if nCode >= 0 {
 			fg, _, _ := procGetForegroundWindow.Call()
 			if uintptr(dialogHWND) == fg {
 				kbs := (*kbdllhookstruct)(unsafe.Pointer(lParam))
@@ -526,24 +526,40 @@ func (ctrl *scriptEditController) attachHotkeyCaptures() {
 				}
 
 				if wParam == wmKeydown || wParam == wmSyskeydown {
-					switch vk {
-					case 0x10, 0x11, 0xA0, 0xA1, 0xA2, 0xA3: // other modifiers — skip
-					default:
-						keyName := vkCodeToName(vk)
+					// Capture key into keyEdit if it is focused (handles Tab and other special keys)
+					if ctrl.keyEdit.Focused() {
+						keyName := keyToString(walk.Key(vk))
 						if keyName != "" {
-							modifiers := []string{}
-							if s, _, _ := procGetAsyncKeyState.Call(0x11); uint16(s)&0x8000 != 0 {
-								modifiers = append(modifiers, "ctrl")
+							ctrl.dialog.Synchronize(func() {
+								ctrl.keyEdit.SetText(keyName)
+							})
+							// Suppress Tab so it doesn't move focus away
+							if vk == 0x09 {
+								return 1
 							}
-							if s, _, _ := procGetAsyncKeyState.Call(0x10); uint16(s)&0x8000 != 0 {
-								modifiers = append(modifiers, "shift")
+						}
+					}
+
+					if lastField != nil {
+						switch vk {
+						case 0x10, 0x11, 0xA0, 0xA1, 0xA2, 0xA3: // other modifiers — skip
+						default:
+							keyName := vkCodeToName(vk)
+							if keyName != "" {
+								modifiers := []string{}
+								if s, _, _ := procGetAsyncKeyState.Call(0x11); uint16(s)&0x8000 != 0 {
+									modifiers = append(modifiers, "ctrl")
+								}
+								if s, _, _ := procGetAsyncKeyState.Call(0x10); uint16(s)&0x8000 != 0 {
+									modifiers = append(modifiers, "shift")
+								}
+								if s, _, _ := procGetAsyncKeyState.Call(0x12); uint16(s)&0x8000 != 0 {
+									modifiers = append(modifiers, "alt")
+								}
+								hk := &model.Hotkey{Modifiers: modifiers, Key: keyName}
+								*lastField.target = hk
+								lastField.edit.SetText(formatHotkeyDisplay(hk))
 							}
-							if s, _, _ := procGetAsyncKeyState.Call(0x12); uint16(s)&0x8000 != 0 {
-								modifiers = append(modifiers, "alt")
-							}
-							hk := &model.Hotkey{Modifiers: modifiers, Key: keyName}
-							*lastField.target = hk
-							lastField.edit.SetText(formatHotkeyDisplay(hk))
 						}
 					}
 				}
@@ -690,28 +706,44 @@ func (ctrl *scriptEditController) onSave() {
 	ctrl.dialog.Accept()
 }
 
+func (ctrl *scriptEditController) autoSave() {
+	ctrl.readFieldsIntoScript()
+	if ctrl.script.Name == "" || ctrl.scriptStore.NameExists(ctrl.script.Name, ctrl.script.ID) {
+		return
+	}
+	ctrl.scriptStore.Save(*ctrl.script)
+	ctrl.saved = true
+}
+
+// insertAction inserts a at one position after the current selection, or appends if nothing selected.
+func (ctrl *scriptEditController) insertAction(a model.Action) {
+	idx := ctrl.actionListBox.CurrentIndex()
+	if idx < 0 || idx >= len(ctrl.script.Actions) {
+		ctrl.script.Actions = append(ctrl.script.Actions, a)
+		ctrl.refreshActionList()
+		ctrl.actionListBox.SetCurrentIndex(len(ctrl.script.Actions) - 1)
+	} else {
+		ins := idx + 1
+		ctrl.script.Actions = append(ctrl.script.Actions, model.Action{})
+		copy(ctrl.script.Actions[ins+1:], ctrl.script.Actions[ins:])
+		ctrl.script.Actions[ins] = a
+		ctrl.refreshActionList()
+		ctrl.actionListBox.SetCurrentIndex(ins)
+	}
+}
+
 func (ctrl *scriptEditController) addMouseMove() {
 	x, _ := strconv.Atoi(ctrl.mouseXLabel.Text())
 	y, _ := strconv.Atoi(ctrl.mouseYLabel.Text())
-	ctrl.script.Actions = append(ctrl.script.Actions, model.Action{
-		Type: model.ActionMouseMove,
-		X:    x,
-		Y:    y,
-	})
-	ctrl.refreshActionList()
+	ctrl.insertAction(model.Action{Type: model.ActionMouseMove, X: x, Y: y})
 }
-
-
 
 func (ctrl *scriptEditController) addKeyPress() {
 	key := ctrl.keyEdit.Text()
 	if key == "" {
 		return
 	}
-	ctrl.script.Actions = append(ctrl.script.Actions,
-		model.Action{Type: model.ActionKeyPress, Key: key},
-	)
-	ctrl.refreshActionList()
+	ctrl.insertAction(model.Action{Type: model.ActionKeyPress, Key: key})
 }
 
 func (ctrl *scriptEditController) addKeyAction(actionType string) {
@@ -719,8 +751,7 @@ func (ctrl *scriptEditController) addKeyAction(actionType string) {
 	if key == "" {
 		return
 	}
-	ctrl.script.Actions = append(ctrl.script.Actions, model.Action{Type: actionType, Key: key})
-	ctrl.refreshActionList()
+	ctrl.insertAction(model.Action{Type: actionType, Key: key})
 }
 
 func (ctrl *scriptEditController) addDelay() {
@@ -728,19 +759,16 @@ func (ctrl *scriptEditController) addDelay() {
 	if ms <= 0 {
 		return
 	}
-	ctrl.script.Actions = append(ctrl.script.Actions, model.Action{Type: model.ActionDelay, DelayMs: ms})
-	ctrl.refreshActionList()
+	ctrl.insertAction(model.Action{Type: model.ActionDelay, DelayMs: ms})
 }
 
 func (ctrl *scriptEditController) addLoop() {
 	count := int(ctrl.loopCountEdit.Value())
-	ctrl.script.Actions = append(ctrl.script.Actions, model.Action{Type: model.ActionLoop, LoopCount: count})
-	ctrl.refreshActionList()
+	ctrl.insertAction(model.Action{Type: model.ActionLoop, LoopCount: count})
 }
 
 func (ctrl *scriptEditController) addSimpleAction(actionType string) {
-	ctrl.script.Actions = append(ctrl.script.Actions, model.Action{Type: actionType})
-	ctrl.refreshActionList()
+	ctrl.insertAction(model.Action{Type: actionType})
 }
 
 func (ctrl *scriptEditController) addActionOfType(actionType string) {
@@ -749,8 +777,7 @@ func (ctrl *scriptEditController) addActionOfType(actionType string) {
 	if !accepted {
 		return
 	}
-	ctrl.script.Actions = append(ctrl.script.Actions, editedAction)
-	ctrl.refreshActionList()
+	ctrl.insertAction(editedAction)
 }
 
 func (ctrl *scriptEditController) onEditAction() {

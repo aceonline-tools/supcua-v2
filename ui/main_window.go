@@ -23,6 +23,7 @@ type ScriptRunner interface {
 	StartScript(script model.Script)
 	StopRunningScript()
 	GetRunningScriptID() string
+	SetEditDialogOpen(open bool)
 }
 
 // MainWindowController manages the main application window with script list.
@@ -118,9 +119,9 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 
 	err := (MainWindow{
 		AssignTo: &mainWindowInstance,
-		Title:    "supcua-v2 - Script Automation",
-		MinSize:  Size{Width: 550, Height: 250},
-		Size:     Size{Width: 650, Height: 350},
+		Title:    "supcua-v2 v" + version.Version,
+		MinSize:  Size{Width: 390, Height: 200},
+		Size:     Size{Width: 390, Height: 300}, // overridden below if saved size exists
 		Layout:   VBox{Spacing: 2, Margins: Margins{Left: 5, Top: 5, Right: 5, Bottom: 2}},
 		Visible:  true,
 		Children: []Widget{
@@ -133,8 +134,8 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 				Model:            wc.tableModel,
 				Columns: []TableViewColumn{
 					{Title: "Name", Width: 200},
-					{Title: "Hotkey", Width: 150},
-					{Title: "Mode", Width: 80},
+					{Title: "Hotkey", Width: 75},
+					{Title: "Mode", Width: 50},
 				},
 				OnItemActivated: func() { wc.onEditScript() },
 				OnSizeChanged: func() {
@@ -172,15 +173,6 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 					},
 				},
 			},
-			Composite{
-				Layout: HBox{MarginsZero: true},
-				Children: []Widget{
-					HSpacer{},
-					Label{
-						Text: "v" + version.Version,
-					},
-				},
-			},
 		},
 	}).Create()
 
@@ -198,19 +190,30 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 		wc.tableView.SetCurrentIndex(0)
 	}
 
-	// Restore saved position
-	if savedPos.X != 0 || savedPos.Y != 0 {
+	// Restore saved position and size
+	if savedPos.X != 0 || savedPos.Y != 0 || savedPos.Width != 0 || savedPos.Height != 0 {
 		b := mainWindowInstance.Bounds()
-		mainWindowInstance.SetBounds(walk.Rectangle{X: savedPos.X, Y: savedPos.Y, Width: b.Width, Height: b.Height})
+		w, h := b.Width, b.Height
+		if savedPos.Width > 0 {
+			w = savedPos.Width
+		}
+		if savedPos.Height > 0 {
+			h = savedPos.Height
+		}
+		x, y := b.X, b.Y
+		if savedPos.X != 0 || savedPos.Y != 0 {
+			x, y = savedPos.X, savedPos.Y
+		}
+		mainWindowInstance.SetBounds(walk.Rectangle{X: x, Y: y, Width: w, Height: h})
 	}
 
-	// Save position on close
+	// Save position and size on close
 	if configStore != nil {
 		mainWindowInstance.Closing().Attach(func(cancelled *bool, reason walk.CloseReason) {
 			cfg, err := configStore.Load()
 			if err == nil {
 				b := mainWindowInstance.Bounds()
-				cfg.MainWindowPos = model.WindowPos{X: b.X, Y: b.Y}
+				cfg.MainWindowPos = model.WindowPos{X: b.X, Y: b.Y, Width: b.Width, Height: b.Height}
 				configStore.Save(cfg)
 			}
 		})
@@ -227,8 +230,8 @@ func (wc *MainWindowController) resizeTableColumns() {
 	if totalWidth <= 0 {
 		return
 	}
-	hotkeyWidth := 150
-	modeWidth := 80
+	hotkeyWidth := 75
+	modeWidth := 50
 	nameWidth := totalWidth - hotkeyWidth - modeWidth - 4
 	if nameWidth < 80 {
 		nameWidth = 80
@@ -317,15 +320,14 @@ func (wc *MainWindowController) onNewScript() {
 		Actions:    []model.Action{},
 	}
 
-	wasActive := wc.scriptRunner != nil && wc.scriptRunner.IsGlobalActive()
-	if wasActive {
-		wc.scriptRunner.ToggleGlobalStatus()
+	if wc.scriptRunner != nil {
+		wc.scriptRunner.SetEditDialogOpen(true)
 	}
 	wc.mainWindow.Hide()
 	saved := ShowScriptEditDialog(wc.mainWindow, &newScript, wc.scriptStore, wc.configStore, wc.captureVK)
 	wc.mainWindow.Show()
-	if wasActive {
-		wc.scriptRunner.ToggleGlobalStatus()
+	if wc.scriptRunner != nil {
+		wc.scriptRunner.SetEditDialogOpen(false)
 	}
 	if saved {
 		wc.refreshScriptList()
@@ -346,15 +348,14 @@ func (wc *MainWindowController) onEditScript() {
 	}
 	scriptCopy := wc.allScripts[selectedIndex]
 
-	wasActive := wc.scriptRunner != nil && wc.scriptRunner.IsGlobalActive()
-	if wasActive {
-		wc.scriptRunner.ToggleGlobalStatus()
+	if wc.scriptRunner != nil {
+		wc.scriptRunner.SetEditDialogOpen(true)
 	}
 	wc.mainWindow.Hide()
 	saved := ShowScriptEditDialog(wc.mainWindow, &scriptCopy, wc.scriptStore, wc.configStore, wc.captureVK)
 	wc.mainWindow.Show()
-	if wasActive {
-		wc.scriptRunner.ToggleGlobalStatus()
+	if wc.scriptRunner != nil {
+		wc.scriptRunner.SetEditDialogOpen(false)
 	}
 	if saved {
 		wc.refreshScriptList()

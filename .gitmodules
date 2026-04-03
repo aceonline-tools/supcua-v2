@@ -1,0 +1,3 @@
+[submodule "supcua-v0"]
+	path = supcua-v0
+	url = git@github.com:aceonline-tools/supcua-v0.git

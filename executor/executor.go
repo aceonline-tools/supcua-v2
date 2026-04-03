@@ -171,6 +171,7 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 		if err := scriptExecutor.inputSimulator.KeyDown(currentAction.Key); err != nil {
 			return err
 		}
+		time.Sleep(10 * time.Millisecond)
 		return scriptExecutor.inputSimulator.KeyUp(currentAction.Key)
 
 	case model.ActionKeyDown:
