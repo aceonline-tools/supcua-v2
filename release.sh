@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
+# Load local env vars if present
+if [ -f .env ]; then
+  export $(grep -v '^#' .env | xargs)
+fi
+
 if [ -n "$1" ]; then
   VERSION="$1"
 else
@@ -16,6 +21,8 @@ else
 fi
 TAG="v$VERSION"
 EXE="supcua-v2.exe"
+MINIO_ENDPOINT="https://dev.hrm.vangtatmining.com.vn/minio"
+MINIO_BUCKET="bucket-supcua-v2"
 
 echo "==> Regenerating icon resource..."
 rsrc -ico app.ico -manifest main.manifest -o rsrc.syso
@@ -29,6 +36,14 @@ git push origin "$TAG"
 
 echo "==> Creating GitHub release and uploading $EXE..."
 gh release create "$TAG" "$EXE" --title "$TAG" --notes "Release $TAG"
+
+echo "==> Uploading to MinIO..."
+aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 configure set default.s3.multipart_threshold 200MB
+echo "$VERSION" > latest.txt
+aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp "$EXE" "s3://$MINIO_BUCKET/$EXE"
+aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp app.ico "s3://$MINIO_BUCKET/app.ico"
+aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp latest.txt "s3://$MINIO_BUCKET/latest.txt"
+rm latest.txt
 
 echo "==> Done!"
 gh release view "$TAG" --web

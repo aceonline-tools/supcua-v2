@@ -4,3 +4,4 @@
 rsrc.syso
 config.json
 scripts/
+.env
