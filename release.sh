@@ -28,7 +28,9 @@ echo "==> Regenerating icon resource..."
 rsrc -ico app.ico -manifest main.manifest -o rsrc.syso
 
 echo "==> Building $EXE $TAG..."
-go build -trimpath -ldflags="-H windowsgui -s -w -X github.com/yanmad27/supcua-v2/version.Version=$VERSION" -o "$EXE" .
+GOROOT=$(go1.25.0 env GOROOT) PATH="$(go1.25.0 env GOROOT)/bin:$PATH" \
+  GOGARBLE="github.com/yanmad27/supcua-v2" \
+  garble -literals build -trimpath -ldflags="-H windowsgui -s -w -X github.com/yanmad27/supcua-v2/version.Version=$VERSION" -o "$EXE" .
 
 echo "==> Tagging $TAG..."
 git tag "$TAG"
