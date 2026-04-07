@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/yanmad27/supcua-v2/app"
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
@@ -19,6 +21,17 @@ import (
 )
 
 func main() {
+	// Single instance check via named mutex
+	mutexName, _ := windows.UTF16PtrFromString("Local\\supcua-v2-instance")
+	mutex, err := windows.CreateMutex(nil, true, mutexName)
+	if err == windows.ERROR_ALREADY_EXISTS {
+		msg, _ := windows.UTF16PtrFromString("supcua-v2 is already running.")
+		title, _ := windows.UTF16PtrFromString("Already Running")
+		windows.MessageBox(0, msg, title, windows.MB_OK|windows.MB_ICONINFORMATION)
+		os.Exit(0)
+	}
+	defer windows.CloseHandle(mutex)
+
 	executablePath, err := os.Executable()
 	if err != nil {
 		log.Fatalf("failed to get executable path: %v", err)
@@ -44,23 +57,6 @@ func main() {
 		return
 	}
 
-	// Auto-update check
-	go func() {
-		latestTag, downloadURL, err := updater.CheckUpdate(version.Version)
-		if err != nil {
-			log.Printf("update check error: %v", err)
-			return
-		}
-		if latestTag == "" {
-			return
-		}
-		log.Printf("update available: %s", latestTag)
-		if ui.ShowUpdateDialog(latestTag) && downloadURL != "" {
-			if err := updater.DownloadAndReplace(downloadURL, executablePath); err != nil {
-				log.Printf("update failed: %v", err)
-			}
-		}
-	}()
 
 	// Storage
 	configStore := storage.NewConfigStore(filepath.Join(applicationDirectory, "config.json"))
@@ -91,6 +87,26 @@ func main() {
 		log.Fatalf("failed to create main window: %v", err)
 	}
 
+	// Auto-update check (runs in background, shows dialog on UI thread)
+	go func() {
+		latestTag, dlURL, err := updater.CheckUpdate(version.Version)
+		if err != nil {
+			log.Printf("update check error: %v", err)
+			return
+		}
+		if latestTag == "" {
+			return
+		}
+		log.Printf("update available: %s", latestTag)
+		mainWindow.Synchronize(func() {
+			if ui.ShowUpdateDialog(mainWindow, latestTag) && dlURL != "" {
+				if err := updater.DownloadAndReplace(dlURL, executablePath); err != nil {
+					log.Printf("update failed: %v", err)
+				}
+			}
+		})
+	}()
+
 	// Overlay
 	var overlayWindow *ui.OverlayWindow
 	if appConfig.OverlayEnabled {
@@ -106,7 +122,7 @@ func main() {
 	}
 
 	// System tray
-	trayIcon, err := ui.NewTrayIcon(mainWindow, appController, overlayWindow)
+	trayIcon, err := ui.NewTrayIcon(mainWindow, mainWindowController, appController, overlayWindow)
 	if err != nil {
 		log.Fatalf("failed to create tray icon: %v", err)
 	}

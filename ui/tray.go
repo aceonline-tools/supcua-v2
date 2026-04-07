@@ -3,9 +3,6 @@
 package ui
 
 import (
-	"os"
-	"path/filepath"
-
 	"github.com/lxn/walk"
 
 	"github.com/yanmad27/supcua-v2/app"
@@ -13,39 +10,35 @@ import (
 
 // TrayIcon wraps the Walk system tray icon with context menu.
 type TrayIcon struct {
-	notifyIcon    *walk.NotifyIcon
-	appController *app.Controller
-	mainWindow    *walk.MainWindow
-	overlayWindow *OverlayWindow
+	notifyIcon           *walk.NotifyIcon
+	appController        *app.Controller
+	mainWindow           *walk.MainWindow
+	mainWindowController *MainWindowController
+	overlayWindow        *OverlayWindow
 }
 
 // NewTrayIcon creates and configures the system tray icon.
-func NewTrayIcon(mainWindow *walk.MainWindow, appController *app.Controller, overlayWindow *OverlayWindow) (*TrayIcon, error) {
+func NewTrayIcon(mainWindow *walk.MainWindow, mainWindowController *MainWindowController, appController *app.Controller, overlayWindow *OverlayWindow) (*TrayIcon, error) {
 	notifyIcon, err := walk.NewNotifyIcon(mainWindow)
 	if err != nil {
 		return nil, err
 	}
 
 	trayIcon := &TrayIcon{
-		notifyIcon:    notifyIcon,
-		appController: appController,
-		mainWindow:    mainWindow,
-		overlayWindow: overlayWindow,
+		notifyIcon:           notifyIcon,
+		appController:        appController,
+		mainWindow:           mainWindow,
+		mainWindowController: mainWindowController,
+		overlayWindow:        overlayWindow,
 	}
 
-	// Set icon from app.ico next to executable or working directory, fallback to stock icon
-	executablePath, _ := os.Executable()
-	appDir := filepath.Dir(executablePath)
-	icoPath := filepath.Join(appDir, "app.ico")
-	if _, statErr := os.Stat(icoPath); statErr != nil {
-		// Fallback to working directory (useful with go run)
-		if wd, wdErr := os.Getwd(); wdErr == nil {
-			icoPath = filepath.Join(wd, "app.ico")
+	// Load icon from embedded resource (compiled in via rsrc); try common IDs
+	var appIcon *walk.Icon
+	for _, id := range []int{1, 2, 3, 7} {
+		if ico, err := walk.NewIconFromResourceId(id); err == nil {
+			appIcon = ico
+			break
 		}
-	}
-	appIcon, iconErr := walk.NewIconFromFile(icoPath)
-	if iconErr != nil {
-		appIcon, _ = walk.NewIconFromResourceId(3)
 	}
 	if appIcon != nil {
 		notifyIcon.SetIcon(appIcon)
@@ -116,7 +109,7 @@ func (trayIcon *TrayIcon) buildContextMenu() {
 	exitAction.SetText("Exit")
 	exitAction.Triggered().Attach(func() {
 		trayIcon.Dispose()
-		trayIcon.mainWindow.Close()
+		trayIcon.mainWindowController.Exit()
 	})
 	contextMenu.Actions().Add(exitAction)
 }

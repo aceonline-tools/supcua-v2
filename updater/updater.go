@@ -16,7 +16,6 @@ const (
 	minioBase   = "https://dev.hrm.vangtatmining.com.vn/minio/bucket-supcua-v2"
 	latestURL   = minioBase + "/latest.txt"
 	downloadURL = minioBase + "/supcua-v2.exe"
-	iconURL     = minioBase + "/app.ico"
 )
 
 // semverGT returns true if a > b using major.minor.patch comparison.
@@ -75,6 +74,9 @@ func DownloadAndReplace(dlURL, exePath string) error {
 	dir := filepath.Dir(exePath)
 	tmpExe := filepath.Join(dir, "supcua-v2-update.exe")
 
+	// Remove stale temp file from a previous failed update
+	os.Remove(tmpExe)
+
 	client := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Get(dlURL)
 	if err != nil {
@@ -92,30 +94,31 @@ func DownloadAndReplace(dlURL, exePath string) error {
 	}
 	f.Close()
 
-	// Download app.ico alongside exe (best-effort, don't fail update if missing)
-	if icoResp, icoErr := client.Get(iconURL); icoErr == nil {
-		defer icoResp.Body.Close()
-		if icoFile, icoErr := os.Create(filepath.Join(dir, "app.ico")); icoErr == nil {
-			io.Copy(icoFile, icoResp.Body)
-			icoFile.Close()
-		}
+	// Rename the running exe out of the way now (Windows allows renaming open files).
+	// Then the batch just needs to move the update into place after we exit.
+	oldExe := exePath + ".old"
+	os.Remove(oldExe) // clean up any leftover from previous update
+	if err := os.Rename(exePath, oldExe); err != nil {
+		return fmt.Errorf("rename current exe: %w", err)
 	}
 
+	pid := os.Getpid()
 	batPath := filepath.Join(dir, "update.bat")
-	exeName := filepath.Base(exePath)
 	batContent := fmt.Sprintf(`@echo off
+taskkill /pid %d /f >nul 2>&1
 timeout /t 2 /nobreak >nul
-copy /y "%s" "%s"
-del "%s"
+move /y "%s" "%s"
 start "" "%s"
+timeout /t 3 /nobreak >nul
+del "%s"
 del "%%~f0"
-`, tmpExe, exePath, tmpExe, exeName)
+`, pid, tmpExe, exePath, exePath, oldExe)
 
 	if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
 		return fmt.Errorf("write batch: %w", err)
 	}
 
-	cmd := exec.Command("cmd", "/c", "start", "", batPath)
+	cmd := exec.Command("cmd", "/c", "start", "/b", "cmd", "/c", batPath)
 	cmd.Dir = dir
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch batch: %w", err)

@@ -28,7 +28,7 @@ echo "==> Regenerating icon resource..."
 rsrc -ico app.ico -manifest main.manifest -o rsrc.syso
 
 echo "==> Building $EXE $TAG..."
-go build -ldflags="-H windowsgui -X github.com/yanmad27/supcua-v2/version.Version=$VERSION" -o "$EXE" .
+go build -trimpath -ldflags="-H windowsgui -s -w -X github.com/yanmad27/supcua-v2/version.Version=$VERSION" -o "$EXE" .
 
 echo "==> Tagging $TAG..."
 git tag "$TAG"
@@ -41,7 +41,6 @@ echo "==> Uploading to MinIO..."
 aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 configure set default.s3.multipart_threshold 200MB
 echo "$VERSION" > latest.txt
 aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp "$EXE" "s3://$MINIO_BUCKET/$EXE"
-aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp app.ico "s3://$MINIO_BUCKET/app.ico"
 aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp latest.txt "s3://$MINIO_BUCKET/latest.txt"
 rm latest.txt
 

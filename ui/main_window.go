@@ -36,12 +36,19 @@ type MainWindowController struct {
 	tableModel     *scriptTableModel
 	activeCheckbox *walk.CheckBox
 	scriptRunner   ScriptRunner
+	realExit       bool
 
 	// Called after scripts are created/edited/deleted to re-register hotkeys
 	OnScriptsChanged func()
 
 	// State
 	allScripts []model.Script
+}
+
+// Exit saves position and closes the window for real (used by tray Exit action).
+func (wc *MainWindowController) Exit() {
+	wc.realExit = true
+	wc.mainWindow.Close()
 }
 
 // SetScriptRunner sets the app controller for global active state.
@@ -207,17 +214,24 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 		mainWindowInstance.SetBounds(walk.Rectangle{X: x, Y: y, Width: w, Height: h})
 	}
 
-	// Save position and size on close
-	if configStore != nil {
-		mainWindowInstance.Closing().Attach(func(cancelled *bool, reason walk.CloseReason) {
+	// Hide to tray on close instead of exiting; only exit via tray menu
+	wc.realExit = false
+	mainWindowInstance.Closing().Attach(func(cancelled *bool, reason walk.CloseReason) {
+		if !wc.realExit {
+			*cancelled = true
+			mainWindowInstance.SetVisible(false)
+			return
+		}
+		// Actual exit: save position
+		if configStore != nil {
 			cfg, err := configStore.Load()
 			if err == nil {
 				b := mainWindowInstance.Bounds()
 				cfg.MainWindowPos = model.WindowPos{X: b.X, Y: b.Y, Width: b.Width, Height: b.Height}
 				configStore.Save(cfg)
 			}
-		})
-	}
+		}
+	})
 
 	return mainWindowInstance, wc, nil
 }
@@ -314,7 +328,7 @@ func (wc *MainWindowController) onNewScript() {
 	newScript := model.Script{
 		ID:         uuid.New().String(),
 		Name:       "New Script",
-		Enabled:    false,
+		Enabled:    true,
 		RunMode:    model.RunModeOnce,
 		HotkeyMode: model.HotkeyModeToggle,
 		Actions:    []model.Action{},
@@ -324,7 +338,7 @@ func (wc *MainWindowController) onNewScript() {
 		wc.scriptRunner.SetEditDialogOpen(true)
 	}
 	wc.mainWindow.Hide()
-	saved := ShowScriptEditDialog(wc.mainWindow, &newScript, wc.scriptStore, wc.configStore, wc.captureVK)
+	saved := ShowScriptEditDialog(wc.mainWindow, &newScript, wc.scriptStore, wc.configStore, wc.captureVK, wc.allScripts)
 	wc.mainWindow.Show()
 	if wc.scriptRunner != nil {
 		wc.scriptRunner.SetEditDialogOpen(false)
@@ -352,7 +366,7 @@ func (wc *MainWindowController) onEditScript() {
 		wc.scriptRunner.SetEditDialogOpen(true)
 	}
 	wc.mainWindow.Hide()
-	saved := ShowScriptEditDialog(wc.mainWindow, &scriptCopy, wc.scriptStore, wc.configStore, wc.captureVK)
+	saved := ShowScriptEditDialog(wc.mainWindow, &scriptCopy, wc.scriptStore, wc.configStore, wc.captureVK, wc.allScripts)
 	wc.mainWindow.Show()
 	if wc.scriptRunner != nil {
 		wc.scriptRunner.SetEditDialogOpen(false)

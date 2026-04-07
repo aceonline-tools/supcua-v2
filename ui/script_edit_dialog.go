@@ -14,6 +14,7 @@ import (
 	. "github.com/lxn/walk/declarative"
 
 	"github.com/yanmad27/supcua-v2/capture"
+	"github.com/yanmad27/supcua-v2/hotkey"
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
 )
@@ -23,6 +24,7 @@ type scriptEditController struct {
 	dialog      *walk.Dialog
 	script      *model.Script
 	scriptStore *storage.ScriptStore
+	allScripts  []model.Script
 	captureVK   uint32
 	saved       bool
 
@@ -58,10 +60,11 @@ type scriptEditController struct {
 
 // ShowScriptEditDialog opens a dialog to create or edit a script.
 // Returns true if the script was saved.
-func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.ScriptStore, configStore *storage.ConfigStore, captureVK uint32) bool {
+func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.ScriptStore, configStore *storage.ConfigStore, captureVK uint32, allScripts []model.Script) bool {
 	ctrl := &scriptEditController{
 		script:      script,
 		scriptStore: store,
+		allScripts:  allScripts,
 		captureVK:   captureVK,
 	}
 
@@ -697,6 +700,29 @@ func (ctrl *scriptEditController) onSave() {
 	if ctrl.scriptStore.NameExists(ctrl.script.Name, ctrl.script.ID) {
 		walk.MsgBox(ctrl.dialog, "Error", "A script named \""+ctrl.script.Name+"\" already exists.", walk.MsgBoxIconError)
 		return
+	}
+
+	// Warn about hotkey conflicts; if user confirms, clear the hotkey from the conflicting script
+	checker := hotkey.NewConflictChecker()
+	hotkeys := []*model.Hotkey{ctrl.script.ToggleHotkey, ctrl.script.StartHotkey, ctrl.script.StopHotkey}
+	for _, hk := range hotkeys {
+		if hk == nil {
+			continue
+		}
+		if conflict, field := checker.FindConflict(*hk, ctrl.allScripts, ctrl.script.ID); conflict != nil {
+			fieldLabel := map[string]string{
+				"toggle_hotkey": "Toggle",
+				"start_hotkey":  "Start",
+				"stop_hotkey":   "Stop",
+			}[field]
+			msg := fmt.Sprintf("Hotkey \"%s\" conflicts with the %s hotkey of script \"%s\".\n\nOverride and remove it from \"%s\"?", formatHotkeyDisplay(hk), fieldLabel, conflict.Name, conflict.Name)
+			if walk.MsgBox(ctrl.dialog, "Hotkey Conflict", msg, walk.MsgBoxIconWarning|walk.MsgBoxYesNo) == walk.DlgCmdNo {
+				return
+			}
+			// Clear the conflicting hotkey from the old script and save it
+			checker.ClearConflictingHotkey(conflict, field)
+			ctrl.scriptStore.Save(*conflict)
+		}
 	}
 
 	err := ctrl.scriptStore.Save(*ctrl.script)
