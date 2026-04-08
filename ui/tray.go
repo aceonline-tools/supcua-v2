@@ -4,6 +4,7 @@ package ui
 
 import (
 	"github.com/lxn/walk"
+	"github.com/lxn/win"
 
 	"github.com/yanmad27/supcua-v2/app"
 )
@@ -52,9 +53,10 @@ func NewTrayIcon(mainWindow *walk.MainWindow, mainWindowController *MainWindowCo
 
 	notifyIcon.MouseDown().Attach(func(mouseX, mouseY int, mouseButton walk.MouseButton) {
 		if mouseButton == walk.LeftButton {
-			mainWindow.SetVisible(!mainWindow.Visible())
-			if mainWindow.Visible() {
-				mainWindow.Activate()
+			if mainWindow.Visible() && !win.IsIconic(mainWindow.Handle()) {
+				mainWindow.SetVisible(false)
+			} else {
+				showMainWindow(mainWindow)
 			}
 		}
 	})
@@ -76,8 +78,7 @@ func (trayIcon *TrayIcon) buildContextMenu() {
 	showWindowAction := walk.NewAction()
 	showWindowAction.SetText("Show Window")
 	showWindowAction.Triggered().Attach(func() {
-		trayIcon.mainWindow.SetVisible(true)
-		trayIcon.mainWindow.Activate()
+		showMainWindow(trayIcon.mainWindow)
 	})
 	contextMenu.Actions().Add(showWindowAction)
 
@@ -112,6 +113,15 @@ func (trayIcon *TrayIcon) buildContextMenu() {
 		trayIcon.mainWindowController.Exit()
 	})
 	contextMenu.Actions().Add(exitAction)
+}
+
+// showMainWindow restores and activates the main window, handling minimized state.
+func showMainWindow(mainWindow *walk.MainWindow) {
+	if win.IsIconic(mainWindow.Handle()) {
+		win.ShowWindow(mainWindow.Handle(), win.SW_RESTORE)
+	}
+	mainWindow.SetVisible(true)
+	mainWindow.Activate()
 }
 
 // UpdateTooltip refreshes the tooltip text based on current status.
