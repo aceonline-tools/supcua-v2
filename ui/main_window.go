@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
 
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
@@ -208,7 +209,8 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 			h = savedPos.Height
 		}
 		x, y := b.X, b.Y
-		if savedPos.X != 0 || savedPos.Y != 0 {
+		// -32000 is Windows' sentinel for minimized window position; skip off-screen coords
+		if savedPos.X > -1000 && savedPos.Y > -1000 {
 			x, y = savedPos.X, savedPos.Y
 		}
 		mainWindowInstance.SetBounds(walk.Rectangle{X: x, Y: y, Width: w, Height: h})
@@ -222,8 +224,8 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 			mainWindowInstance.SetVisible(false)
 			return
 		}
-		// Actual exit: save position
-		if configStore != nil {
+		// Actual exit: save position (skip if minimized to avoid storing -32000,-32000)
+		if configStore != nil && !win.IsIconic(mainWindowInstance.Handle()) {
 			cfg, err := configStore.Load()
 			if err == nil {
 				b := mainWindowInstance.Bounds()
