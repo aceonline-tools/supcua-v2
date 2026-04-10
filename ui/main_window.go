@@ -37,7 +37,6 @@ type MainWindowController struct {
 	tableModel     *scriptTableModel
 	activeCheckbox *walk.CheckBox
 	scriptRunner   ScriptRunner
-	realExit       bool
 
 	// Called after scripts are created/edited/deleted to re-register hotkeys
 	OnScriptsChanged func()
@@ -46,9 +45,8 @@ type MainWindowController struct {
 	allScripts []model.Script
 }
 
-// Exit saves position and closes the window for real (used by tray Exit action).
+// Exit closes the window (used by tray Exit action).
 func (wc *MainWindowController) Exit() {
-	wc.realExit = true
 	wc.mainWindow.Close()
 }
 
@@ -179,6 +177,10 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 						Text:      "Delete",
 						OnClicked: func() { wc.onDeleteScript() },
 					},
+					PushButton{
+						Text:      "Hide",
+						OnClicked: func() { mainWindowInstance.SetVisible(false) },
+					},
 				},
 			},
 		},
@@ -216,15 +218,9 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 		mainWindowInstance.SetBounds(walk.Rectangle{X: x, Y: y, Width: w, Height: h})
 	}
 
-	// Hide to tray on close instead of exiting; only exit via tray menu
-	wc.realExit = false
+	// Save position on close, then exit for real
 	mainWindowInstance.Closing().Attach(func(cancelled *bool, reason walk.CloseReason) {
-		if !wc.realExit {
-			*cancelled = true
-			mainWindowInstance.SetVisible(false)
-			return
-		}
-		// Actual exit: save position (skip if minimized to avoid storing -32000,-32000)
+		// Save position (skip if minimized to avoid storing -32000,-32000)
 		if configStore != nil && !win.IsIconic(mainWindowInstance.Handle()) {
 			cfg, err := configStore.Load()
 			if err == nil {
