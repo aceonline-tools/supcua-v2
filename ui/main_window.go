@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/google/uuid"
 	"github.com/lxn/walk"
@@ -177,10 +178,6 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 						Text:      "Delete",
 						OnClicked: func() { wc.onDeleteScript() },
 					},
-					PushButton{
-						Text:      "Hide",
-						OnClicked: func() { mainWindowInstance.SetVisible(false) },
-					},
 				},
 			},
 		},
@@ -217,6 +214,17 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 		}
 		mainWindowInstance.SetBounds(walk.Rectangle{X: x, Y: y, Width: w, Height: h})
 	}
+
+	// Minimize button (—) hides to tray instead of minimizing
+	var origProc uintptr
+	hideCb := syscall.NewCallback(func(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
+		if msg == win.WM_SYSCOMMAND && (wParam&0xFFF0) == win.SC_MINIMIZE {
+			mainWindowInstance.SetVisible(false)
+			return 0
+		}
+		return win.CallWindowProc(origProc, hwnd, msg, wParam, lParam)
+	})
+	origProc = win.SetWindowLongPtr(mainWindowInstance.Handle(), win.GWL_WNDPROC, hideCb)
 
 	// Save position on close, then exit for real
 	mainWindowInstance.Closing().Attach(func(cancelled *bool, reason walk.CloseReason) {
