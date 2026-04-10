@@ -172,6 +172,16 @@ func main() {
 		globalHotkeyID = 0
 	}
 
+	// Register overlay toggle hotkey
+	if overlayWindow != nil && appConfig.OverlayHotkey.Key != "" {
+		_, err := hotkeyManager.Register(appConfig.OverlayHotkey, func(hotkeyID int) {
+			overlayWindow.ToggleVisibility()
+		})
+		if err != nil {
+			log.Printf("warning: failed to register overlay hotkey: %v", err)
+		}
+	}
+
 	// Register script hotkeys (only when global is active)
 	scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
 

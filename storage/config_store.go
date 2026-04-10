@@ -28,7 +28,7 @@ func (configStore *ConfigStore) Load() (model.AppConfig, error) {
 		return model.AppConfig{}, err
 	}
 
-	var appConfig model.AppConfig
+	appConfig := model.DefaultConfig()
 	if err := json.Unmarshal(data, &appConfig); err != nil {
 		return model.AppConfig{}, err
 	}
