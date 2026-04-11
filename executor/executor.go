@@ -31,19 +31,21 @@ type StatusCallback func(scriptID string, status string, errorMessage string)
 
 // Executor runs script actions line by line.
 type Executor struct {
-	inputSimulator  InputSimulatorInterface
-	imageDetector   ImageDetectorInterface
-	foundPositionX  int
-	foundPositionY  int
-	storedPositionX int
-	storedPositionY int
+	inputSimulator     InputSimulatorInterface
+	imageDetector      ImageDetectorInterface
+	keyPressDurationMs int
+	foundPositionX     int
+	foundPositionY     int
+	storedPositionX    int
+	storedPositionY    int
 }
 
-// NewExecutor creates an Executor with the given input simulator and image detector.
-func NewExecutor(inputSimulator InputSimulatorInterface, imageDetector ImageDetectorInterface) *Executor {
+// NewExecutor creates an Executor with the given input simulator, image detector, and key press duration.
+func NewExecutor(inputSimulator InputSimulatorInterface, imageDetector ImageDetectorInterface, keyPressDurationMs int) *Executor {
 	return &Executor{
-		inputSimulator: inputSimulator,
-		imageDetector:  imageDetector,
+		inputSimulator:     inputSimulator,
+		imageDetector:      imageDetector,
+		keyPressDurationMs: keyPressDurationMs,
 	}
 }
 
@@ -184,7 +186,7 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 		if err := scriptExecutor.inputSimulator.KeyDown(currentAction.Key); err != nil {
 			return err
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(time.Duration(scriptExecutor.keyPressDurationMs) * time.Millisecond)
 		return scriptExecutor.inputSimulator.KeyUp(currentAction.Key)
 
 	case model.ActionKeyDown:

@@ -15,6 +15,7 @@ func (mockSimulator *mockInputSimulator) MoveMouse(positionX, positionY int) err
 	mockSimulator.executedActions = append(mockSimulator.executedActions, "mouse_move")
 	return nil
 }
+func (mockSimulator *mockInputSimulator) GetCursorPos() (int, int) { return 0, 0 }
 func (mockSimulator *mockInputSimulator) MouseLeftDown() {
 	mockSimulator.executedActions = append(mockSimulator.executedActions, "mouse_left_down")
 }
@@ -38,7 +39,7 @@ func (mockSimulator *mockInputSimulator) KeyUp(keyName string) error {
 
 func TestExecuteBasicActions(t *testing.T) {
 	mockSimulator := &mockInputSimulator{}
-	scriptExecutor := NewExecutor(mockSimulator, nil)
+	scriptExecutor := NewExecutor(mockSimulator, nil, 10)
 
 	script := model.Script{
 		ID:      "test-1",
@@ -71,7 +72,7 @@ func TestExecuteBasicActions(t *testing.T) {
 
 func TestExecuteLoop(t *testing.T) {
 	mockSimulator := &mockInputSimulator{}
-	scriptExecutor := NewExecutor(mockSimulator, nil)
+	scriptExecutor := NewExecutor(mockSimulator, nil, 10)
 
 	script := model.Script{
 		ID:      "test-loop",
@@ -102,7 +103,7 @@ func TestExecuteLoop(t *testing.T) {
 
 func TestExecuteCancelledContext(t *testing.T) {
 	mockSimulator := &mockInputSimulator{}
-	scriptExecutor := NewExecutor(mockSimulator, nil)
+	scriptExecutor := NewExecutor(mockSimulator, nil, 10)
 
 	script := model.Script{
 		ID:      "test-cancel",
@@ -124,7 +125,7 @@ func TestExecuteCancelledContext(t *testing.T) {
 
 func TestExecuteInfiniteMode(t *testing.T) {
 	mockSimulator := &mockInputSimulator{}
-	scriptExecutor := NewExecutor(mockSimulator, nil)
+	scriptExecutor := NewExecutor(mockSimulator, nil, 10)
 
 	script := model.Script{
 		ID:      "test-infinite",

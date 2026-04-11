@@ -74,7 +74,7 @@ func main() {
 	// Core components
 	inputSimulator := executor.NewInputSimulator()
 	imageDetectorInstance := imagedetector.NewDetector(10)
-	scriptExecutor := executor.NewExecutor(inputSimulator, imageDetectorInstance)
+	scriptExecutor := executor.NewExecutor(inputSimulator, imageDetectorInstance, appConfig.KeyPressDurationMs)
 	hotkeyManager := hotkey.NewManager()
 
 	// Application controller
