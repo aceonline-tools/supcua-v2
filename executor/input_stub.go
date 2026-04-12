@@ -17,7 +17,8 @@ func (inputSimulator *InputSimulator) MouseRightDown()           {}
 func (inputSimulator *InputSimulator) MouseRightUp()             {}
 func (inputSimulator *InputSimulator) KeyDown(keyName string) error { return fmt.Errorf("not supported") }
 func (inputSimulator *InputSimulator) KeyUp(keyName string) error   { return fmt.Errorf("not supported") }
-func (inputSimulator *InputSimulator) LockMouse()                   {}
-func (inputSimulator *InputSimulator) UnlockMouse()                 {}
-func (inputSimulator *InputSimulator) LockKeyboard()                {}
-func (inputSimulator *InputSimulator) UnlockKeyboard()              {}
+func (inputSimulator *InputSimulator) LockMouse()     {}
+func (inputSimulator *InputSimulator) UnlockMouse()   {}
+func (inputSimulator *InputSimulator) LockKeyboard()  {}
+func (inputSimulator *InputSimulator) UnlockKeyboard() {}
+func (inputSimulator *InputSimulator) UnlockAll()     {}

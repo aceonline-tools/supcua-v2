@@ -23,6 +23,7 @@ type InputSimulatorInterface interface {
 	UnlockMouse()
 	LockKeyboard()
 	UnlockKeyboard()
+	UnlockAll()
 }
 
 // ImageDetectorInterface abstracts image detection for testing.
@@ -55,6 +56,7 @@ func NewExecutor(inputSimulator InputSimulatorInterface, imageDetector ImageDete
 
 // Execute runs a script's actions. Blocks until complete, cancelled, or error.
 func (scriptExecutor *Executor) Execute(ctx context.Context, script model.Script) error {
+	defer scriptExecutor.inputSimulator.UnlockAll()
 	for {
 		if err := scriptExecutor.executeActions(ctx, script.Actions); err != nil {
 			return err

@@ -131,6 +131,9 @@ func main() {
 	// Wire up global toggler
 	mainWindowController.SetScriptRunner(appController)
 
+	// Allow rctrl to toggle global active even during keyboard lock
+	executor.SetEmergencyToggle(appController.ToggleGlobalStatus)
+
 	// Declare hotkey state before closures that reference it
 	var scriptHotkeyIDs []int
 

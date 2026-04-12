@@ -36,10 +36,11 @@ func (mockSimulator *mockInputSimulator) KeyUp(keyName string) error {
 	mockSimulator.executedActions = append(mockSimulator.executedActions, "key_up:"+keyName)
 	return nil
 }
-func (mockSimulator *mockInputSimulator) LockMouse()    {}
-func (mockSimulator *mockInputSimulator) UnlockMouse()  {}
-func (mockSimulator *mockInputSimulator) LockKeyboard() {}
+func (mockSimulator *mockInputSimulator) LockMouse()      {}
+func (mockSimulator *mockInputSimulator) UnlockMouse()    {}
+func (mockSimulator *mockInputSimulator) LockKeyboard()   {}
 func (mockSimulator *mockInputSimulator) UnlockKeyboard() {}
+func (mockSimulator *mockInputSimulator) UnlockAll()      {}
 
 func TestExecuteBasicActions(t *testing.T) {
 	mockSimulator := &mockInputSimulator{}
