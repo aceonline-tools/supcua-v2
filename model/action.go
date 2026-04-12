@@ -20,6 +20,10 @@ const (
 	ActionLoop           = "loop"
 	ActionWaitForImage   = "wait_for_image"
 	ActionIfImage        = "if_image"
+	ActionLockMouse      = "lock_mouse"
+	ActionUnlockMouse    = "unlock_mouse"
+	ActionLockKeyboard   = "lock_keyboard"
+	ActionUnlockKeyboard = "unlock_keyboard"
 )
 
 // Region defines a rectangular area on screen for image search.

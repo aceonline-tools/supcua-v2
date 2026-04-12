@@ -258,6 +258,16 @@ func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.
 									},
 								},
 							},
+							GroupBox{
+								Title:  "Lock",
+								Layout: Grid{Columns: 2, Margins: Margins{Left: 4, Top: 2, Right: 4, Bottom: 4}},
+								Children: []Widget{
+									PushButton{Text: "Lock Mouse",      OnClicked: func() { ctrl.addSimpleAction(model.ActionLockMouse) }},
+									PushButton{Text: "Unlock Mouse",    OnClicked: func() { ctrl.addSimpleAction(model.ActionUnlockMouse) }},
+									PushButton{Text: "Lock Keyboard",   OnClicked: func() { ctrl.addSimpleAction(model.ActionLockKeyboard) }},
+									PushButton{Text: "Unlock Keyboard", OnClicked: func() { ctrl.addSimpleAction(model.ActionUnlockKeyboard) }},
+								},
+							},
 							VSpacer{},
 						},
 					},
@@ -919,6 +929,14 @@ func describeAction(action model.Action) string {
 		return fmt.Sprintf("Wait For Image (timeout: %dms)", action.TimeoutMs)
 	case model.ActionIfImage:
 		return fmt.Sprintf("If Image (then: %d, else: %d)", len(action.ThenActions), len(action.ElseActions))
+	case model.ActionLockMouse:
+		return "Lock Mouse"
+	case model.ActionUnlockMouse:
+		return "Unlock Mouse"
+	case model.ActionLockKeyboard:
+		return "Lock Keyboard"
+	case model.ActionUnlockKeyboard:
+		return "Unlock Keyboard"
 	default:
 		return action.Type
 	}

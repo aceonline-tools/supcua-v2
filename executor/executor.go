@@ -19,6 +19,10 @@ type InputSimulatorInterface interface {
 	MouseRightUp()
 	KeyDown(keyName string) error
 	KeyUp(keyName string) error
+	LockMouse()
+	UnlockMouse()
+	LockKeyboard()
+	UnlockKeyboard()
 }
 
 // ImageDetectorInterface abstracts image detection for testing.
@@ -206,6 +210,22 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 
 	case model.ActionIfImage:
 		return scriptExecutor.executeIfImage(ctx, currentAction)
+
+	case model.ActionLockMouse:
+		scriptExecutor.inputSimulator.LockMouse()
+		return nil
+
+	case model.ActionUnlockMouse:
+		scriptExecutor.inputSimulator.UnlockMouse()
+		return nil
+
+	case model.ActionLockKeyboard:
+		scriptExecutor.inputSimulator.LockKeyboard()
+		return nil
+
+	case model.ActionUnlockKeyboard:
+		scriptExecutor.inputSimulator.UnlockKeyboard()
+		return nil
 
 	default:
 		return fmt.Errorf("unknown action type: %s", currentAction.Type)

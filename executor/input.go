@@ -5,20 +5,28 @@ package executor
 import (
 	"fmt"
 	"log"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 var (
-	user32DLL              = windows.NewLazySystemDLL("user32.dll")
-	procSetCursorPos       = user32DLL.NewProc("SetCursorPos")
-	procGetCursorPos       = user32DLL.NewProc("GetCursorPos")
-	procSendInput          = user32DLL.NewProc("SendInput")
-	procMapVirtualKey      = user32DLL.NewProc("MapVirtualKeyW")
-	procVkKeyScan          = user32DLL.NewProc("VkKeyScanW")
+	user32DLL               = windows.NewLazySystemDLL("user32.dll")
+	procSetCursorPos        = user32DLL.NewProc("SetCursorPos")
+	procGetCursorPos        = user32DLL.NewProc("GetCursorPos")
+	procSendInput           = user32DLL.NewProc("SendInput")
+	procMapVirtualKey       = user32DLL.NewProc("MapVirtualKeyW")
+	procVkKeyScan           = user32DLL.NewProc("VkKeyScanW")
 	procGetForegroundWindow = user32DLL.NewProc("GetForegroundWindow")
-	procGetWindowTextW     = user32DLL.NewProc("GetWindowTextW")
+	procGetWindowTextW      = user32DLL.NewProc("GetWindowTextW")
+	procBlockInput          = user32DLL.NewProc("BlockInput")
+)
+
+var (
+	lockMu         sync.Mutex
+	mouseLocked    bool
+	keyboardLocked bool
 )
 
 // INPUT type constants
@@ -211,4 +219,40 @@ func (s *InputSimulator) KeyUp(keyName string) error {
 	sc := mapVirtualKeyToScanCode(vk)
 	sendKeyInput(vk, sc, extendedFlags(vk, keyEventFlagKeyUp))
 	return nil
+}
+
+func (s *InputSimulator) LockMouse() {
+	lockMu.Lock()
+	defer lockMu.Unlock()
+	mouseLocked = true
+	procBlockInput.Call(1)
+	log.Printf("mouse locked (BlockInput=true)")
+}
+
+func (s *InputSimulator) UnlockMouse() {
+	lockMu.Lock()
+	defer lockMu.Unlock()
+	mouseLocked = false
+	if !keyboardLocked {
+		procBlockInput.Call(0)
+		log.Printf("mouse unlocked (BlockInput=false)")
+	}
+}
+
+func (s *InputSimulator) LockKeyboard() {
+	lockMu.Lock()
+	defer lockMu.Unlock()
+	keyboardLocked = true
+	procBlockInput.Call(1)
+	log.Printf("keyboard locked (BlockInput=true)")
+}
+
+func (s *InputSimulator) UnlockKeyboard() {
+	lockMu.Lock()
+	defer lockMu.Unlock()
+	keyboardLocked = false
+	if !mouseLocked {
+		procBlockInput.Call(0)
+		log.Printf("keyboard unlocked (BlockInput=false)")
+	}
 }
