@@ -39,11 +39,12 @@ type MainWindowController struct {
 	activeCheckbox *walk.CheckBox
 	scriptRunner   ScriptRunner
 
-	// Called after scripts are created/edited/deleted to re-register hotkeys
-	OnScriptsChanged func()
+	// Called after scripts change; receives the current in-memory script list
+	OnScriptsChanged func([]model.Script)
 
 	// State
-	allScripts []model.Script
+	allScripts  []model.Script
+	rowToScript map[int]int // row index → allScripts index (excludes header rows)
 }
 
 // Exit closes the window (used by tray Exit action).
@@ -69,15 +70,25 @@ func (wc *MainWindowController) RefreshActiveState() {
 // scriptTableModel implements walk.TableModel with check support.
 type scriptTableModel struct {
 	walk.TableModelBase
-	items   []scriptRow
-	checked map[int]bool
-	wc      *MainWindowController
+	items    []scriptRow
+	checked  map[int]bool
+	wc       *MainWindowController
+	boldFont *walk.Font
+}
+
+func (m *scriptTableModel) StyleCell(style *walk.CellStyle) {
+	if style.Row() >= 0 && style.Row() < len(m.items) && m.items[style.Row()].isHeader {
+		style.Font = m.boldFont
+	}
 }
 
 type scriptRow struct {
-	name    string
-	hotkey  string
-	runMode string
+	name       string
+	hotkey     string
+	runMode    string
+	isHeader   bool
+	group      string // set for header rows to identify the group
+	treePrefix string // "├── " or "└── " for grouped scripts
 }
 
 func (m *scriptTableModel) RowCount() int { return len(m.items) }
@@ -86,28 +97,80 @@ func (m *scriptTableModel) Value(row, col int) interface{} {
 	if row < 0 || row >= len(m.items) {
 		return ""
 	}
+	item := m.items[row]
+	if item.isHeader {
+		if col == 0 {
+			return item.name
+		}
+		return ""
+	}
 	switch col {
 	case 0:
-		return m.items[row].name
+		return item.treePrefix + item.name
 	case 1:
-		return m.items[row].hotkey
+		return item.hotkey
 	case 2:
-		return m.items[row].runMode
+		return item.runMode
 	}
 	return ""
 }
 
 func (m *scriptTableModel) Checked(index int) bool {
+	if index < 0 || index >= len(m.items) {
+		return false
+	}
+	item := m.items[index]
+	if item.isHeader {
+		// Checked if all scripts in the group are enabled
+		hasAny := false
+		for _, script := range m.wc.allScripts {
+			if script.Group == item.group {
+				hasAny = true
+				if !script.Enabled {
+					return false
+				}
+			}
+		}
+		return hasAny
+	}
 	return m.checked[index]
 }
 
 func (m *scriptTableModel) SetChecked(index int, checked bool) error {
+	if index < 0 || index >= len(m.items) {
+		return nil
+	}
+	item := m.items[index]
+	if item.isHeader {
+		// Update in-memory state and save each script async
+		for i, script := range m.wc.allScripts {
+			if script.Group == item.group {
+				script.Enabled = checked
+				m.wc.allScripts[i] = script
+				s := script
+				go m.wc.scriptStore.Save(s)
+			}
+		}
+		// Update UI immediately
+		for row, scriptIdx := range m.wc.rowToScript {
+			if m.wc.allScripts[scriptIdx].Group == item.group {
+				m.checked[row] = checked
+				m.PublishRowChanged(row)
+			}
+		}
+		m.wc.notifyScriptsChanged()
+		return nil
+	}
 	m.checked[index] = checked
-	if m.wc != nil && index >= 0 && index < len(m.wc.allScripts) {
-		script := m.wc.allScripts[index]
+	if m.wc != nil {
+		scriptIdx, ok := m.wc.rowToScript[index]
+		if !ok {
+			return nil
+		}
+		script := m.wc.allScripts[scriptIdx]
 		script.Enabled = checked
-		m.wc.scriptStore.Save(script)
-		m.wc.allScripts[index] = script
+		m.wc.allScripts[scriptIdx] = script
+		go m.wc.scriptStore.Save(script)
 		m.wc.notifyScriptsChanged()
 	}
 	return nil
@@ -190,11 +253,21 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 	wc.mainWindow = mainWindowInstance
 	wc.tableModel.wc = wc
 	wc.tableView.SetSelectionHiddenWithoutFocus(false)
+
+	if f := wc.tableView.Font(); f != nil {
+		if bf, err := walk.NewFont(f.Family(), f.PointSize(), walk.FontBold); err == nil {
+			wc.tableModel.boldFont = bf
+		}
+	}
+
 	wc.refreshScriptList()
 
-	// Auto-select first item
-	if len(wc.allScripts) > 0 {
-		wc.tableView.SetCurrentIndex(0)
+	// Auto-select first script row (skip header rows)
+	for i, row := range wc.tableModel.items {
+		if !row.isHeader {
+			wc.tableView.SetCurrentIndex(i)
+			break
+		}
 	}
 
 	// Restore saved position and size
@@ -266,8 +339,13 @@ func (wc *MainWindowController) resizeTableColumns() {
 
 func (wc *MainWindowController) notifyScriptsChanged() {
 	if wc.OnScriptsChanged != nil {
-		wc.OnScriptsChanged()
+		wc.OnScriptsChanged(wc.allScripts)
 	}
+}
+
+// Scripts returns the current in-memory script list.
+func (wc *MainWindowController) Scripts() []model.Script {
+	return wc.allScripts
 }
 
 // refreshScriptList reloads scripts from disk and updates the table.
@@ -279,24 +357,78 @@ func (wc *MainWindowController) refreshScriptList() {
 	wc.allScripts = allScripts
 
 	sort.Slice(wc.allScripts, func(i, j int) bool {
+		gi := strings.ToLower(wc.allScripts[i].Group)
+		gj := strings.ToLower(wc.allScripts[j].Group)
+		if gi == "" && gj != "" {
+			return true
+		}
+		if gi != "" && gj == "" {
+			return false
+		}
+		if gi != gj {
+			return gi < gj
+		}
 		return strings.ToLower(wc.allScripts[i].Name) < strings.ToLower(wc.allScripts[j].Name)
 	})
 
-	rows := make([]scriptRow, len(wc.allScripts))
+	// Build rows with group header rows inserted before each group.
+	// Ungrouped scripts have no header row.
+	var rows []scriptRow
+	rowToScript := map[int]int{}
 	checked := map[int]bool{}
-	for i, script := range wc.allScripts {
-		rows[i] = scriptRow{
-			name:    script.Name,
-			hotkey:  formatScriptHotkeys(script),
-			runMode: script.RunMode,
+	prevGroup := ""
+
+	for scriptIdx, script := range wc.allScripts {
+		g := script.Group
+		if g != "" && g != prevGroup {
+			rows = append(rows, scriptRow{name: g, group: g, isHeader: true})
 		}
+		prevGroup = g
+
+		// Determine tree prefix for grouped scripts
+		treePrefix := ""
+		if g != "" {
+			isLast := true
+			for j := scriptIdx + 1; j < len(wc.allScripts); j++ {
+				if wc.allScripts[j].Group == g {
+					isLast = false
+					break
+				}
+			}
+			if isLast {
+				treePrefix = "└─ "
+			} else {
+				treePrefix = "├─ "
+			}
+		}
+
+		rowIdx := len(rows)
+		rowToScript[rowIdx] = scriptIdx
+		rows = append(rows, scriptRow{
+			name:       script.Name,
+			hotkey:     formatScriptHotkeys(script),
+			runMode:    script.RunMode,
+			treePrefix: treePrefix,
+		})
 		if script.Enabled {
-			checked[i] = true
+			checked[rowIdx] = true
 		}
 	}
+
+	wc.rowToScript = rowToScript
 	wc.tableModel.items = rows
 	wc.tableModel.checked = checked
 	wc.tableModel.PublishRowsReset()
+}
+
+// findRowByScriptID returns the row index for a given script ID, or -1 if not found.
+func (wc *MainWindowController) findRowByScriptID(id string) int {
+	for row, scriptIdx := range wc.rowToScript {
+		if wc.allScripts[scriptIdx].ID == id {
+			return row
+		}
+	}
+	return -1
 }
 
 // formatScriptHotkeys returns a combined hotkey display string for the table.
@@ -339,6 +471,7 @@ func (wc *MainWindowController) onNewScript() {
 		HotkeyMode: model.HotkeyModeToggle,
 		Actions:    []model.Action{},
 	}
+	newID := newScript.ID
 
 	if wc.scriptRunner != nil {
 		wc.scriptRunner.SetEditDialogOpen(true)
@@ -352,10 +485,9 @@ func (wc *MainWindowController) onNewScript() {
 	if saved {
 		wc.refreshScriptList()
 		wc.notifyScriptsChanged()
-		idx := len(wc.allScripts) - 1
-		if idx >= 0 {
+		if row := wc.findRowByScriptID(newID); row >= 0 {
 			wc.mainWindow.Synchronize(func() {
-				wc.tableView.SetCurrentIndex(idx)
+				wc.tableView.SetCurrentIndex(row)
 			})
 		}
 	}
@@ -363,10 +495,12 @@ func (wc *MainWindowController) onNewScript() {
 
 func (wc *MainWindowController) onEditScript() {
 	selectedIndex := wc.tableView.CurrentIndex()
-	if selectedIndex < 0 || selectedIndex >= len(wc.allScripts) {
-		return
+	scriptIdx, ok := wc.rowToScript[selectedIndex]
+	if !ok {
+		return // header row or nothing selected
 	}
-	scriptCopy := wc.allScripts[selectedIndex]
+	scriptCopy := wc.allScripts[scriptIdx]
+	scriptID := scriptCopy.ID
 
 	if wc.scriptRunner != nil {
 		wc.scriptRunner.SetEditDialogOpen(true)
@@ -380,13 +514,9 @@ func (wc *MainWindowController) onEditScript() {
 	if saved {
 		wc.refreshScriptList()
 		wc.notifyScriptsChanged()
-		idx := selectedIndex
-		if idx >= len(wc.allScripts) {
-			idx = len(wc.allScripts) - 1
-		}
-		if idx >= 0 {
+		if row := wc.findRowByScriptID(scriptID); row >= 0 {
 			wc.mainWindow.Synchronize(func() {
-				wc.tableView.SetCurrentIndex(idx)
+				wc.tableView.SetCurrentIndex(row)
 			})
 		}
 	}
@@ -394,11 +524,12 @@ func (wc *MainWindowController) onEditScript() {
 
 func (wc *MainWindowController) onDeleteScript() {
 	selectedIndex := wc.tableView.CurrentIndex()
-	if selectedIndex < 0 || selectedIndex >= len(wc.allScripts) {
-		return
+	scriptIdx, ok := wc.rowToScript[selectedIndex]
+	if !ok {
+		return // header row or nothing selected
 	}
 
-	scriptToDelete := wc.allScripts[selectedIndex]
+	scriptToDelete := wc.allScripts[scriptIdx]
 	confirmResult := walk.MsgBox(
 		wc.mainWindow,
 		"Delete Script",
@@ -413,13 +544,20 @@ func (wc *MainWindowController) onDeleteScript() {
 	wc.refreshScriptList()
 	wc.notifyScriptsChanged()
 
-	// Select nearest item
-	count := len(wc.allScripts)
-	if count > 0 {
-		if selectedIndex >= count {
-			selectedIndex = count - 1
+	// Select nearest script row at or after the deleted position
+	totalRows := len(wc.tableModel.items)
+	for i := selectedIndex; i < totalRows; i++ {
+		if _, ok := wc.rowToScript[i]; ok {
+			wc.tableView.SetCurrentIndex(i)
+			wc.tableView.SetFocus()
+			return
 		}
-		wc.tableView.SetCurrentIndex(selectedIndex)
+	}
+	for i := selectedIndex - 1; i >= 0; i-- {
+		if _, ok := wc.rowToScript[i]; ok {
+			wc.tableView.SetCurrentIndex(i)
+			break
+		}
 	}
 	wc.tableView.SetFocus()
 }

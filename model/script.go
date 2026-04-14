@@ -13,6 +13,7 @@ type Script struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
 	Enabled      bool     `json:"enabled"`
+	Group        string   `json:"group,omitempty"`
 	RunMode      string   `json:"run_mode"`
 	HotkeyMode   string   `json:"hotkey_mode"`
 	ToggleHotkey *Hotkey  `json:"toggle_hotkey,omitempty"`

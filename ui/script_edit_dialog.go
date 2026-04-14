@@ -30,6 +30,7 @@ type scriptEditController struct {
 
 	// Fields
 	nameEdit              *walk.LineEdit
+	groupEdit             *walk.LineEdit
 	enabledCheckbox       *walk.CheckBox
 	runModeOnceRadio      *walk.RadioButton
 	runModeInfiniteRadio  *walk.RadioButton
@@ -94,6 +95,8 @@ func ShowScriptEditDialog(owner walk.Form, script *model.Script, store *storage.
 								Children: []Widget{
 									Label{Text: "Name:"},
 									LineEdit{AssignTo: &ctrl.nameEdit},
+									Label{Text: "Group:"},
+									LineEdit{AssignTo: &ctrl.groupEdit},
 									Label{Text: "Enabled:"},
 									CheckBox{AssignTo: &ctrl.enabledCheckbox},
 									Label{Text: "Run Mode:"},
@@ -365,6 +368,7 @@ func (ctrl *scriptEditController) loadFields() {
 	ctrl.keyEdit.SetBackground(white)
 
 	ctrl.nameEdit.SetText(ctrl.script.Name)
+	ctrl.groupEdit.SetText(ctrl.script.Group)
 	ctrl.enabledCheckbox.SetChecked(ctrl.script.Enabled)
 
 	if ctrl.script.RunMode == model.RunModeInfinite {
@@ -685,6 +689,7 @@ func (ctrl *scriptEditController) refreshActionList() {
 
 func (ctrl *scriptEditController) readFieldsIntoScript() {
 	ctrl.script.Name = ctrl.nameEdit.Text()
+	ctrl.script.Group = strings.TrimSpace(ctrl.groupEdit.Text())
 	ctrl.script.Enabled = ctrl.enabledCheckbox.Checked()
 
 	if ctrl.runModeInfiniteRadio.Checked() {

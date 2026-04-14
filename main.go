@@ -14,6 +14,7 @@ import (
 	"github.com/yanmad27/supcua-v2/hotkey"
 	imagedetector "github.com/yanmad27/supcua-v2/image"
 	"github.com/yanmad27/supcua-v2/license"
+	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
 	"github.com/yanmad27/supcua-v2/ui"
 	"github.com/yanmad27/supcua-v2/updater"
@@ -151,7 +152,7 @@ func main() {
 		if isActive != prevActive {
 			prevActive = isActive
 			if isActive {
-				scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+				scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, mainWindowController.Scripts())
 			} else {
 				unregisterScriptHotkeys()
 			}
@@ -186,14 +187,14 @@ func main() {
 	}
 
 	// Register script hotkeys (only when global is active)
-	scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+	scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, mainWindowController.Scripts())
 
-	// Re-register script hotkeys whenever scripts change
-	mainWindowController.OnScriptsChanged = func() {
+	// Re-register script hotkeys whenever scripts change (uses in-memory list, no disk read)
+	mainWindowController.OnScriptsChanged = func(scripts []model.Script) {
 		unregisterScriptHotkeys()
 		_ = globalHotkeyID // keep global hotkey alive
 		if appController.IsGlobalActive() {
-			scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scriptStore)
+			scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scripts)
 		}
 	}
 
@@ -217,17 +218,11 @@ func main() {
 func registerScriptHotkeys(
 	appController *app.Controller,
 	hotkeyManager *hotkey.Manager,
-	scriptStore *storage.ScriptStore,
+	scripts []model.Script,
 ) []int {
-	allScripts, err := scriptStore.List()
-	if err != nil {
-		log.Printf("warning: failed to list scripts for hotkey registration: %v", err)
-		return nil
-	}
-
 	var registeredIDs []int
 
-	for _, script := range allScripts {
+	for _, script := range scripts {
 		if !script.Enabled {
 			continue
 		}
