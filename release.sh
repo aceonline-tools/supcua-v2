@@ -34,6 +34,7 @@ GOROOT=$(go1.25.0 env GOROOT) PATH="$(go1.25.0 env GOROOT)/bin:$PATH" \
 
 echo "==> Tagging $TAG..."
 git tag "$TAG"
+git push origin main
 git push origin "$TAG"
 
 echo "==> Creating GitHub release and uploading $EXE..."
