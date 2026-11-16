@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +26,7 @@ const (
 )
 
 type stepResult struct {
+	AtMs   int64  `json:"at_ms"`
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
@@ -53,7 +55,8 @@ func newResult(label, mode string) *result {
 
 func (r *result) step(name string, ok bool, detail string) bool {
 	r.mu.Lock()
-	r.Steps = append(r.Steps, stepResult{name, ok, detail})
+	r.Steps = append(r.Steps, stepResult{time.Since(r.started).Milliseconds(), name, ok, detail})
+	log.Printf("selftest +%dms %s ok=%v %s", time.Since(r.started).Milliseconds(), name, ok, detail)
 	r.mu.Unlock()
 	return ok
 }
@@ -122,28 +125,29 @@ func (a *app) runSelftest(res *result) {
 		return
 	}
 
-	runCycles := func(n int) (rpcReport bool, rep struct {
+	type cyc struct {
 		ping   string
 		events int
 		cycles int
-	}) {
+		err    string
+	}
+	runCycles := func(n int) (bool, cyc) {
+		var rep cyc
 		evalJS(fmt.Sprintf("__selftest.cycles(%d)", n))
 		select {
 		case r := <-a.reportCh:
-			return true, struct {
-				ping   string
-				events int
-				cycles int
-			}{r.Ping, r.Events, r.Cycles}
-		case <-time.After(60 * time.Second):
+			return true, cyc{r.Ping, r.Events, r.Cycles, r.Error}
+		case <-time.After(30 * time.Second):
 			return false, rep
 		}
 	}
 
-	if ok, _ := runCycles(warmupCycles); !ok {
-		fail("warm-up dialog cycles", "timeout")
+	ok, wrep := runCycles(warmupCycles)
+	if !ok || wrep.err != "" {
+		fail("warm-up dialog cycles", "timeout/err: "+wrep.err)
 		return
 	}
+	res.step("warm-up dialog cycles", true, fmt.Sprintf("%d cycles", wrep.cycles))
 	runtime.GC()
 	time.Sleep(500 * time.Millisecond)
 	before := sampleResources()
@@ -151,8 +155,8 @@ func (a *app) runSelftest(res *result) {
 	paintsBefore := a.ov.paints.Load()
 
 	ok, rep := runCycles(dialogCycles)
-	if !ok {
-		fail("dialog cycles", "timeout")
+	if !ok || rep.err != "" {
+		fail("dialog cycles", "timeout/err: "+rep.err)
 		return
 	}
 	runtime.GC()

@@ -62,11 +62,13 @@ $("dlg").onclick = async () => { const close = await openDialog(0); $("dlgClose"
 
 window.__selftest = {
   async ping(){ const r = await call("app.ping", {text: "selftest"}); lastPing = r.upper; return r; },
-  async cycles(n){
+  async cycles(n){ try { await this.run(n); } catch(e){ await call("selftest.report", {ping: lastPing, events: evtN, cycles: 0, error: String(e && e.message || e)}); } },
+  async run(n){
     for (let i = 1; i <= n; i++){
       const close = await openDialog(i);
-      await new Promise(r => requestAnimationFrame(() => r()));
+      await new Promise(r => setTimeout(r, 0)); // rAF is paused for occluded pages (CI)
       await close();
+      if (i % 10 === 0) call("selftest.progress", {cycle: i});
     }
     await call("selftest.report", {ping: lastPing, events: evtN, cycles: n});
   }

@@ -298,6 +298,10 @@ func (a *app) initRPC() {
 	rpc.Register(d, "dialog.close", func(p rpc.DialogParams) (struct{}, error) {
 		return struct{}{}, a.callUI(func() { a.ov.Refresh("IDLE") })
 	})
+	rpc.Register(d, "selftest.progress", func(p rpc.DialogParams) (struct{}, error) {
+		log.Printf("selftest progress: cycle %d", p.Cycle)
+		return struct{}{}, nil
+	})
 	rpc.Register(d, "selftest.report", func(r rpc.Report) (struct{}, error) {
 		select {
 		case a.reportCh <- r:

@@ -30,6 +30,7 @@ type Report struct {
 	Ping   string `json:"ping"`
 	Events int    `json:"events"`
 	Cycles int    `json:"cycles"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Status is the payload of the "status" event.
