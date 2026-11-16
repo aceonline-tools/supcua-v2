@@ -429,3 +429,70 @@ describe('native close with a close already running', () => {
     expect(store.scripts.find((x) => x.id === 's3')?.hotkey_label).toBe('F5'); // duplicate kept
   });
 });
+
+describe('queued capture requests keep their own intent', () => {
+  it('delayed A + queued B (timeout variant): the timeout replayed for A does not clear B', async () => {
+    await store.openEditor('s3');
+    let release!: () => void;
+    mock.holds.set('capture.key.start', new Promise<void>((r) => (release = r)));
+    const a = store.editor.startKeyCapture();
+    const b = store.editor.startCapture('toggle'); // queued behind A
+    await vi.waitFor(() => expect(count('capture.key.start')).toBe(1));
+    mock.push('capture.ended', { capture_id: cid(), reason: 'timeout' }); // A's timeout, buffered until A's reply
+    release();
+    await Promise.all([a, b]);
+    mock.holds.clear();
+    expect(store.editor.capturing).toBe('toggle');
+    mock.push('capture.hotkey', { capture_id: cid(), field: 'toggle', hotkey: { modifiers: [], key: 'f9' }, display: 'F9' });
+    expect(store.editor.script?.toggle_hotkey?.key).toBe('f9');
+  });
+
+  it('failing A + queued B (start-failure variant): B still gets its intent and its events', async () => {
+    await store.openEditor('s3');
+    mock.failStart = true;
+    const a = store.editor.startKeyCapture();
+    const b = store.editor.startCapture('start');
+    await Promise.all([a, b]);
+    mock.failStart = false;
+    expect(store.editor.capturing).toBe('start');
+    mock.push('capture.hotkey', { capture_id: cid(), field: 'start', hotkey: { modifiers: [], key: 'f8' }, display: 'F8' });
+    expect(store.editor.script?.start_hotkey?.key).toBe('f8');
+  });
+
+  it('a deferred stop scheduled for A does not stop B', async () => {
+    await store.openEditor('s3');
+    let release!: () => void;
+    mock.holds.set('capture.key.start', new Promise<void>((r) => (release = r)));
+    const a = store.editor.startKeyCapture();
+    const b = store.editor.startCapture('toggle');
+    await vi.waitFor(() => expect(count('capture.key.start')).toBe(1));
+    mock.push('capture.key', { capture_id: cid(), key: 'z' }); // A accepted; its stop is queued behind B
+    release();
+    await Promise.all([a, b]);
+    mock.holds.clear();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store.editor.builder.key).toBe('z');
+    expect(count('capture.stop')).toBe(0);
+    expect(store.editor.capturing).toBe('toggle');
+    mock.push('capture.hotkey', { capture_id: cid(), field: 'toggle', hotkey: { modifiers: [], key: 'f7' }, display: 'F7' });
+    expect(store.editor.script?.toggle_hotkey?.key).toBe('f7');
+  });
+
+  it('cancel requested while a start is queued stops that start with its own id, not an earlier one', async () => {
+    await store.openEditor('s3');
+    let release!: () => void;
+    mock.holds.set('capture.key.start', new Promise<void>((r) => (release = r)));
+    const a = store.editor.startKeyCapture();
+    const b = store.editor.startCapture('toggle');
+    await vi.waitFor(() => expect(count('capture.key.start')).toBe(1));
+    const c = store.editor.cancelCapture(); // targets B
+    release();
+    await Promise.all([a, b, c]);
+    mock.holds.clear();
+    const stops = mock.calls.filter((m) => m.method === 'capture.stop');
+    expect(stops).toHaveLength(1);
+    expect((stops[0].params as { capture_id: number }).capture_id).toBe(3); // mouse=1, A=2, B=3
+    expect(store.editor.capturing).toBeNull();
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+  });
+});

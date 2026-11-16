@@ -43,6 +43,13 @@ export class EditorStore {
   private buffered: { name: CaptureEventName; e: any }[] = [];
   private chain: Promise<unknown> = Promise.resolve();
   private needResume = false;
+  // Capture intent (`capturing`) belongs to one request (`capturingOp`) and is set only when that request's
+  // queued transition runs, so an earlier completion can never clear a later request's intent.
+  private opSeq = 0;
+  private curOp: number | null = null;
+  private capturingOp: number | null = null;
+  private lastReqOp = 0;
+  private pendingStarts = 0;
 
   constructor(private api: Client, private app: AppStore) {
     api.on('capture.hotkey', (e) => this.onCaptureEvent('hotkey', e));
@@ -164,11 +171,12 @@ export class EditorStore {
     return run.catch(() => {});
   }
 
-  private async doStart(kind: 'mouse' | 'hotkey' | 'key', call: () => Promise<{ capture_id: number }>): Promise<boolean> {
+  private async doStart(kind: 'mouse' | 'hotkey' | 'key', call: () => Promise<{ capture_id: number }>, op = ++this.opSeq): Promise<boolean> {
     const sid = this.sessionId;
     this.lastId = Math.max(this.lastId, this.curId ?? 0);
     this.curId = null;
     this.curKind = null;
+    this.curOp = null;
     this.starting = true;
     this.buffered = [];
     try {
@@ -176,11 +184,12 @@ export class EditorStore {
       if (this.sessionId !== sid) { this.starting = false; this.buffered = []; return false; }
       this.curId = r.capture_id;
       this.curKind = kind;
+      this.curOp = op;
       this.lastId = Math.max(this.lastId, r.capture_id);
     } catch {
       this.starting = false;
       this.buffered = [];
-      if (kind !== 'mouse') this.capturing = null;
+      if (this.capturingOp === op) { this.capturing = null; this.capturingOp = null; }
       return false;
     }
     this.starting = false;
@@ -190,12 +199,14 @@ export class EditorStore {
     return true;
   }
 
-  private async doStop(): Promise<void> {
-    const sid = this.sessionId;
+  // Stops only the capture the caller scheduled the stop for (by id, or by the request that started it).
+  private async doStop(sid: string | null, match: { id?: number; op?: number }): Promise<void> {
     const id = this.curId;
-    if (!sid || id === null) return;
+    if (!sid || sid !== this.sessionId || id === null) return;
+    if (match.id !== undefined && match.id !== id) return;
+    if (match.op !== undefined && match.op !== this.curOp) return;
     await this.api.call('capture.stop', { sessionId: sid, capture_id: id }).catch(() => {});
-    if (this.curId === id) { this.curId = null; this.curKind = null; }
+    if (this.curId === id) { this.curId = null; this.curKind = null; this.curOp = null; }
   }
 
   private async doResume(): Promise<void> {
@@ -205,35 +216,52 @@ export class EditorStore {
     await this.doStart('mouse', () => this.api.call('capture.mouse.start', { sessionId }));
   }
 
-  private stopAndResume(): Promise<void> {
+  private stopAndResume(match: { id?: number; op?: number }): Promise<void> {
+    const sid = this.sessionId;
     return this.enqueue(async () => {
-      await this.doStop();
+      await this.doStop(sid, match);
       await this.doResume();
     });
   }
 
-  async startCapture(field: HotkeyField): Promise<void> {
-    const sessionId = this.sessionId;
-    if (!sessionId) return;
-    this.capturing = field;
-    await this.enqueue(async () => {
-      if (!(await this.doStart('hotkey', () => this.api.call('capture.hotkey.start', { sessionId, field })))) await this.doResume();
+  private requestStart(kind: 'hotkey' | 'key', intent: Capturing, call: (sessionId: string) => Promise<{ capture_id: number }>): Promise<void> {
+    const sid = this.sessionId;
+    if (!sid) return Promise.resolve();
+    const op = ++this.opSeq;
+    this.lastReqOp = op;
+    this.pendingStarts++;
+    return this.enqueue(async () => {
+      this.pendingStarts--;
+      if (this.sessionId !== sid) return;
+      this.capturing = intent;
+      this.capturingOp = op;
+      if (!(await this.doStart(kind, () => call(sid), op))) await this.doResume();
     });
   }
 
-  async startKeyCapture(): Promise<void> {
-    const sessionId = this.sessionId;
-    if (!sessionId) return;
-    this.capturing = 'key';
-    await this.enqueue(async () => {
-      if (!(await this.doStart('key', () => this.api.call('capture.key.start', { sessionId })))) await this.doResume();
-    });
+  startCapture(field: HotkeyField): Promise<void> {
+    return this.requestStart('hotkey', field, (sessionId) => this.api.call('capture.hotkey.start', { sessionId, field }));
   }
 
-  async cancelCapture(): Promise<void> {
-    if (!this.capturing) return;
-    this.capturing = null;
-    await this.stopAndResume();
+  startKeyCapture(): Promise<void> {
+    return this.requestStart('key', 'key', (sessionId) => this.api.call('capture.key.start', { sessionId }));
+  }
+
+  capturePending(): boolean {
+    return this.pendingStarts > 0;
+  }
+
+  // Cancels the most recent capture request (queued or active); later requests are unaffected.
+  cancelCapture(): Promise<void> {
+    if (!this.capturing && this.pendingStarts === 0) return Promise.resolve();
+    const sid = this.sessionId;
+    const target = this.pendingStarts > 0 ? this.lastReqOp : this.capturingOp ?? this.curOp;
+    if (target === null) return Promise.resolve();
+    return this.enqueue(async () => {
+      if (this.capturingOp === target) { this.capturing = null; this.capturingOp = null; }
+      await this.doStop(sid, { op: target });
+      await this.doResume();
+    });
   }
 
   onActivated(): void {
@@ -243,7 +271,7 @@ export class EditorStore {
   // After a close attempt leaves the editor open the host-side capture may have ended unnoticed.
   private reconcile(): void {
     if (!this.sessionId) return;
-    if (this.capturing && this.curId === null && !this.starting) this.capturing = null;
+    if (this.capturing && this.curId === null && !this.starting && this.pendingStarts === 0) { this.capturing = null; this.capturingOp = null; }
     void this.enqueue(() => this.doResume());
   }
 
@@ -266,9 +294,10 @@ export class EditorStore {
   }
 
   private onCaptureEnded(reason: CaptureEndReason): void {
+    if (this.capturingOp !== null && this.capturingOp === this.curOp) { this.capturing = null; this.capturingOp = null; }
     this.curId = null;
     this.curKind = null;
-    this.capturing = null;
+    this.curOp = null;
     if (!this.sessionId || reason === 'editorClosed') return;
     if (reason === 'blur') { this.needResume = true; return; }
     void this.enqueue(() => this.doResume());
@@ -289,20 +318,22 @@ export class EditorStore {
   }
 
   private onCaptureHotkey(field: HotkeyField, hotkey: { modifiers: string[]; key: string } | null): void {
-    if (!this.script || this.curKind !== 'hotkey' || this.capturing !== field) return;
+    if (!this.script || this.curKind !== 'hotkey' || this.capturing !== field || this.capturingOp !== this.curOp) return;
     if (!hotkey || hotkey.key.toLowerCase() === 'esc' || hotkey.key.toLowerCase() === 'escape') { void this.cancelCapture(); return; }
     this.script[`${field}_hotkey` as const] = hotkey;
     this.capturing = null;
+    this.capturingOp = null;
     this.markDirty();
-    void this.stopAndResume();
+    void this.stopAndResume({ id: this.curId ?? undefined });
   }
 
   private onCaptureKey(key: string): void {
-    if (this.curKind !== 'key' || this.capturing !== 'key') return;
+    if (this.curKind !== 'key' || this.capturing !== 'key' || this.capturingOp !== this.curOp) return;
     if (this.actionDialog) this.actionDialog.action.key = key;
     else this.builder.key = key;
     this.capturing = null;
-    void this.stopAndResume();
+    this.capturingOp = null;
+    void this.stopAndResume({ id: this.curId ?? undefined });
   }
 
   private onCaptureMouse(x: number, y: number): void {
@@ -415,6 +446,9 @@ export class EditorStore {
     this.capturing = null;
     this.curId = null;
     this.curKind = null;
+    this.curOp = null;
+    this.capturingOp = null;
+    this.pendingStarts = 0;
     this.starting = false;
     this.buffered = [];
     this.needResume = false;

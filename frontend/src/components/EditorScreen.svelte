@@ -21,7 +21,7 @@
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return;
-    if (ed.capturing) { e.preventDefault(); void ed.cancelCapture(); }
+    if (ed.capturing || ed.capturePending()) { e.preventDefault(); void ed.cancelCapture(); }
     else if (ed.conflicts) void ed.resolveConflict(false);
     else if (ed.actionDialog) ed.closeActionDialog();
     else if (ed.raw) ed.closeRaw();
