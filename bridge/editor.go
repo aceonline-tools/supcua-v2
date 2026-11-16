@@ -116,6 +116,7 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 		}
 	}
 	b.mu.Unlock()
+	b.at("validated")
 	if taken || b.d.Store.NameOrFileTakenExcept(script.Name, script.ID) {
 		return fail(newErr(CodeNameTaken))
 	}
@@ -144,7 +145,12 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 		}
 	}
 
+	b.at("commit")
 	b.mu.Lock()
+	if b.session != sess { // ResetSession (or close) invalidated this operation after validation
+		b.mu.Unlock()
+		return saveResult{}, newErr(CodeEditorClosed)
+	}
 	for _, s := range changed {
 		if i := b.indexLocked(s.ID); i >= 0 {
 			b.scripts[i] = s
@@ -159,7 +165,9 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 	}
 	b.mu.Unlock()
 
-	b.queue(changed)
+	if !b.queue(changed) {
+		return fail(newErr(CodeSaveFailed))
+	}
 	flushed := b.d.Store.FlushSaves(saveWait)
 	b.mu.Lock()
 	var failed bool
@@ -315,6 +323,9 @@ func (b *Bridge) editorFromJSON(p struct {
 }
 
 func (b *Bridge) captureStart(sessionID string, mode CaptureMode, field string) (any, error) {
+	// sessMu makes "session still open" and the capture start one step against ResetSession.
+	b.sessMu.Lock()
+	defer b.sessMu.Unlock()
 	if _, err := b.requireSession(sessionID); err != nil {
 		return nil, err
 	}

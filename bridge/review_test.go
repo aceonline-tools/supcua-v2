@@ -359,3 +359,189 @@ func TestEditorCloseAutosaveDefaultsToTrue(t *testing.T) {
 		t.Errorf("explicit autosave:false must not save: %v", res)
 	}
 }
+
+// Round 2, finding 1: no save may be queued after the final flush, even when a handler stalls
+// between its entry check and QueueSave.
+func TestStalledHandlerCannotQueueAfterFinalFlush(t *testing.T) {
+	r := newRig(t, script("s1", "A", "", false))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r.b.testHook = func(stage string) {
+		if stage == "queue" {
+			close(entered)
+			<-release
+		}
+	}
+	res := make(chan error, 1)
+	go func() { _, err := r.m["scripts.setEnabled"]([]byte(`{"id":"s1","enabled":true}`)); res <- err }()
+	<-entered
+	err := r.b.Shutdown(100 * time.Millisecond)
+	if err == nil {
+		t.Error("an unquiesced handler must be reported as unresolved")
+	}
+	callsAtFlush, flushed := len(r.store.calls()), r.store.flushed
+	close(release)
+	wantCode(t, <-res, CodeBusy)
+	if len(r.store.calls()) != callsAtFlush || flushed != 1 {
+		t.Fatalf("a save was queued after the final flush: before=%d after=%d", callsAtFlush, len(r.store.calls()))
+	}
+}
+
+func TestBeginShutdownWaitsForInFlightHandlerBeforeThen(t *testing.T) {
+	r := newRig(t, script("s1", "A", "", false))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r.b.testHook = func(stage string) {
+		if stage == "queue" {
+			close(entered)
+			<-release
+		}
+	}
+	res := make(chan error, 1)
+	go func() { _, err := r.m["scripts.setEnabled"]([]byte(`{"id":"s1","enabled":true}`)); res <- err }()
+	<-entered
+	var order []string
+	var mu sync.Mutex
+	thenDone := make(chan struct{})
+	r.b.BeginShutdown(5*time.Millisecond, func() { mu.Lock(); order = append(order, "then"); mu.Unlock(); close(thenDone) })
+	time.Sleep(60 * time.Millisecond)
+	select {
+	case <-thenDone:
+		t.Fatal("then must wait for the in-flight mutation")
+	default:
+	}
+	mu.Lock()
+	order = append(order, "release")
+	mu.Unlock()
+	close(release)
+	if err := <-res; err != nil {
+		t.Fatalf("in-flight mutation must complete normally: %v", err)
+	}
+	select {
+	case <-thenDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("then never ran")
+	}
+	if len(r.store.calls()) != 1 || order[0] != "release" {
+		t.Errorf("order=%v calls=%d", order, len(r.store.calls()))
+	}
+}
+
+// Round 2, finding 2: session generation. Reset between validation and commit.
+func TestResetBetweenValidateAndCommitMakesSaveANoOp(t *testing.T) {
+	r := newRig(t, script("s1", "Alpha", "", true))
+	sid, edit := openEditor(t, r, "s1")
+	edit["name"] = "Changed"
+	r.b.testHook = func(stage string) {
+		if stage == "commit" {
+			r.b.ResetSession("editorClosed")
+		}
+	}
+	_, err := r.call(t, "editor.save", mustJSON(map[string]any{"sessionId": sid, "script": edit}))
+	wantCode(t, err, CodeEditorClosed)
+	if len(r.store.calls()) != 0 || r.mustCall(t, "scripts.get", `{"id":"s1"}`)["name"] != "Alpha" {
+		t.Error("a stale save must neither commit nor queue")
+	}
+}
+
+func TestResetAfterCommitKeepsCommittedSaveAndDropsDraft(t *testing.T) {
+	r := newRig(t, script("s1", "Alpha", "", true))
+	sid, edit := openEditor(t, r, "s1")
+	edit["name"] = "Changed"
+	r.b.testHook = func(stage string) {
+		if stage == "queue" {
+			r.b.ResetSession("editorClosed")
+		}
+	}
+	if _, err := r.call(t, "editor.save", mustJSON(map[string]any{"sessionId": sid, "script": edit})); err != nil {
+		t.Fatalf("a committed save must finish: %v", err)
+	}
+	if len(r.store.calls()) != 1 || r.b.session != nil {
+		t.Errorf("calls=%d session=%v", len(r.store.calls()), r.b.session)
+	}
+}
+
+func TestResetDuringFailedSaveDoesNotRetainDraft(t *testing.T) {
+	r := newRig(t, script("s1", "Alpha", "", true), script("s2", "Beta", "", true))
+	sid, edit := openEditor(t, r, "s1")
+	sess := r.b.session
+	edit["name"] = "Beta" // NAME_TAKEN
+	r.b.testHook = func(stage string) {
+		if stage == "validated" {
+			r.b.ResetSession("editorClosed")
+		}
+	}
+	_, err := r.call(t, "editor.save", mustJSON(map[string]any{"sessionId": sid, "script": edit}))
+	wantCode(t, err, CodeNameTaken)
+	if sess.draft != nil {
+		t.Error("a reset session must not retain a draft")
+	}
+}
+
+type blockingBackend struct {
+	*fakeBackend
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingBackend) Start(m CaptureMode, p model.Hotkey, s CaptureSink) error {
+	close(b.entered)
+	<-b.release
+	return b.fakeBackend.Start(m, p, s)
+}
+
+func TestResetRacesCaptureStartBothInterleavings(t *testing.T) {
+	// reset first: a start with the old session id is refused and no hook is installed
+	r := newRig(t, script("s1", "A", "", true))
+	sid, _ := openEditor(t, r, "s1")
+	r.b.ResetSession("editorClosed")
+	_, err := r.call(t, "capture.key.start", `{"sessionId":"`+sid+`"}`)
+	wantCode(t, err, CodeEditorClosed)
+	if len(r.cap.starts) != 0 {
+		t.Fatal("capture must not start for a reset session")
+	}
+
+	// start first (backend still starting): reset waits for it and then tears it down
+	r = newRig(t, script("s1", "A", "", true))
+	sid, _ = openEditor(t, r, "s1")
+	bb := &blockingBackend{fakeBackend: r.cap, entered: make(chan struct{}), release: make(chan struct{})}
+	r.b.capture = newCaptureManager(bb, r.b.emit, time.Hour)
+	startErr := make(chan error, 1)
+	go func() { _, err := r.call(t, "capture.key.start", `{"sessionId":"`+sid+`"}`); startErr <- err }()
+	<-bb.entered
+	resetDone := make(chan struct{})
+	go func() { r.b.ResetSession("editorClosed"); close(resetDone) }()
+	select {
+	case <-resetDone:
+		t.Fatal("reset must wait for the in-progress capture start")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(bb.release)
+	if err := <-startErr; err != nil {
+		t.Fatal(err)
+	}
+	<-resetDone
+	if mode, _ := r.b.capture.Active(); mode != CaptureNone {
+		t.Error("capture must be ended after reset")
+	}
+	r.cap.mu.Lock()
+	defer r.cap.mu.Unlock()
+	if len(r.cap.starts) != 1 || r.cap.stops != 1 {
+		t.Errorf("starts=%d stops=%d", len(r.cap.starts), r.cap.stops)
+	}
+}
+
+// Round 2, finding 3.
+func TestNoParamMethodsAcceptAnyWhitespaceEmptyObject(t *testing.T) {
+	r := newRig(t)
+	for _, p := range []string{"", "{}", "{ }", "{\n}", " \t{\r\n} ", "null"} {
+		if _, err := r.call(t, "state.get", p); err != nil {
+			t.Errorf("state.get(%q): %v", p, err)
+		}
+	}
+	for _, p := range []string{`{"a":1}`, `{ "a" : null }`, `[]`, `{} {}`, `1`} {
+		if _, err := r.call(t, "state.get", p); err == nil {
+			t.Errorf("state.get(%q) should be rejected", p)
+		}
+	}
+}

@@ -138,6 +138,10 @@ type Bridge struct {
 	stopping atomic.Bool // shutdown began: mutating RPCs except editor.save/close are rejected
 	// sessMu orders editor-session changes together with the edit-dialog-open flag.
 	sessMu       sync.Mutex
+	qMu          sync.Mutex // orders QueueSave against Shutdown closing the queue
+	qClosed      bool
+	quiesceFail  atomic.Bool
+	testHook     func(stage string) // tests only: called at named interleaving points
 	beginOnce    sync.Once
 	closingReady chan struct{}
 	readyOnce    sync.Once
@@ -183,6 +187,12 @@ func New(d Deps, e Emitter) *Bridge {
 		d.Controller.Subscribe(func(s status.Snapshot) { b.emit(EvState, b.stateDTO(s)) })
 	}
 	return b
+}
+
+func (b *Bridge) at(stage string) {
+	if b.testHook != nil {
+		b.testHook(stage)
+	}
 }
 
 func (b *Bridge) emit(event string, payload any) {
@@ -364,10 +374,30 @@ func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 		case <-b.closingReady:
 		case <-timer.C:
 		}
+		b.quiesce(quiesceGrace)
 		if then != nil {
 			b.post(then)
 		}
 	}()
+}
+
+const quiesceGrace = 3 * time.Second
+
+// quiesce waits (off the UI thread, bounded by grace) until no mutating handler holds the fence,
+// then marks the bridge hard-closed so later handlers are rejected at entry. If a handler stays
+// stuck it records quiesceFail; Shutdown then still closes the queue, so nothing is queued late.
+func (b *Bridge) quiesce(grace time.Duration) {
+	limit := time.Now().Add(grace)
+	for !b.fence.TryLock() {
+		if time.Now().After(limit) {
+			b.quiesceFail.Store(true)
+			b.hard.Store(true)
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	b.hard.Store(true)
+	b.fence.Unlock()
 }
 
 func (b *Bridge) closingReadyHandler() (any, error) {
@@ -383,11 +413,11 @@ func (b *Bridge) ResetSession(reason string) {
 	default:
 		reason = EndEditorClosed
 	}
-	b.capture.End(reason)
 	b.sessMu.Lock()
 	b.mu.Lock()
-	b.session = nil
+	b.session = nil // in-flight saves/captures hold the old *editorSession and fail their commit check
 	b.mu.Unlock()
+	b.capture.End(reason)
 	if b.d.Controller != nil {
 		b.d.Controller.SetEditDialogOpen(false)
 	}
@@ -405,17 +435,12 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 			b.emit(EvAppClosing, map[string]int64{"deadline_ms": 0})
 		})
 		b.capture.End(EndEditorClosed)
-		// Wait (bounded) for in-flight mutations; a handler stuck on the UI thread must not hang us.
-		limit := time.Now().Add(max(timeout/2, 50*time.Millisecond))
-		locked := b.fence.TryLock()
-		for !locked && time.Now().Before(limit) {
-			time.Sleep(2 * time.Millisecond)
-			locked = b.fence.TryLock()
-		}
-		b.hard.Store(true)
-		if locked {
-			defer b.fence.Unlock()
-		}
+		// Quiesce in-flight mutations (bounded); a handler stuck on the UI thread must not hang us.
+		b.quiesce(max(timeout/2, 50*time.Millisecond))
+		// Close the queue: after this no handler can reach QueueSave, so the flush below is final.
+		b.qMu.Lock()
+		b.qClosed = true
+		b.qMu.Unlock()
 		b.sessMu.Lock()
 		b.mu.Lock()
 		b.closed = true
@@ -436,7 +461,7 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 				log.Printf("bridge: persist overlay position failed: %v", err)
 			}
 		}
-		if !locked {
+		if b.quiesceFail.Load() {
 			b.shutdownErr = errors.New("bridge: in-flight RPC work did not finish before shutdown")
 		}
 		if !b.d.Store.FlushSaves(timeout) {
@@ -508,11 +533,12 @@ func reg[P any](m map[string]Handler, name string, fn func(P) (any, error), requ
 
 func regNoParams(m map[string]Handler, name string, fn func() (any, error)) {
 	m[name] = func(raw json.RawMessage) (any, error) {
-		switch string(bytes.TrimSpace(raw)) {
-		case "", "null", "{}":
-			return fn()
+		if t := bytes.TrimSpace(raw); len(t) > 0 && !bytes.Equal(t, []byte("null")) {
+			if _, err := decode[struct{}](t); err != nil { // an object with zero fields, any whitespace
+				return nil, err
+			}
 		}
-		return nil, badRequest()
+		return fn()
 	}
 }
 

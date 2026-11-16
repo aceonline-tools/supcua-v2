@@ -75,10 +75,18 @@ func (b *Bridge) scriptsGet(p idParam) (any, error) {
 	return b.scripts[i], nil
 }
 
-// queue marks the scripts as saving and hands them to the store in ONE QueueSave call.
-func (b *Bridge) queue(changed []model.Script) {
+// queue marks the scripts as saving and hands them to the store in ONE QueueSave call. It is the
+// only path to QueueSave and is atomic with Shutdown closing the queue: it reports false (and
+// queues nothing) once the final flush is due, so no save can follow the flush.
+func (b *Bridge) queue(changed []model.Script) bool {
 	if len(changed) == 0 {
-		return
+		return true
+	}
+	b.at("queue")
+	b.qMu.Lock()
+	if b.qClosed {
+		b.qMu.Unlock()
+		return false
 	}
 	b.mu.Lock()
 	for _, s := range changed {
@@ -86,7 +94,9 @@ func (b *Bridge) queue(changed []model.Script) {
 	}
 	b.mu.Unlock()
 	b.d.Store.QueueSave(changed...)
+	b.qMu.Unlock()
 	b.syncHotkeys()
+	return true
 }
 
 func (b *Bridge) scriptsSetEnabled(p struct {
@@ -108,7 +118,9 @@ func (b *Bridge) scriptsSetEnabled(p struct {
 	b.rev++
 	rev, changed := b.rev, b.scripts[i]
 	b.mu.Unlock()
-	b.queue([]model.Script{changed})
+	if !b.queue([]model.Script{changed}) {
+		return nil, newErr(CodeBusy)
+	}
 	return revResult{rev}, nil
 }
 
@@ -141,7 +153,9 @@ func (b *Bridge) scriptsSetGroupEnabled(p struct {
 	}
 	rev := b.rev
 	b.mu.Unlock()
-	b.queue(changed)
+	if !b.queue(changed) {
+		return nil, newErr(CodeBusy)
+	}
 	if len(changed) > 0 {
 		b.emit(EvScriptsChanged, revResult{rev})
 	}
@@ -221,7 +235,9 @@ func (b *Bridge) scriptsClone(p idParam) (any, error) {
 	b.rev++
 	rev := b.rev
 	b.mu.Unlock()
-	b.queue([]model.Script{clone})
+	if !b.queue([]model.Script{clone}) {
+		return nil, newErr(CodeBusy)
+	}
 	b.emit(EvScriptsChanged, revResult{rev})
 	return summarize(clone, ""), nil
 }
@@ -273,6 +289,8 @@ func (b *Bridge) scriptsRetrySave(p idParam) (any, error) {
 	}
 	s := b.scripts[i]
 	b.mu.Unlock()
-	b.queue([]model.Script{s})
+	if !b.queue([]model.Script{s}) {
+		return nil, newErr(CodeBusy)
+	}
 	return empty{}, nil
 }
