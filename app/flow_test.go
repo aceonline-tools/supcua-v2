@@ -62,9 +62,15 @@ func (f *fakeSim) LockKeyboard()        {}
 func (f *fakeSim) UnlockKeyboard()      {}
 func (f *fakeSim) UnlockAll()           { f.rec("unlockall") }
 
-func newCtl() (*Controller, *fakeSim) {
+func newCtl(t *testing.T) (*Controller, *fakeSim) {
+	t.Helper()
 	sim := &fakeSim{}
-	return NewController(executor.NewExecutor(sim, nil, 1), nil, nil, nil), sim
+	c := NewController(executor.NewExecutor(sim, nil, 1), nil, nil, nil)
+	t.Cleanup(func() {
+		c.StopRunningScript()
+		eventually(t, "controller idle at teardown", func() bool { return c.GetRunningScriptID() == "" })
+	})
+	return c, sim
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -103,7 +109,7 @@ func idle(c *Controller) func() bool {
 }
 
 func TestStart_RunsAndClears(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(quick("a"))
 	eventually(t, "script ran", func() bool { return sim.count("run:a") == 1 })
 	eventually(t, "idle", idle(c))
@@ -116,7 +122,7 @@ func TestStart_RunsAndClears(t *testing.T) {
 }
 
 func TestRunningNameSnakeCase(t *testing.T) {
-	c, _ := newCtl()
+	c, _ := newCtl(t)
 	s := blocking("a")
 	s.Name = "My Script 1"
 	c.StartScript(s)
@@ -131,7 +137,7 @@ func TestRunningNameSnakeCase(t *testing.T) {
 }
 
 func TestStart_SecondQueuedWhileRunning(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(blocking("a"))
 	c.StartScript(quick("b"))
 	if c.GetQueueLength() != 1 || c.GetRunningScriptID() != "a" {
@@ -145,7 +151,7 @@ func TestStart_SecondQueuedWhileRunning(t *testing.T) {
 }
 
 func TestStart_QueueDedupSameID(t *testing.T) {
-	c, _ := newCtl()
+	c, _ := newCtl(t)
 	c.StartScript(blocking("a"))
 	c.StartScript(quick("b"))
 	c.StartScript(quick("b"))
@@ -158,7 +164,7 @@ func TestStart_QueueDedupSameID(t *testing.T) {
 }
 
 func TestStart_QueueFIFOAfterFinish(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(blocking("a"))
 	c.StartScript(quick("b"))
 	c.StartScript(quick("c"))
@@ -181,7 +187,7 @@ func TestStart_QueueFIFOAfterFinish(t *testing.T) {
 }
 
 func TestStart_IgnoredWhenDisabledInactiveOrEditing(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	d := quick("d")
 	d.Enabled = false
 	c.StartScript(d)
@@ -201,7 +207,7 @@ func TestStart_IgnoredWhenDisabledInactiveOrEditing(t *testing.T) {
 }
 
 func TestStatusChangeCallbackCalledOnStartAndFinish(t *testing.T) {
-	c, _ := newCtl()
+	c, _ := newCtl(t)
 	var mu sync.Mutex
 	calls := 0
 	c.OnStatusChange = func() { mu.Lock(); calls++; mu.Unlock() }
@@ -214,7 +220,7 @@ func TestStatusChangeCallbackCalledOnStartAndFinish(t *testing.T) {
 }
 
 func TestStop_CancelsRunningAndClearsQueue(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(infinite("a", false))
 	eventually(t, "a iterating", func() bool { return sim.count("run:a") >= 2 })
 	c.StartScript(quick("b"))
@@ -233,7 +239,7 @@ func TestStop_CancelsRunningAndClearsQueue(t *testing.T) {
 }
 
 func TestStop_EmptyInfiniteScript(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(infinite("a", true))
 	if c.GetRunningScriptID() != "a" {
 		t.Fatal("not running")
@@ -246,7 +252,7 @@ func TestStop_EmptyInfiniteScript(t *testing.T) {
 }
 
 func TestStop_NoRunningIsNoop(t *testing.T) {
-	c, _ := newCtl()
+	c, _ := newCtl(t)
 	c.StopRunningScript()
 	if c.GetRunningScriptID() != "" || c.GetQueueLength() != 0 {
 		t.Fatal("state changed")
@@ -254,7 +260,7 @@ func TestStop_NoRunningIsNoop(t *testing.T) {
 }
 
 func TestToggleGlobalOffStops(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(blocking("a"))
 	c.StartScript(quick("b"))
 	c.ToggleGlobalStatus()
@@ -265,7 +271,7 @@ func TestToggleGlobalOffStops(t *testing.T) {
 }
 
 func TestEditDialogOpenStops(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(blocking("a"))
 	c.SetEditDialogOpen(true)
 	eventually(t, "idle", idle(c))
@@ -278,7 +284,7 @@ func TestEditDialogOpenStops(t *testing.T) {
 }
 
 func TestStopThenImmediateStart_RunsAfterSlotFrees(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(blocking("a"))
 	c.StopRunningScript()
 	c.StartScript(quick("b"))
@@ -287,7 +293,7 @@ func TestStopThenImmediateStart_RunsAfterSlotFrees(t *testing.T) {
 }
 
 func TestStopOneThenStartAnother(t *testing.T) {
-	c, sim := newCtl()
+	c, sim := newCtl(t)
 	c.StartScript(blocking("a"))
 	c.StopRunningScript()
 	eventually(t, "idle", idle(c))

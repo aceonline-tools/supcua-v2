@@ -356,6 +356,11 @@ func TestDelay_ZeroReturnsPromptly(t *testing.T) {
 
 // ---- cancellation at every level ----
 
+// cancelAfterEvent runs s, waits for trigger (an observable checkpoint inside
+// the script), then requires Execute to still be running after a settle window
+// before cancelling. Every script passed here ends in a blocking construct, so
+// "still running after the checkpoint" proves execution reached it (e.g. a 1h
+// delay was entered) rather than being cancelled on the way there.
 func cancelAfterEvent(t *testing.T, s model.Script, det ImageDetectorInterface, trigger func(*fakeSim) bool) (*fakeSim, error) {
 	t.Helper()
 	sim := &fakeSim{}
@@ -364,6 +369,11 @@ func cancelAfterEvent(t *testing.T, s model.Script, det ImageDetectorInterface, 
 	defer cancel()
 	done := runAsync(ex, ctx, s)
 	eventually(t, "trigger", func() bool { return trigger(sim) })
+	select {
+	case err := <-done:
+		t.Fatalf("Execute returned before cancel: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 	cancel()
 	start := time.Now()
 	err := waitDone(t, done)
@@ -396,7 +406,7 @@ func TestCancel_DuringDelay(t *testing.T) {
 
 func TestCancel_DuringWaitForImage(t *testing.T) {
 	det := &fakeDetector{foundAfter: -1}
-	sim, err := cancelAfterEvent(t, once(act(model.ActionMouseLeftDown), waitImg(3600000), act(model.ActionMouseRightDown)), det, hasLdown)
+	sim, err := cancelAfterEvent(t, once(act(model.ActionMouseLeftDown), waitImg(3600000), act(model.ActionMouseRightDown)), det, func(f *fakeSim) bool { return hasLdown(f) && det.callCount() > 0 })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
@@ -421,9 +431,7 @@ func TestCancel_InsideInfiniteLoopAction(t *testing.T) {
 		"empty": nil,
 	} {
 		t.Run(name, func(t *testing.T) {
-			sim, err := cancelAfterEvent(t, once(loopOf(0, body...), act(model.ActionMouseRightDown)), nil, func(s *fakeSim) bool {
-				return name == "empty" || hasLdown(s)
-			})
+			sim, err := cancelAfterEvent(t, once(act(model.ActionMouseLeftDown), loopOf(0, body...), act(model.ActionMouseRightDown)), nil, hasLdown)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("err = %v", err)
 			}
@@ -433,8 +441,8 @@ func TestCancel_InsideInfiniteLoopAction(t *testing.T) {
 }
 
 func TestCancel_FlatInfiniteLoopEmptyBody(t *testing.T) {
-	s := once(model.Action{Type: tLoop}, act(tEnd))
-	sim, err := cancelAfterEvent(t, s, nil, func(*fakeSim) bool { return true })
+	s := once(act(model.ActionMouseLeftDown), model.Action{Type: tLoop}, act(tEnd), act(model.ActionMouseRightDown))
+	sim, err := cancelAfterEvent(t, s, nil, hasLdown)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
@@ -458,9 +466,21 @@ func TestCancel_InsideIfThen(t *testing.T) {
 	assertUnlockAllLast(t, sim)
 }
 
+func TestCancel_InsideIfElse(t *testing.T) {
+	els := []model.Action{act(model.ActionMouseLeftDown), model.Action{Type: model.ActionDelay, DelayMs: 3600000}}
+	sim, err := cancelAfterEvent(t, once(ifImage([]model.Action{act(model.ActionMouseRightDown)}, els)), &fakeDetector{foundAfter: -1}, hasLdown)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if sim.count("rdown") != 0 {
+		t.Fatal("then branch ran")
+	}
+	assertUnlockAllLast(t, sim)
+}
+
 func TestCancel_InsideCountedLoopOfDelays(t *testing.T) {
-	s := once(loopOf(1000, model.Action{Type: model.ActionDelay, DelayMs: 5}), act(model.ActionMouseRightDown))
-	sim, err := cancelAfterEvent(t, s, nil, func(*fakeSim) bool { return true })
+	s := once(loopOf(1000, act(model.ActionMouseLeftDown), model.Action{Type: model.ActionDelay, DelayMs: 5}), act(model.ActionMouseRightDown))
+	sim, err := cancelAfterEvent(t, s, nil, func(f *fakeSim) bool { return f.count("ldown") >= 2 })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
