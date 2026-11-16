@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -37,11 +38,16 @@ func (f *fakeOS) unregister(id int) error {
 	return nil
 }
 
+func newSet(f *fakeOS, state *atomic.Bool) *scriptHotkeySet {
+	return newScriptHotkeySet(state.Load, f.register, f.unregister)
+}
+
 func TestScriptHotkeySetConcurrentNoOrphans(t *testing.T) {
 	f := &fakeOS{live: map[int]bool{}}
+	var state atomic.Bool
+	state.Store(true)
 	scripts := []model.Script{{ID: "a"}, {ID: "b"}, {ID: "c"}}
-	s := newScriptHotkeySet(f.register, f.unregister)
-	s.SetActive(true)
+	s := newSet(f, &state)
 	s.SetScripts(scripts)
 
 	var wg sync.WaitGroup
@@ -50,7 +56,8 @@ func TestScriptHotkeySetConcurrentNoOrphans(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				s.SetActive((i+j)%2 == 0)
+				state.Store((i+j)%2 == 0)
+				s.Reconcile()
 			}
 		}(i)
 		go func() {
@@ -61,10 +68,12 @@ func TestScriptHotkeySetConcurrentNoOrphans(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	state.Store(true)
+	s.Reconcile()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(f.live) != len(s.ids) {
+	if len(f.live) != len(s.ids) || len(f.live) == 0 {
 		t.Fatalf("live OS registrations %d != tracked %d", len(f.live), len(s.ids))
 	}
 	for _, id := range s.ids {
@@ -72,23 +81,23 @@ func TestScriptHotkeySetConcurrentNoOrphans(t *testing.T) {
 			t.Fatalf("tracked id %d not registered", id)
 		}
 	}
-	if !s.active && len(f.live) != 0 {
-		t.Fatalf("inactive but %d registrations remain", len(f.live))
-	}
 }
 
 func TestScriptHotkeySetInactiveStartsEmpty(t *testing.T) {
 	f := &fakeOS{live: map[int]bool{}}
-	s := newScriptHotkeySet(f.register, f.unregister)
+	var state atomic.Bool
+	s := newSet(f, &state)
 	s.SetScripts([]model.Script{{ID: "a"}, {ID: "b"}})
 	if len(f.live) != 0 {
 		t.Fatal("registered while inactive")
 	}
-	s.SetActive(true)
+	state.Store(true)
+	s.Reconcile()
 	if len(f.live) != 2 {
 		t.Fatalf("want 2 live, got %d", len(f.live))
 	}
-	s.SetActive(false)
+	state.Store(false)
+	s.Reconcile()
 	if len(f.live) != 0 {
 		t.Fatal("registrations remain after deactivate")
 	}
@@ -96,13 +105,50 @@ func TestScriptHotkeySetInactiveStartsEmpty(t *testing.T) {
 
 func TestScriptHotkeySetActiveBeforeScriptsRegistersNothing(t *testing.T) {
 	f := &fakeOS{live: map[int]bool{}}
-	s := newScriptHotkeySet(f.register, f.unregister)
-	s.SetActive(true)
+	var state atomic.Bool
+	state.Store(true)
+	s := newSet(f, &state)
+	s.Reconcile()
 	if len(f.live) != 0 {
 		t.Fatal("registered with no scripts")
 	}
 	s.SetScripts([]model.Script{{ID: "a"}})
 	if len(f.live) != 1 {
 		t.Fatalf("want 1 live, got %d", len(f.live))
+	}
+}
+
+// A stale observation (callback A saw "inactive" before a later toggle to
+// active) must not leave the app active with no hotkeys registered.
+func TestScriptHotkeySetStaleObservationDoesNotWin(t *testing.T) {
+	f := &fakeOS{live: map[int]bool{}}
+	var state atomic.Bool
+	state.Store(true)
+	var calls atomic.Int32
+	staleRead := make(chan struct{})
+	flipped := make(chan struct{})
+	isActive := func() bool {
+		if calls.Add(1) == 2 { // A's read: force it stale
+			v := state.Load()
+			close(staleRead)
+			<-flipped
+			return v
+		}
+		return state.Load()
+	}
+	s := newScriptHotkeySet(isActive, f.register, f.unregister)
+	s.SetScripts([]model.Script{{ID: "a"}}) // call 1: active, registered
+
+	state.Store(false)
+	aDone := make(chan struct{})
+	go func() { s.Reconcile(); close(aDone) }() // call 2: observes false, stalls
+	<-staleRead
+	state.Store(true) // later toggle back to active
+	close(flipped)
+	<-aDone
+	s.Reconcile() // B: runs after A, reads the latest state
+
+	if len(f.live) != 1 {
+		t.Fatalf("app active but %d registrations live, want 1", len(f.live))
 	}
 }

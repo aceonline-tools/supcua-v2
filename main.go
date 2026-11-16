@@ -139,6 +139,7 @@ func main() {
 	// Hotkey bookkeeping is serialized in scriptHotkeys. It exists before any
 	// callback is wired and registers nothing until scripts are set below.
 	scriptHotkeys := newScriptHotkeySet(
+		appController.IsGlobalActive,
 		func(scripts []model.Script) []int {
 			return registerScriptHotkeys(appController, hotkeyManager, scripts)
 		},
@@ -146,7 +147,7 @@ func main() {
 	)
 
 	appController.OnStatusChange = func() {
-		scriptHotkeys.SetActive(appController.IsGlobalActive())
+		scriptHotkeys.Reconcile()
 		mainWindow.Synchronize(func() {
 			if overlayWindow != nil {
 				overlayWindow.Refresh()
@@ -179,14 +180,12 @@ func main() {
 	}
 
 	// Register script hotkeys (only when global is active)
-	scriptHotkeys.SetActive(appController.IsGlobalActive())
 	scriptHotkeys.SetScripts(mainWindowController.Scripts())
 
 	// Re-register script hotkeys whenever scripts change (uses in-memory list, no disk read)
 	mainWindowController.OnScriptsChanged = func(scripts []model.Script) {
 		_ = globalHotkeyID // keep global hotkey alive
 		scriptHotkeys.SetScripts(scripts)
-		scriptHotkeys.SetActive(appController.IsGlobalActive())
 	}
 
 	// Run the Walk message loop (blocks until window closed)

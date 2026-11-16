@@ -16,14 +16,17 @@ type scriptHotkeySet struct {
 	ids        []int
 	scripts    []model.Script
 	active     bool
+	isActive   func() bool
 	register   func(scripts []model.Script) []int
 	unregister func(id int) error
 }
 
 // newScriptHotkeySet starts inactive with no scripts, so SetActive/SetScripts
 // are safe to call at any time; nothing is registered until scripts are set.
-func newScriptHotkeySet(register func([]model.Script) []int, unregister func(int) error) *scriptHotkeySet {
-	return &scriptHotkeySet{register: register, unregister: unregister}
+// isActive is read under the set's mutex, so the final registrations always
+// reflect the latest state regardless of caller interleaving.
+func newScriptHotkeySet(isActive func() bool, register func([]model.Script) []int, unregister func(int) error) *scriptHotkeySet {
+	return &scriptHotkeySet{isActive: isActive, register: register, unregister: unregister}
 }
 
 func (s *scriptHotkeySet) clearLocked() {
@@ -35,11 +38,12 @@ func (s *scriptHotkeySet) clearLocked() {
 	s.ids = nil
 }
 
-// SetActive reconciles registrations with the global active state; it is a
-// no-op when the state did not change.
-func (s *scriptHotkeySet) SetActive(active bool) {
+// Reconcile aligns registrations with the current global active state; it is
+// a no-op when the state did not change.
+func (s *scriptHotkeySet) Reconcile() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	active := s.isActive()
 	if active == s.active {
 		return
 	}
@@ -55,6 +59,7 @@ func (s *scriptHotkeySet) SetScripts(scripts []model.Script) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scripts = append([]model.Script(nil), scripts...)
+	s.active = s.isActive()
 	s.clearLocked()
 	if s.active {
 		s.ids = s.register(s.scripts)
