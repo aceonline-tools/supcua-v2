@@ -10,7 +10,7 @@ A Windows desktop automation tool for creating and running macro scripts with ho
 - **Script queue** — multiple hotkey triggers queue up and execute sequentially
 - **Overlay HUD** — always-on-top status display showing current run state
 - **System tray** — minimize to tray, toggle global active state, control overlay
-- **Auto-update** — checks MinIO endpoint for new versions and self-updates
+- **Auto-update** — checks the latest GitHub Release for new versions and self-updates
 - **Single instance** — prevents multiple copies from running simultaneously
 - **License check** — MAC address-based machine authorization
 
@@ -84,8 +84,6 @@ Scripts are stored as JSON files in the `scripts/` directory. Each script contai
 - Go 1.25.x (required for garble compatibility)
 - [garble](https://github.com/burrowers/garble) — `go install mvdan.cc/garble@latest`
 - [rsrc](https://github.com/akavel/rsrc) — `go install github.com/akavel/rsrc@latest`
-- [GitHub CLI](https://cli.github.com/) — for creating releases
-- AWS CLI — for MinIO uploads
 
 ### Local build
 
@@ -100,14 +98,15 @@ GOROOT=$(go1.25.0 env GOROOT) PATH="$(go1.25.0 env GOROOT)/bin:$PATH" \
 
 ### Release
 
-```bash
-bash release.sh         # auto-increments patch version
-bash release.sh 1.2.3   # explicit version
-```
+Releases are made by release-please: merge Conventional Commits into `main`, merge the release PR it opens, and CI tags `vX.Y.Z`, creates the GitHub Release and attaches `supcua-v2.exe`. If the build or upload failed, re-run Actions → release-please → Run workflow with `tag` set to the existing tag. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The script will build, tag, push to GitHub, upload to MinIO, and open the release page.
+`bash release.sh [version]` only builds `supcua-v2.exe` locally.
 
 > **Note:** garble is scoped to `github.com/yanmad27/supcua-v2` only. The `walk` UI library is excluded from obfuscation because it uses reflection internally.
+
+## Updating from v1.0.28 or older
+
+The in-app updater reads the latest GitHub Release of `aceonline-tools/supcua-v2` (asset `supcua-v2.exe`). Clients on v1.0.28 or older do not auto-update to the new version: download `supcua-v2.exe` once from https://github.com/aceonline-tools/supcua-v2/releases/latest, and from then on updates come from GitHub Releases. Drafts, pre-releases and tags that are not plain `vX.Y.Z` are never offered.
 
 ## Contributing
 
