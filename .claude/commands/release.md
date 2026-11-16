@@ -12,3 +12,5 @@ The release script will:
 - Create and push a git tag v<version>
 - Create a GitHub release with the exe uploaded
 - Open the release in the browser
+
+Note: release-please (see CONTRIBUTING.md) is the primary release path. `release.sh` is the legacy/manual fallback; running both for the same version creates conflicting tags and releases.

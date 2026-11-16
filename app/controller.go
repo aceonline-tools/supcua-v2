@@ -162,8 +162,7 @@ func (appController *Controller) dequeueNext() {
 	appController.runningScriptName = ""
 	appController.cancelRunningScript = nil
 	if len(appController.scriptQueue) > 0 && appController.globalActive && !appController.editDialogOpen {
-		next := appController.scriptQueue[0]
-		appController.scriptQueue = appController.scriptQueue[1:]
+		next, _ := appController.popQueueLocked()
 		if next.Enabled {
 			appController.launchLocked(next)
 		}
@@ -172,6 +171,33 @@ func (appController *Controller) dequeueNext() {
 	if appController.OnStatusChange != nil {
 		appController.OnStatusChange()
 	}
+}
+
+// enqueueLocked appends script unless one with the same ID is already queued.
+// Must be called with stateMutex held.
+func (appController *Controller) enqueueLocked(script model.Script) {
+	for _, queued := range appController.scriptQueue {
+		if queued.ID == script.ID {
+			return
+		}
+	}
+	appController.scriptQueue = append(appController.scriptQueue, script)
+}
+
+// popQueueLocked removes and returns the head of the queue, zeroing the
+// vacated slot and dropping the backing array once empty.
+// Must be called with stateMutex held.
+func (appController *Controller) popQueueLocked() (model.Script, bool) {
+	if len(appController.scriptQueue) == 0 {
+		return model.Script{}, false
+	}
+	next := appController.scriptQueue[0]
+	appController.scriptQueue[0] = model.Script{}
+	appController.scriptQueue = appController.scriptQueue[1:]
+	if len(appController.scriptQueue) == 0 {
+		appController.scriptQueue = nil
+	}
+	return next, true
 }
 
 // StartScript launches a script or queues it if one is already running.
@@ -186,7 +212,7 @@ func (appController *Controller) StartScript(script model.Script) {
 	}
 	if appController.runningScriptID != "" {
 		log.Printf("StartScript queued: id=%s name=%s queueLen=%d", script.ID, script.Name, len(appController.scriptQueue)+1)
-		appController.scriptQueue = append(appController.scriptQueue, script)
+		appController.enqueueLocked(script)
 		appController.stateMutex.Unlock()
 		return
 	}
