@@ -112,7 +112,7 @@ func (appController *Controller) Subscribe(fn func(status.Snapshot)) {
 
 // publish sends the current snapshot to the hub. Must be called without stateMutex held.
 func (appController *Controller) publish() {
-	appController.hub.Publish(appController.Snapshot())
+	appController.hub.PublishFunc(appController.Snapshot)
 }
 
 // notify publishes to the hub and invokes the legacy OnStatusChange callback.

@@ -38,3 +38,61 @@ func TestHubConcurrentPublish(t *testing.T) {
 		t.Fatal("expected last snapshot")
 	}
 }
+
+func TestHubDeliversInRevisionOrderUnderConcurrency(t *testing.T) {
+	var h Hub
+	var mu sync.Mutex
+	var seen []int
+	h.Subscribe(func(s Snapshot) { mu.Lock(); seen = append(seen, s.QueueLength); mu.Unlock() })
+	var counter int
+	var cmu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.PublishFunc(func() Snapshot { cmu.Lock(); counter++; v := counter; cmu.Unlock(); return Snapshot{QueueLength: v} })
+		}()
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	for i := 1; i < len(seen); i++ {
+		if seen[i] <= seen[i-1] {
+			t.Fatalf("out-of-order delivery: %v", seen)
+		}
+	}
+	if last, _ := h.Last(); seen[len(seen)-1] != last.QueueLength {
+		t.Errorf("final delivery %d != last %d", seen[len(seen)-1], last.QueueLength)
+	}
+}
+
+func TestHubReentrantPublishDoesNotDeadlockAndKeepsOrder(t *testing.T) {
+	var h Hub
+	var got []int
+	h.Subscribe(func(s Snapshot) {
+		got = append(got, s.QueueLength)
+		if s.QueueLength == 1 {
+			h.Publish(Snapshot{QueueLength: 2})
+		}
+	})
+	h.Publish(Snapshot{QueueLength: 1})
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestHubSubscribeReplayNeverRegresses(t *testing.T) {
+	var h Hub
+	h.Publish(Snapshot{QueueLength: 1})
+	var got []int
+	h.Subscribe(func(s Snapshot) {
+		got = append(got, s.QueueLength)
+		if len(got) == 1 {
+			h.Publish(Snapshot{QueueLength: 2})
+		}
+	})
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("replay then update expected, got %v", got)
+	}
+}

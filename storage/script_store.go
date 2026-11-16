@@ -123,6 +123,41 @@ func (scriptStore *ScriptStore) NameOrFileTaken(name string) bool {
 	return err == nil
 }
 
+// NameOrFileTakenExcept is NameOrFileTaken for a script that already exists: a name, a queued or
+// in-flight write, or a file owned by excludeID itself does not count as taken. The final guard is
+// writeLocked, which refuses to overwrite a file owned by a different script.
+func (scriptStore *ScriptStore) NameOrFileTakenExcept(name, excludeID string) bool {
+	if scriptStore.NameExists(name, excludeID) {
+		return true
+	}
+	target := sanitizeName(name)
+	clash := func(item queuedSave) bool {
+		return item.script.ID != excludeID &&
+			(strings.EqualFold(item.script.Name, name) || sanitizeName(item.script.Name) == target)
+	}
+	scriptStore.queueMu.Lock()
+	for _, item := range scriptStore.pending {
+		if clash(item) {
+			scriptStore.queueMu.Unlock()
+			return true
+		}
+	}
+	for _, item := range scriptStore.inflight {
+		if clash(item) {
+			scriptStore.queueMu.Unlock()
+			return true
+		}
+	}
+	scriptStore.queueMu.Unlock()
+	path := scriptStore.scriptFilePath(name)
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	scriptStore.mu.Lock()
+	defer scriptStore.mu.Unlock()
+	return scriptStore.indexLocked()[excludeID] != path
+}
+
 // indexLocked returns the ID->path index, scanning the directory once if needed. Caller holds mu.
 func (scriptStore *ScriptStore) indexLocked() map[string]string {
 	if scriptStore.files != nil {
@@ -202,6 +237,11 @@ func (scriptStore *ScriptStore) writeLocked(script model.Script) error {
 		return fmt.Errorf("marshal script: %w", err)
 	}
 	newPath := scriptStore.scriptFilePath(script.Name)
+	for otherID, otherPath := range index {
+		if otherID != script.ID && otherPath == newPath {
+			return fmt.Errorf("script file %s belongs to another script", filepath.Base(newPath))
+		}
+	}
 	tmpPath := newPath + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return err

@@ -153,3 +153,51 @@ func TestNameOrFileTakenCountsInFlightSave(t *testing.T) {
 		t.Error("expected written file to keep name taken")
 	}
 }
+
+func TestNameOrFileTakenExceptIgnoresOwnFileButNotOthers(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	if err := scriptStore.Save(model.Script{ID: "a", Name: "Alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scriptStore.Save(model.Script{ID: "b", Name: "Beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if scriptStore.NameOrFileTakenExcept("Alpha", "a") {
+		t.Error("own name must not be taken")
+	}
+	if !scriptStore.NameOrFileTakenExcept("Alpha", "b") || !scriptStore.NameOrFileTakenExcept("alpha", "b") {
+		t.Error("another script's name must be taken")
+	}
+	if scriptStore.NameOrFileTakenExcept("Gamma", "a") {
+		t.Error("free name reported taken")
+	}
+	popped, release := stallWorker(t, "q")
+	scriptStore.QueueSave(model.Script{ID: "q", Name: "Stall"})
+	<-popped
+	scriptStore.QueueSave(model.Script{ID: "c", Name: "Queued Name"})
+	if !scriptStore.NameOrFileTakenExcept("queued_name", "a") || scriptStore.NameOrFileTakenExcept("Queued Name", "c") {
+		t.Error("pending write must count for others only")
+	}
+	if !scriptStore.NameOrFileTakenExcept("Stall", "a") || scriptStore.NameOrFileTakenExcept("Stall", "q") {
+		t.Error("in-flight write must count for others only")
+	}
+	release()
+	scriptStore.FlushSaves(5 * time.Second)
+}
+
+func TestSaveRefusesToOverwriteAnotherScriptsFile(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	if err := scriptStore.Save(model.Script{ID: "a", Name: "Alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scriptStore.Save(model.Script{ID: "b", Name: "Beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scriptStore.Save(model.Script{ID: "b", Name: "alpha"}); err == nil {
+		t.Fatal("renaming b onto a's file must fail")
+	}
+	list, _ := scriptStore.List()
+	if len(list) != 2 {
+		t.Fatalf("both scripts must survive, got %d", len(list))
+	}
+}
