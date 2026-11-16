@@ -113,3 +113,43 @@ func TestOnSaveErrorHookReportsFailedQueuedWrite(t *testing.T) {
 		t.Fatal("expected OnSaveError to fire")
 	}
 }
+
+func TestNameOrFileTakenCountsQueuedSave(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	popped, release := stallWorker(t, "q0")
+	scriptStore.QueueSave(model.Script{ID: "q0", Name: "Stall"})
+	<-popped
+	scriptStore.QueueSave(model.Script{ID: "a", Name: "Farm copy"})
+
+	if scriptStore.NameExists("Farm (copy)", "") {
+		t.Fatal("precondition: NameExists must not see the queued script")
+	}
+	if !scriptStore.NameOrFileTaken("Farm (copy)") {
+		t.Error("expected pending save to make Farm (copy) taken")
+	}
+	clone := model.CloneScript(model.Script{ID: "a", Name: "Farm"}, scriptStore.NameOrFileTaken)
+	if clone.Name != "Farm (copy 2)" {
+		t.Fatalf("name = %q, want Farm (copy 2)", clone.Name)
+	}
+	release()
+	if !scriptStore.FlushSaves(5 * time.Second) {
+		t.Fatal("flush timed out")
+	}
+}
+
+func TestNameOrFileTakenCountsInFlightSave(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	popped, release := stallWorker(t, "a")
+	scriptStore.QueueSave(model.Script{ID: "a", Name: "Farm copy"})
+	<-popped
+	if !scriptStore.NameOrFileTaken("Farm (copy)") {
+		t.Error("expected in-flight save to make Farm (copy) taken")
+	}
+	release()
+	if !scriptStore.FlushSaves(5 * time.Second) {
+		t.Fatal("flush timed out")
+	}
+	if !scriptStore.NameOrFileTaken("Farm (copy)") {
+		t.Error("expected written file to keep name taken")
+	}
+}

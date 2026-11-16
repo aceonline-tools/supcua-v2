@@ -33,7 +33,8 @@ type ScriptStore struct {
 
 	queueMu    sync.Mutex
 	pending    map[string]queuedSave
-	gen        map[string]uint64 // latest write token per ID; absent after Delete
+	inflight   map[string]queuedSave // popped by the worker, not yet written
+	gen        map[string]uint64     // latest write token per ID; absent after Delete
 	genCounter uint64
 	pendingOrd []string
 	draining   bool
@@ -90,21 +91,34 @@ func (scriptStore *ScriptStore) NameExists(name string, excludeID string) bool {
 	return false
 }
 
-// NameOrFileTaken returns true if the name is used by an existing or queued script, or if saving
-// under this name would write to a file that already exists (e.g. "A (copy)" vs "A copy").
+// NameOrFileTaken returns true if the name is used by an existing, queued or in-flight script,
+// or if saving under this name would write to a file that already exists or is about to be
+// written by the save worker (e.g. "A (copy)" vs "A copy").
 func (scriptStore *ScriptStore) NameOrFileTaken(name string) bool {
 	if scriptStore.NameExists(name, "") {
 		return true
 	}
 	target := sanitizeName(name)
 	scriptStore.queueMu.Lock()
+	taken := false
 	for _, item := range scriptStore.pending {
 		if strings.EqualFold(item.script.Name, name) || sanitizeName(item.script.Name) == target {
-			scriptStore.queueMu.Unlock()
-			return true
+			taken = true
+			break
+		}
+	}
+	if !taken {
+		for _, item := range scriptStore.inflight {
+			if strings.EqualFold(item.script.Name, name) || sanitizeName(item.script.Name) == target {
+				taken = true
+				break
+			}
 		}
 	}
 	scriptStore.queueMu.Unlock()
+	if taken {
+		return true
+	}
 	_, err := os.Stat(scriptStore.scriptFilePath(name))
 	return err == nil
 }
@@ -295,11 +309,18 @@ func (scriptStore *ScriptStore) drainQueue() {
 		scriptStore.pendingOrd = scriptStore.pendingOrd[1:]
 		item := scriptStore.pending[id]
 		delete(scriptStore.pending, id)
+		if scriptStore.inflight == nil {
+			scriptStore.inflight = map[string]queuedSave{}
+		}
+		scriptStore.inflight[id] = item
 		scriptStore.queueMu.Unlock()
 		if beforeQueuedWrite != nil {
 			beforeQueuedWrite(id)
 		}
 		scriptStore.writeQueued(item)
+		scriptStore.queueMu.Lock()
+		delete(scriptStore.inflight, id)
+		scriptStore.queueMu.Unlock()
 	}
 }
 
