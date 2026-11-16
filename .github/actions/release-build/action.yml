@@ -1,5 +1,5 @@
 name: release-build
-description: Build supcua-v2.exe exactly as release.sh does (rsrc + garble -literals, Go 1.25.0).
+description: Build supcua-v2.exe exactly as release.sh does (frontend + rsrc + garble -literals, Go 1.25.0) via scripts/build.sh.
 inputs:
   version:
     description: Version embedded via ldflags, without leading "v".
@@ -15,6 +15,11 @@ runs:
       with:
         go-version: "1.25.0"
         cache-dependency-path: go.sum
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "26"
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
     - name: Cache release toolchain
       uses: actions/cache@v4
       with:
@@ -28,15 +33,11 @@ runs:
         [ -x "$GOBIN/garble.exe" ] || go install mvdan.cc/garble@v0.15.0
         [ -x "$GOBIN/rsrc.exe" ] || go install github.com/akavel/rsrc@v0.10.2
         echo "$GOBIN" >> "$GITHUB_PATH"
-    - name: Build supcua-v2.exe
+    - name: Build supcua-v2.exe (frontend, rsrc, garble -literals)
       shell: bash
+      run: bash scripts/build.sh --version "$VERSION"
       env:
         VERSION: ${{ inputs.version }}
-        GOGARBLE: github.com/yanmad27/supcua-v2
-      run: |
-        set -euo pipefail
-        rsrc -ico app.ico -manifest main.manifest -o rsrc.syso
-        garble -literals build -trimpath -ldflags="-H windowsgui -s -w -X github.com/yanmad27/supcua-v2/version.Version=$VERSION" -o supcua-v2.exe .
     - name: Hash
       id: hash
       shell: bash
