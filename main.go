@@ -461,6 +461,7 @@ func main() {
 			return
 		}
 		deadline := ui.StartDeadline(recoveryBound, func() {
+			watchdog.Arm(fatalExitBound, 5, "fatal exit") // here, not only in fatal: the UI thread may be stuck
 			late.Post(func() { fatal("renderer recovery did not finish") })
 		})
 		queued := u.EnqueueRPCJob(func() {
