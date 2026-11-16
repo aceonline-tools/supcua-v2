@@ -158,8 +158,11 @@ jobs:
         shell: pwsh
         run: |
           $fail = 0
+          $results = Join-Path $PWD "out/results"
+          New-Item -ItemType Directory -Force -Path $results | Out-Null
           foreach ($v in "plain","garble") {
             foreach ($mode in "-selftest","-selftest-noruntime") {
+              $name = $mode.TrimStart('-')
               $exe = Join-Path $PWD "out/$v/supcua-v2.exe"
               $o = "out/$v/stdout$mode.txt"; $e = "out/$v/stderr$mode.txt"
               $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru `
@@ -173,8 +176,15 @@ jobs:
               Write-Host "$v $mode exit=$($p.ExitCode)"
               Get-Content $o, $e -ErrorAction SilentlyContinue
               if ($p.ExitCode -ne 0) { $fail = 1 }
-              $j = "out/$v/supcua-v2.exe.selftest.json"
-              if (Test-Path $j) { Move-Item $j "out/$v/selftest$mode.json" -Force }
+              Copy-Item $o (Join-Path $results "$v-$name.stdout.txt") -ErrorAction SilentlyContinue
+              Copy-Item $e (Join-Path $results "$v-$name.stderr.txt") -ErrorAction SilentlyContinue
+              $j = "out/$v/supcua-v2.exe.$name.json"
+              if (Test-Path -LiteralPath $j) {
+                Copy-Item -LiteralPath $j (Join-Path $results "$v-$name.json") -Force
+              } else {
+                Write-Host "::error::missing selftest result $j for $v $mode (exit=$($p.ExitCode))"
+                $fail = 1
+              }
             }
           }
           exit $fail
@@ -182,8 +192,5 @@ jobs:
         if: always()
         with:
           name: app-selftest-results
-          path: |
-            out/*/selftest*.json
-            out/*/stdout*.txt
-            out/*/stderr*.txt
-          if-no-files-found: warn
+          path: out/results/
+          if-no-files-found: error
