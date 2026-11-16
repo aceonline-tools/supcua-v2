@@ -7,8 +7,8 @@ Use [Conventional Commits](https://www.conventionalcommits.org/). release-please
 | Type | Effect |
 |---|---|
 | `feat:` | minor bump |
-| `fix:`, `perf:` | patch bump |
-| `refactor:`, `docs:`, `test:`, `ci:`, `chore:` | no bump on their own; `refactor` is listed in the changelog |
+| `fix:`, `perf:`, `refactor:` | patch bump (listed in the changelog) |
+| `docs:`, `test:`, `ci:`, `chore:` | hidden; no release on their own |
 | `feat!:` / `fix!:` or a `BREAKING CHANGE:` footer | major bump |
 
 PR titles should follow the same format (squash merges use the title as the commit message).

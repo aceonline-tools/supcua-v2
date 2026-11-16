@@ -55,8 +55,15 @@ jobs:
         with:
           ref: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
           submodules: false
+      - name: Checkout workflow revision (for the shared build action)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: _wf
+          sparse-checkout: .github/actions
+          submodules: false
       - id: build
-        uses: ./.github/actions/release-build
+        uses: ./_wf/.github/actions/release-build
         with:
           version: ${{ env.VERSION }}
       - name: Attach to release
