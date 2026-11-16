@@ -175,7 +175,7 @@ Transport (`spike/rpc/rpc.go`): JS → `chrome.webview.postMessage(JSON.stringif
 
 ### 9.2 Events (Go → JS)
 
-`state` (the Hub snapshot, §5) · `scripts.changed {rev}` (any external/bulk change; frontend refetches `scripts.list`) · `settings.changed {fields[]}` · `capture.hotkey {field, hotkey:Hotkey\|null, display}` · `capture.key {key}` · `capture.mouse {x,y}` · `capture.ended {reason: stopped\|blur\|timeout\|editorClosed}` · `update.available {tag}` · `update.progress {pct}` · `update.failed {message}` · `save.failed {scriptId, name, message}` (from `ScriptStore.SetOnSaveError`) · `nav.goto {route}` (tray "Auto Active Process…" → Settings) · `app.closing` · `editor.reset {reason, session_id}`.
+`state` (the Hub snapshot, §5) · `scripts.changed {rev}` (any external/bulk change; frontend refetches `scripts.list`) · `settings.changed {fields[]}` · `capture.hotkey {capture_id, field, hotkey:Hotkey\|null, display}` · `capture.key {capture_id, key}` · `capture.mouse {capture_id, x, y}` · `capture.ended {capture_id, reason: stopped\|blur\|timeout\|editorClosed}` (capture events can arrive before the `capture.*.start` reply: the page buffers them until it knows its `capture_id`, then drops events of other ids) · `update.available {tag}` · `update.progress {pct}` · `update.failed {message}` · `save.failed {scriptId, name, message}` (from `ScriptStore.SetOnSaveError`) · `nav.goto {route}` (tray "Auto Active Process…" → Settings) · `app.closing` · `editor.reset {reason, session_id}`.
 
 ### 9.3 DTOs (every field tagged; sketch — the table below is authoritative for the types `frontend/src/api/types.ts` defines)
 
