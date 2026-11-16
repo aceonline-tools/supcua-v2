@@ -12,6 +12,7 @@ import (
 func ShowAutoActiveProcessDialog(owner walk.Form, currentName string) (string, bool) {
 	var dlg *walk.Dialog
 	var nameEdit *walk.LineEdit
+	enteredName := ""
 	accepted := false
 
 	Dialog{
@@ -29,6 +30,7 @@ func ShowAutoActiveProcessDialog(owner walk.Form, currentName string) (string, b
 					PushButton{
 						Text: "OK",
 						OnClicked: func() {
+							enteredName = nameEdit.Text()
 							accepted = true
 							dlg.Accept()
 						},
@@ -42,8 +44,5 @@ func ShowAutoActiveProcessDialog(owner walk.Form, currentName string) (string, b
 		},
 	}.Run(owner)
 
-	if !accepted {
-		return "", false
-	}
-	return nameEdit.Text(), true
+	return enteredName, accepted
 }

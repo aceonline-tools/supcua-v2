@@ -200,12 +200,15 @@ func main() {
 	}
 
 	// Auto Active: global active follows the game window's focus
-	autoActiveWatcher := autoactive.NewWatcher(autoactive.Options{
+	var autoActiveWatcher *autoactive.Watcher
+	autoActiveWatcher = autoactive.NewWatcher(autoactive.Options{
 		ProcessName:           autoactive.ResolveProcessName(appConfig.AutoActiveProcessName),
 		ForegroundProcessName: autoactive.ForegroundProcessName,
-		IsActive:              appController.IsGlobalActive,
-		SetActive: func(active bool) {
+		SetActive: func(active bool, generation uint64) {
 			mainWindow.Synchronize(func() {
+				if generation != autoActiveWatcher.Generation() {
+					return
+				}
 				if appController.IsGlobalActive() != active {
 					appController.ToggleGlobalStatus()
 				}
@@ -215,40 +218,39 @@ func main() {
 	if appConfig.AutoActiveEnabled {
 		autoActiveWatcher.Start()
 	}
-	trayIcon.AddAutoActiveToggle(appConfig.AutoActiveEnabled, func(enabled bool) {
+	updateAutoActiveConfig := func(update func(*model.AppConfig)) error {
+		cfg, err := configStore.Load()
+		if err != nil {
+			return err
+		}
+		update(&cfg)
+		return configStore.Save(cfg)
+	}
+	trayIcon.AddAutoActiveToggle(appConfig.AutoActiveEnabled, func(enabled bool) error {
+		if err := updateAutoActiveConfig(func(cfg *model.AppConfig) { cfg.AutoActiveEnabled = enabled }); err != nil {
+			log.Printf("warning: failed to save auto active setting: %v", err)
+			return err
+		}
 		if enabled {
 			autoActiveWatcher.Start()
 		} else {
 			autoActiveWatcher.Stop()
 		}
-		cfg, err := configStore.Load()
-		if err != nil {
-			log.Printf("warning: failed to load config for auto active: %v", err)
-			return
-		}
-		cfg.AutoActiveEnabled = enabled
-		if err := configStore.Save(cfg); err != nil {
-			log.Printf("warning: failed to save auto active setting: %v", err)
-		}
+		return nil
 	})
 
 	currentAutoActiveProcessName := autoactive.ResolveProcessName(appConfig.AutoActiveProcessName)
 	trayIcon.AddAutoActiveProcessItem(
 		func() string { return currentAutoActiveProcessName },
-		func(processName string) {
+		func(processName string) error {
 			resolvedName := autoactive.ResolveProcessName(processName)
-			cfg, err := configStore.Load()
-			if err != nil {
-				log.Printf("warning: failed to load config for auto active process: %v", err)
-				return
-			}
-			cfg.AutoActiveProcessName = resolvedName
-			if err := configStore.Save(cfg); err != nil {
+			if err := updateAutoActiveConfig(func(cfg *model.AppConfig) { cfg.AutoActiveProcessName = resolvedName }); err != nil {
 				log.Printf("warning: failed to save auto active process: %v", err)
-				return
+				return err
 			}
 			currentAutoActiveProcessName = resolvedName
 			autoActiveWatcher.SetProcessName(resolvedName)
+			return nil
 		},
 	)
 

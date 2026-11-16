@@ -116,25 +116,31 @@ func (trayIcon *TrayIcon) buildContextMenu() {
 }
 
 // AddAutoActiveToggle inserts a checkable "Auto Active" item right after "Toggle Active".
-func (trayIcon *TrayIcon) AddAutoActiveToggle(initiallyEnabled bool, onChange func(enabled bool)) {
+func (trayIcon *TrayIcon) AddAutoActiveToggle(initiallyEnabled bool, onChange func(enabled bool) error) {
 	autoActiveAction := walk.NewAction()
 	autoActiveAction.SetText("Auto Active")
 	autoActiveAction.SetCheckable(true)
 	autoActiveAction.SetChecked(initiallyEnabled)
 	autoActiveAction.Triggered().Attach(func() {
-		onChange(autoActiveAction.Checked())
+		enabled := autoActiveAction.Checked()
+		if err := onChange(enabled); err != nil {
+			autoActiveAction.SetChecked(!enabled)
+			walk.MsgBox(trayIcon.mainWindow, "Auto Active", "Failed to save setting: "+err.Error(), walk.MsgBoxIconError)
+		}
 	})
 	trayIcon.notifyIcon.ContextMenu().Actions().Insert(1, autoActiveAction)
 }
 
 // AddAutoActiveProcessItem inserts "Auto Active Process..." after the "Auto Active" item.
 // currentName supplies the dialog's initial value; onChange receives the accepted name.
-func (trayIcon *TrayIcon) AddAutoActiveProcessItem(currentName func() string, onChange func(processName string)) {
+func (trayIcon *TrayIcon) AddAutoActiveProcessItem(currentName func() string, onChange func(processName string) error) {
 	processAction := walk.NewAction()
 	processAction.SetText("Auto Active Process...")
 	processAction.Triggered().Attach(func() {
 		if processName, accepted := ShowAutoActiveProcessDialog(trayIcon.mainWindow, currentName()); accepted {
-			onChange(processName)
+			if err := onChange(processName); err != nil {
+				walk.MsgBox(trayIcon.mainWindow, "Auto Active Process", "Failed to save setting: "+err.Error(), walk.MsgBoxIconError)
+			}
 		}
 	})
 	trayIcon.notifyIcon.ContextMenu().Actions().Insert(2, processAction)

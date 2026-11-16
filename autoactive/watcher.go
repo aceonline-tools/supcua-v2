@@ -38,8 +38,7 @@ func MatchesProcess(imagePath, processName string) bool {
 type Options struct {
 	ProcessName           string
 	ForegroundProcessName func() (string, error)
-	IsActive              func() bool
-	SetActive             func(bool)
+	SetActive             func(active bool, generation uint64)
 	PollInterval          time.Duration
 }
 
@@ -48,6 +47,7 @@ type Watcher struct {
 	options Options
 
 	processName atomic.Value
+	generation  atomic.Uint64
 
 	lifecycleMutex sync.Mutex
 	stopSignal     chan struct{}
@@ -70,6 +70,12 @@ func (watcher *Watcher) SetProcessName(processName string) {
 	watcher.processName.Store(ResolveProcessName(processName))
 }
 
+// Generation changes on every Start and Stop. A SetActive callback that runs asynchronously
+// must compare the generation it received with this value and drop itself on mismatch.
+func (watcher *Watcher) Generation() uint64 {
+	return watcher.generation.Load()
+}
+
 func (watcher *Watcher) currentProcessName() string {
 	return watcher.processName.Load().(string)
 }
@@ -82,9 +88,10 @@ func (watcher *Watcher) Start() {
 	if watcher.stopSignal != nil {
 		return
 	}
+	generation := watcher.generation.Add(1)
 	watcher.stopSignal = make(chan struct{})
 	watcher.finished = make(chan struct{})
-	go watcher.run(watcher.stopSignal, watcher.finished)
+	go watcher.run(generation, watcher.stopSignal, watcher.finished)
 }
 
 // Stop halts polling and blocks until the polling goroutine has exited.
@@ -95,25 +102,26 @@ func (watcher *Watcher) Stop() {
 	if watcher.stopSignal == nil {
 		return
 	}
+	watcher.generation.Add(1)
 	close(watcher.stopSignal)
 	<-watcher.finished
 	watcher.stopSignal = nil
 	watcher.finished = nil
 }
 
-func (watcher *Watcher) run(stopSignal <-chan struct{}, finished chan<- struct{}) {
+func (watcher *Watcher) run(generation uint64, stopSignal <-chan struct{}, finished chan<- struct{}) {
 	defer close(finished)
 	ticker := time.NewTicker(watcher.options.PollInterval)
 	defer ticker.Stop()
 
 	var observation focusObservation
-	observation.observe(watcher.options, watcher.currentProcessName(), stopSignal)
+	observation.observe(watcher.options, watcher.currentProcessName(), generation, stopSignal)
 	for {
 		select {
 		case <-stopSignal:
 			return
 		case <-ticker.C:
-			observation.observe(watcher.options, watcher.currentProcessName(), stopSignal)
+			observation.observe(watcher.options, watcher.currentProcessName(), generation, stopSignal)
 		}
 	}
 }
@@ -123,7 +131,7 @@ type focusObservation struct {
 	focused bool
 }
 
-func (observation *focusObservation) observe(options Options, processName string, stopSignal <-chan struct{}) {
+func (observation *focusObservation) observe(options Options, processName string, generation uint64, stopSignal <-chan struct{}) {
 	foregroundName, err := options.ForegroundProcessName()
 	if err != nil || foregroundName == "" {
 		return
@@ -140,7 +148,5 @@ func (observation *focusObservation) observe(options Options, processName string
 		return
 	default:
 	}
-	if focused != options.IsActive() {
-		options.SetActive(focused)
-	}
+	options.SetActive(focused, generation)
 }

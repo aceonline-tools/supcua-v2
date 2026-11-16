@@ -37,7 +37,7 @@ func (environment *fakeEnvironment) isActive() bool {
 	return environment.active
 }
 
-func (environment *fakeEnvironment) setActive(active bool) {
+func (environment *fakeEnvironment) setActive(active bool, generation uint64) {
 	environment.mutex.Lock()
 	defer environment.mutex.Unlock()
 	environment.setCalls = append(environment.setCalls, active)
@@ -60,7 +60,6 @@ func (environment *fakeEnvironment) options() Options {
 	return Options{
 		ProcessName:           DefaultProcessName,
 		ForegroundProcessName: environment.foregroundProcessName,
-		IsActive:              environment.isActive,
 		SetActive:             environment.setActive,
 		PollInterval:          time.Millisecond,
 	}
@@ -78,7 +77,7 @@ func (environment *fakeEnvironment) awaitPolls(t *testing.T, count int) {
 }
 
 func step(observation *focusObservation, environment *fakeEnvironment) {
-	observation.observe(environment.options(), DefaultProcessName, make(chan struct{}))
+	observation.observe(environment.options(), DefaultProcessName, 1, make(chan struct{}))
 }
 
 func TestProcessNameChangeAppliesOnNextObservation(t *testing.T) {
@@ -88,20 +87,20 @@ func TestProcessNameChangeAppliesOnNextObservation(t *testing.T) {
 	watcher.Start()
 	defer watcher.Stop()
 	environment.awaitPolls(t, 2)
-	if len(environment.calls()) != 0 {
-		t.Fatalf("unexpected calls %v", environment.calls())
+	if calls := environment.calls(); len(calls) != 1 || calls[0] {
+		t.Fatalf("want one deactivate for non-game foreground, got %v", calls)
 	}
 
 	watcher.SetProcessName("OTHER.exe")
 	deadline := time.After(5 * time.Second)
-	for len(environment.calls()) == 0 {
+	for len(environment.calls()) < 2 {
 		select {
 		case <-deadline:
 			t.Fatal("name change not applied")
 		case <-time.After(time.Millisecond):
 		}
 	}
-	if calls := environment.calls(); !calls[0] {
+	if calls := environment.calls(); !calls[1] {
 		t.Fatalf("want activate, got %v", calls)
 	}
 }
@@ -175,7 +174,7 @@ func TestManualToggleWhileGameFocusedIsRespected(t *testing.T) {
 	environment.setForeground(`C:\ACEonline.exe`, nil)
 	step(&observation, environment)
 
-	environment.setActive(false)
+	environment.setActive(false, 0)
 	before := len(environment.calls())
 	for i := 0; i < 5; i++ {
 		step(&observation, environment)
@@ -188,13 +187,33 @@ func TestManualToggleWhileGameFocusedIsRespected(t *testing.T) {
 	}
 }
 
-func TestNoCallWhenStateAlreadyMatches(t *testing.T) {
+func TestTransitionDispatchedEvenWhenStateLooksUnchanged(t *testing.T) {
 	environment := newFakeEnvironment(true)
 	var observation focusObservation
 	environment.setForeground(`C:\ACEonline.exe`, nil)
 	step(&observation, environment)
-	if len(environment.calls()) != 0 {
-		t.Fatal("setActive called although global already on")
+	if calls := environment.calls(); len(calls) != 1 || !calls[0] {
+		t.Fatalf("transition must dispatch regardless of current state, got %v", calls)
+	}
+}
+
+func TestStaleGenerationDetectedAfterStop(t *testing.T) {
+	environment := newFakeEnvironment(false)
+	environment.setForeground(`C:\ACEonline.exe`, nil)
+	var dispatched uint64
+	options := environment.options()
+	options.SetActive = func(active bool, generation uint64) { dispatched = generation }
+	watcher := NewWatcher(options)
+	watcher.Start()
+	environment.awaitPolls(t, 2)
+	watcher.Stop()
+	if dispatched == 0 || dispatched == watcher.Generation() {
+		t.Fatalf("callback generation %d must be stale after Stop (current %d)", dispatched, watcher.Generation())
+	}
+	watcher.Start()
+	defer watcher.Stop()
+	if dispatched == watcher.Generation() {
+		t.Fatal("restart must not revive old generation")
 	}
 }
 
@@ -215,8 +234,8 @@ func TestErrorsAndEmptyNamesAreIgnored(t *testing.T) {
 	step(&observation, environment)
 	environment.setForeground(`C:\ACEonline.exe`, errors.New("boom"))
 	step(&observation, environment)
-	if len(environment.calls()) != 0 {
-		t.Fatalf("unexpected calls %v", environment.calls())
+	if calls := environment.calls(); len(calls) != 1 || !calls[0] {
+		t.Fatalf("want only the initial activate, got %v", calls)
 	}
 }
 
