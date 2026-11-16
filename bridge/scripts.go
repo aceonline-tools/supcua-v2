@@ -199,7 +199,7 @@ func (b *Bridge) scriptsSetGroupCollapsed(p struct {
 		log.Printf("bridge: persist collapsed groups failed: %v", err)
 		return nil, newErr(CodeSaveFailed)
 	}
-	b.emit(EvSettingsChanged, map[string][]string{"fields": {"collapsed_groups"}})
+	b.emit(EvSettingsChanged, settingsChangedEvent{Fields: []string{"collapsed_groups"}})
 	return empty{}, nil
 }
 

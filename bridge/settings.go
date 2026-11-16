@@ -183,7 +183,7 @@ func (b *Bridge) settingsUpdate(p struct {
 	}
 	b.refreshOverlay(true)
 	if len(immediate)+len(restart) > 0 {
-		b.emit(EvSettingsChanged, map[string][]string{"fields": append(append([]string{}, immediate...), restart...)})
+		b.emit(EvSettingsChanged, settingsChangedEvent{Fields: append(append([]string{}, immediate...), restart...)})
 		b.NotifyStateChanged()
 	}
 	return SettingsUpdateResult{
@@ -322,7 +322,7 @@ func (b *Bridge) autoActiveSet(p struct {
 		return nil, newErr(CodeSaveFailed)
 	}
 	if len(fields) > 0 {
-		b.emit(EvSettingsChanged, map[string][]string{"fields": fields})
+		b.emit(EvSettingsChanged, settingsChangedEvent{Fields: fields})
 		b.NotifyStateChanged()
 	}
 	return struct {

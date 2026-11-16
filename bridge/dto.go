@@ -137,3 +137,43 @@ const (
 )
 
 type empty struct{}
+
+// Typed event payloads: every event the bridge emits has an explicit, json-tagged type.
+type scriptsChangedEvent struct {
+	Rev uint64 `json:"rev"`
+}
+
+type settingsChangedEvent struct {
+	Fields []string `json:"fields"`
+}
+
+type saveFailedEvent struct {
+	ScriptID string `json:"scriptId"`
+	Name     string `json:"name"`
+	Message  string `json:"message"`
+}
+
+type navGotoEvent struct {
+	Route string `json:"route"`
+}
+
+type appClosingEvent struct {
+	DeadlineMs int64 `json:"deadline_ms"`
+}
+
+type updateAvailableEvent struct {
+	Tag string `json:"tag"`
+}
+
+type updateProgressEvent struct {
+	Pct int `json:"pct"`
+}
+
+type updateFailedEvent struct {
+	Message string `json:"message"`
+}
+
+type editorResetEvent struct {
+	Reason    string `json:"reason"`
+	SessionID string `json:"session_id"`
+}

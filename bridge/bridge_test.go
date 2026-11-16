@@ -151,19 +151,26 @@ func TestFixturesRoundTripThroughGoDTOs(t *testing.T) {
 	if err := json.Unmarshal(readFrontend(t, "fixtures/events.json"), &events); err != nil {
 		t.Fatal(err)
 	}
-	type obj = map[string]any
+	typed := map[string]func(*testing.T, string, []byte){
+		"state": roundTrip[StateDTO], "scripts.changed": roundTrip[scriptsChangedEvent],
+		"settings.changed": roundTrip[settingsChangedEvent], "save.failed": roundTrip[saveFailedEvent],
+		"nav.goto": roundTrip[navGotoEvent], "app.closing": roundTrip[appClosingEvent],
+		"capture.hotkey": roundTrip[hotkeyEvent], "capture.key": roundTrip[keyEvent],
+		"capture.mouse": roundTrip[mouseEvent], "capture.ended": roundTrip[endedEvent],
+		"update.available": roundTrip[updateAvailableEvent], "update.progress": roundTrip[updateProgressEvent],
+		"update.failed": roundTrip[updateFailedEvent], "editor.reset": roundTrip[editorResetEvent],
+	}
 	for name, raw := range events {
-		switch name {
-		case "state":
-			roundTrip[StateDTO](t, "event:"+name, raw)
-		case "scripts.changed", "update.progress", "nav.goto", "settings.changed", "save.failed", "update.available",
-			"update.failed", "capture.hotkey", "capture.key", "capture.mouse", "capture.ended", "app.closing":
-			var m obj
-			if err := json.Unmarshal(raw, &m); err != nil {
-				t.Errorf("event %s: %v", name, err)
-			}
-		default:
+		fn, ok := typed[name]
+		if !ok {
 			t.Errorf("fixture has event %s unknown to the bridge", name)
+			continue
+		}
+		fn(t, "event:"+name, raw)
+	}
+	for name := range typed {
+		if _, ok := events[name]; !ok {
+			t.Logf("fixture events.json has no %s sample", name)
 		}
 	}
 }
@@ -268,8 +275,8 @@ func TestSaveFailureEmitsSaveFailedAndRetryRequeues(t *testing.T) {
 	if len(ev) != 1 {
 		t.Fatalf("want one save.failed, got %d", len(ev))
 	}
-	p := ev[0].payload.(map[string]string)
-	if p["scriptId"] != "s1" || p["name"] != "Alpha" || p["message"] != "could not write script file" {
+	p := ev[0].payload.(saveFailedEvent)
+	if p != (saveFailedEvent{ScriptID: "s1", Name: "Alpha", Message: "could not write script file"}) {
 		t.Errorf("payload = %v", p)
 	}
 	delete(r.store.failIDs, "s1")
@@ -730,7 +737,7 @@ func TestUpdateApplyRunsOnceAndReportsProgressAndFailure(t *testing.T) {
 	if len(r.em.named(EvUpdateFailed)) != 1 || len(r.em.named(EvUpdateProgress)) != 1 {
 		t.Errorf("events: failed=%d progress=%d", len(r.em.named(EvUpdateFailed)), len(r.em.named(EvUpdateProgress)))
 	}
-	if p := r.em.named(EvUpdateFailed)[0].payload.(map[string]string)["message"]; p != "update failed" {
+	if p := r.em.named(EvUpdateFailed)[0].payload.(updateFailedEvent).Message; p != "update failed" {
 		t.Errorf("update.failed must carry a fixed message, got %q", p)
 	}
 	r.mustCall(t, "update.skip", "")

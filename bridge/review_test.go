@@ -179,7 +179,7 @@ func TestBeginShutdownRejectsMutationsAndWaitsForClosingReady(t *testing.T) {
 	r.b.BeginShutdown(5*time.Second, func() { close(thenRan) })
 	r.b.BeginShutdown(5*time.Second, func() { t.Error("second BeginShutdown must be a no-op") })
 	ev := r.em.named(EvAppClosing)
-	if len(ev) != 1 || ev[0].payload.(map[string]int64)["deadline_ms"] != 5000 {
+	if len(ev) != 1 || ev[0].payload.(appClosingEvent).DeadlineMs != 5000 {
 		t.Fatalf("app.closing = %v", ev)
 	}
 	for _, c := range []struct{ m, p string }{
@@ -605,7 +605,7 @@ func TestResetSessionAlwaysEmitsEditorResetAfterClearing(t *testing.T) {
 	}
 	r.b.ResetSession("navigation") // nothing open, nothing capturing
 	ev := r.em.named(EvEditorReset)
-	if len(ev) != 1 || ev[0].payload.(map[string]string)["reason"] != "navigation" || ev[0].payload.(map[string]string)["session_id"] != "" {
+	if len(ev) != 1 || ev[0].payload.(editorResetEvent) != (editorResetEvent{Reason: "navigation"}) {
 		t.Fatalf("editor.reset without session: %v", ev)
 	}
 	if len(r.em.named(EvCaptureEnded)) != 0 {
@@ -616,7 +616,7 @@ func TestResetSessionAlwaysEmitsEditorResetAfterClearing(t *testing.T) {
 	r.mustCall(t, "capture.key.start", `{"sessionId":"`+sid+`"}`)
 	r.b.ResetSession("processFailed")
 	ev = r.em.named(EvEditorReset)
-	if len(ev) != 2 || ev[1].payload.(map[string]string)["reason"] != "processFailed" || ev[1].payload.(map[string]string)["session_id"] != sid {
+	if len(ev) != 2 || ev[1].payload.(editorResetEvent) != (editorResetEvent{Reason: "processFailed", SessionID: sid}) {
 		t.Fatalf("editor.reset with session: %v", ev)
 	}
 	if got := r.em.named(EvCaptureEnded); len(got) != 1 || got[0].payload.(endedEvent).Reason != EndEditorClosed {

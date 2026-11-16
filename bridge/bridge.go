@@ -318,11 +318,11 @@ func (b *Bridge) NotifyStateChanged() { b.emit(EvState, b.currentState()) }
 
 // NotifyUpdateAvailable tells the page a new release exists.
 func (b *Bridge) NotifyUpdateAvailable(tag string) {
-	b.emit(EvUpdateAvailable, map[string]string{"tag": tag})
+	b.emit(EvUpdateAvailable, updateAvailableEvent{Tag: tag})
 }
 
 // NavGoto asks the page to navigate (e.g. tray "Auto Active Process...").
-func (b *Bridge) NavGoto(route string) { b.emit(EvNavGoto, map[string]string{"route": route}) }
+func (b *Bridge) NavGoto(route string) { b.emit(EvNavGoto, navGotoEvent{Route: route}) }
 
 // NotifyBlur ends an active capture because the host window lost activation.
 func (b *Bridge) NotifyBlur() { b.capture.End(EndBlur) }
@@ -339,7 +339,7 @@ func (b *Bridge) Reload() error {
 	rev := b.rev
 	b.mu.Unlock()
 	b.syncHotkeys()
-	b.emit(EvScriptsChanged, map[string]uint64{"rev": rev})
+	b.emit(EvScriptsChanged, scriptsChangedEvent{Rev: rev})
 	return nil
 }
 
@@ -348,9 +348,7 @@ func (b *Bridge) onSaveError(script model.Script, err error) {
 	b.mu.Lock()
 	b.failed[script.ID] = struct{}{}
 	b.mu.Unlock()
-	b.emit(EvSaveFailed, map[string]string{
-		"scriptId": script.ID, "name": script.Name, "message": messages[CodeSaveFailed],
-	})
+	b.emit(EvSaveFailed, saveFailedEvent{ScriptID: script.ID, Name: script.Name, Message: messages[CodeSaveFailed]})
 }
 
 // BeginShutdown starts a cooperative shutdown; call it on the UI thread. It returns at once:
@@ -362,7 +360,7 @@ func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 	b.beginOnce.Do(func() {
 		started = true
 		b.stopping.Store(true)
-		b.emit(EvAppClosing, map[string]int64{"deadline_ms": deadline.Milliseconds()})
+		b.emit(EvAppClosing, appClosingEvent{DeadlineMs: deadline.Milliseconds()})
 	})
 	if !started {
 		return
@@ -427,7 +425,7 @@ func (b *Bridge) ResetSession(reason string) {
 		b.d.Controller.SetEditDialogOpen(false)
 	}
 	b.sessMu.Unlock()
-	b.emit(EvEditorReset, map[string]string{"reason": reason, "session_id": sessionID})
+	b.emit(EvEditorReset, editorResetEvent{Reason: reason, SessionID: sessionID})
 }
 
 // Shutdown runs the §4 rule 7 steps the bridge owns, on the UI thread: stop captures, fence out
@@ -438,7 +436,7 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 	b.shutdownOnce.Do(func() {
 		b.beginOnce.Do(func() {
 			b.stopping.Store(true)
-			b.emit(EvAppClosing, map[string]int64{"deadline_ms": 0})
+			b.emit(EvAppClosing, appClosingEvent{})
 		})
 		b.capture.End(EndEditorClosed)
 		// Quiesce in-flight mutations (bounded); a handler stuck on the UI thread must not hang us.
@@ -685,11 +683,11 @@ func (b *Bridge) updateApply() (any, error) {
 	go func() {
 		defer b.updating.Store(false)
 		err := b.d.Host.ApplyUpdate(func(pct int) {
-			b.emit(EvUpdateProgress, map[string]int{"pct": max(0, min(100, pct))})
+			b.emit(EvUpdateProgress, updateProgressEvent{Pct: max(0, min(100, pct))})
 		})
 		if err != nil {
 			log.Printf("bridge: update failed: %v", err)
-			b.emit(EvUpdateFailed, map[string]string{"message": messages[CodeUpdateFailed]})
+			b.emit(EvUpdateFailed, updateFailedEvent{Message: messages[CodeUpdateFailed]})
 		}
 	}()
 	return empty{}, nil
