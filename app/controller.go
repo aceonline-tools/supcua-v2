@@ -153,10 +153,13 @@ func (appController *Controller) launchLocked(script model.Script) {
 	}()
 }
 
+// dequeueDelay is how long a finished script holds the running slot before the next one starts.
+var dequeueDelay = 100 * time.Millisecond
+
 // dequeueNext is called when a script finishes. It clears running state and
 // starts the next queued script if any.
 func (appController *Controller) dequeueNext() {
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(dequeueDelay)
 	appController.stateMutex.Lock()
 	appController.runningScriptID = ""
 	appController.runningScriptName = ""

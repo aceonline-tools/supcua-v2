@@ -88,6 +88,9 @@ func nextIteration(ctx context.Context, emptyBody bool) error {
 
 const emptyLoopYield = time.Millisecond
 
+// waitPollInterval is the delay between image checks in wait_for_image.
+var waitPollInterval = 200 * time.Millisecond
+
 func (scriptExecutor *Executor) executeActions(ctx context.Context, actionList []model.Action) error {
 	i := 0
 	for i < len(actionList) {
@@ -305,7 +308,6 @@ func (scriptExecutor *Executor) executeWaitForImage(ctx context.Context, current
 		return fmt.Errorf("image detector not available")
 	}
 
-	pollInterval := 200 * time.Millisecond
 	timeoutDuration := time.Duration(currentAction.TimeoutMs) * time.Millisecond
 	deadlineTimer := time.NewTimer(timeoutDuration)
 	defer deadlineTimer.Stop()
@@ -328,7 +330,7 @@ func (scriptExecutor *Executor) executeWaitForImage(ctx context.Context, current
 			return ctx.Err()
 		case <-deadlineTimer.C:
 			return fmt.Errorf("wait_for_image timed out after %dms", currentAction.TimeoutMs)
-		case <-time.After(pollInterval):
+		case <-time.After(waitPollInterval):
 			// continue polling
 		}
 	}
