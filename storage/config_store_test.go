@@ -28,8 +28,8 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	if loadedConfig.OverlayEnabled != false {
 		t.Errorf("expected overlay_enabled=false, got %v", loadedConfig.OverlayEnabled)
 	}
-	if loadedConfig.GlobalHotkey.Key != "f1" {
-		t.Errorf("expected global hotkey key=f1, got %s", loadedConfig.GlobalHotkey.Key)
+	if loadedConfig.GlobalHotkey.Key != "rctrl" {
+		t.Errorf("expected global hotkey key=rctrl, got %s", loadedConfig.GlobalHotkey.Key)
 	}
 }
 

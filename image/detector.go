@@ -3,11 +3,7 @@
 package image
 
 import (
-	"bytes"
-	"encoding/base64"
 	"fmt"
-	"image"
-	"image/png"
 	"syscall"
 	"unsafe"
 
@@ -15,18 +11,18 @@ import (
 )
 
 var (
-	user32DLL                      = syscall.NewLazyDLL("user32.dll")
-	gdi32DLL                       = syscall.NewLazyDLL("gdi32.dll")
-	procGetDC                      = user32DLL.NewProc("GetDC")
-	procReleaseDC                  = user32DLL.NewProc("ReleaseDC")
-	procGetSystemMetrics           = user32DLL.NewProc("GetSystemMetrics")
-	procCreateCompatibleDC         = gdi32DLL.NewProc("CreateCompatibleDC")
-	procCreateCompatibleBitmap     = gdi32DLL.NewProc("CreateCompatibleBitmap")
-	procSelectObject               = gdi32DLL.NewProc("SelectObject")
-	procBitBlt                     = gdi32DLL.NewProc("BitBlt")
-	procDeleteObject               = gdi32DLL.NewProc("DeleteObject")
-	procDeleteDC                   = gdi32DLL.NewProc("DeleteDC")
-	procGetDIBits                  = gdi32DLL.NewProc("GetDIBits")
+	user32DLL                  = syscall.NewLazyDLL("user32.dll")
+	gdi32DLL                   = syscall.NewLazyDLL("gdi32.dll")
+	procGetDC                  = user32DLL.NewProc("GetDC")
+	procReleaseDC              = user32DLL.NewProc("ReleaseDC")
+	procGetSystemMetrics       = user32DLL.NewProc("GetSystemMetrics")
+	procCreateCompatibleDC     = gdi32DLL.NewProc("CreateCompatibleDC")
+	procCreateCompatibleBitmap = gdi32DLL.NewProc("CreateCompatibleBitmap")
+	procSelectObject           = gdi32DLL.NewProc("SelectObject")
+	procBitBlt                 = gdi32DLL.NewProc("BitBlt")
+	procDeleteObject           = gdi32DLL.NewProc("DeleteObject")
+	procDeleteDC               = gdi32DLL.NewProc("DeleteDC")
+	procGetDIBits              = gdi32DLL.NewProc("GetDIBits")
 )
 
 const (
@@ -48,77 +44,27 @@ func NewDetector(matchTolerance int) *Detector {
 // FindImage searches the screen (or a region) for the given base64-encoded PNG.
 // Returns the center coordinates of the match and whether it was found.
 func (imageDetector *Detector) FindImage(imageBase64 string, searchRegion *model.Region) (int, int, bool, error) {
-	templateImage, err := decodeBase64PNG(imageBase64)
+	template, err := sharedTemplateCache.get(imageBase64)
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("decode template image: %w", err)
 	}
 
-	screenCapture, captureOriginX, captureOriginY, err := imageDetector.captureScreen(searchRegion)
+	screenPix, captureWidth, captureHeight, captureOriginX, captureOriginY, err := captureScreen(searchRegion)
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("capture screen: %w", err)
 	}
+	defer releaseCaptureBuffer(screenPix)
 
-	templateBounds := templateImage.Bounds()
-	captureBounds := screenCapture.Bounds()
-
-	templateWidth := templateBounds.Dx()
-	templateHeight := templateBounds.Dy()
-
-	for scanY := 0; scanY <= captureBounds.Dy()-templateHeight; scanY++ {
-		for scanX := 0; scanX <= captureBounds.Dx()-templateWidth; scanX++ {
-			if imageDetector.pixelsMatch(screenCapture, templateImage, scanX, scanY) {
-				centerX := captureOriginX + scanX + templateWidth/2
-				centerY := captureOriginY + scanY + templateHeight/2
-				return centerX, centerY, true, nil
-			}
-		}
+	scanX, scanY, found := findMatch(screenPix, captureWidth, captureHeight, template, imageDetector.matchTolerance)
+	if !found {
+		return 0, 0, false, nil
 	}
-
-	return 0, 0, false, nil
+	return captureOriginX + scanX + template.width/2, captureOriginY + scanY + template.height/2, true, nil
 }
 
-func (imageDetector *Detector) pixelsMatch(screenCapture, templateImage image.Image, startX, startY int) bool {
-	templateBounds := templateImage.Bounds()
-	for templateY := templateBounds.Min.Y; templateY < templateBounds.Max.Y; templateY++ {
-		for templateX := templateBounds.Min.X; templateX < templateBounds.Max.X; templateX++ {
-			screenRed, screenGreen, screenBlue, _ := screenCapture.At(startX+templateX, startY+templateY).RGBA()
-			templateRed, templateGreen, templateBlue, _ := templateImage.At(templateX, templateY).RGBA()
-
-			// RGBA returns 16-bit values, convert to 8-bit
-			if absDifference(int(screenRed>>8), int(templateRed>>8)) > imageDetector.matchTolerance ||
-				absDifference(int(screenGreen>>8), int(templateGreen>>8)) > imageDetector.matchTolerance ||
-				absDifference(int(screenBlue>>8), int(templateBlue>>8)) > imageDetector.matchTolerance {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func absDifference(valueA, valueB int) int {
-	if valueA > valueB {
-		return valueA - valueB
-	}
-	return valueB - valueA
-}
-
-func decodeBase64PNG(encodedString string) (image.Image, error) {
-	decodedBytes, err := base64.StdEncoding.DecodeString(encodedString)
-	if err != nil {
-		return nil, err
-	}
-	decodedImage, err := png.Decode(bytes.NewReader(decodedBytes))
-	if err != nil {
-		return nil, err
-	}
-	return decodedImage, nil
-}
-
-// captureScreen captures the full screen or a region using Win32 GDI.
-func (imageDetector *Detector) captureScreen(searchRegion *model.Region) (image.Image, int, int, error) {
-	screenDC, _, _ := procGetDC.Call(0)
-	defer procReleaseDC.Call(0, screenDC)
-
+// captureScreen captures the full screen or a region using Win32 GDI into a
+// pooled RGBA buffer; the caller must releaseCaptureBuffer it.
+func captureScreen(searchRegion *model.Region) ([]byte, int, int, int, int, error) {
 	var captureX, captureY, captureWidth, captureHeight int
 	if searchRegion != nil {
 		captureX = searchRegion.X
@@ -131,18 +77,52 @@ func (imageDetector *Detector) captureScreen(searchRegion *model.Region) (image.
 		captureWidth = int(screenWidthValue)
 		captureHeight = int(screenHeightValue)
 	}
+	if err := validateSearchSize(captureWidth, captureHeight); err != nil {
+		return nil, 0, 0, 0, 0, err
+	}
 
-	memoryDC, _, _ := procCreateCompatibleDC.Call(screenDC)
+	screenDC, _, getDCErr := procGetDC.Call(0)
+	if screenDC == 0 {
+		return nil, 0, 0, 0, 0, fmt.Errorf("GetDC failed: %v", getDCErr)
+	}
+	defer procReleaseDC.Call(0, screenDC)
+
+	memoryDC, _, createDCErr := procCreateCompatibleDC.Call(screenDC)
+	if memoryDC == 0 {
+		return nil, 0, 0, 0, 0, fmt.Errorf("CreateCompatibleDC failed: %v", createDCErr)
+	}
 	defer procDeleteDC.Call(memoryDC)
 
-	bitmapHandle, _, _ := procCreateCompatibleBitmap.Call(screenDC, uintptr(captureWidth), uintptr(captureHeight))
+	bitmapHandle, _, createBitmapErr := procCreateCompatibleBitmap.Call(screenDC, uintptr(captureWidth), uintptr(captureHeight))
+	if bitmapHandle == 0 {
+		return nil, 0, 0, 0, 0, fmt.Errorf("CreateCompatibleBitmap failed: %v", createBitmapErr)
+	}
+	// Deferred calls run LIFO: the bitmap is deleted before the DC is deleted.
 	defer procDeleteObject.Call(bitmapHandle)
 
-	procSelectObject.Call(memoryDC, bitmapHandle)
-	procBitBlt.Call(memoryDC, 0, 0, uintptr(captureWidth), uintptr(captureHeight),
-		screenDC, uintptr(captureX), uintptr(captureY), bitBltSourceCopy)
+	previousObject, _, selectErr := procSelectObject.Call(memoryDC, bitmapHandle)
+	if previousObject == 0 {
+		return nil, 0, 0, 0, 0, fmt.Errorf("SelectObject failed: %v", selectErr)
+	}
+	// Runs before DeleteObject(bitmap) (a selected bitmap cannot be deleted).
+	bitmapSelected := true
+	deselectBitmap := func() {
+		if bitmapSelected {
+			procSelectObject.Call(memoryDC, previousObject)
+			bitmapSelected = false
+		}
+	}
+	defer deselectBitmap()
 
-	// Read bitmap data
+	blitResult, _, blitErr := procBitBlt.Call(memoryDC, 0, 0, uintptr(captureWidth), uintptr(captureHeight),
+		screenDC, uintptr(captureX), uintptr(captureY), bitBltSourceCopy)
+	if blitResult == 0 {
+		return nil, 0, 0, 0, 0, fmt.Errorf("BitBlt failed: %v", blitErr)
+	}
+
+	// GetDIBits requires the bitmap not be selected into a DC.
+	deselectBitmap()
+
 	type bitmapInfoHeader struct {
 		BiSize          uint32
 		BiWidth         int32
@@ -165,22 +145,15 @@ func (imageDetector *Detector) captureScreen(searchRegion *model.Region) (image.
 		BiBitCount: 32,
 	}
 
-	pixelDataSize := captureWidth * captureHeight * 4
-	pixelBuffer := make([]byte, pixelDataSize)
-
-	procGetDIBits.Call(memoryDC, bitmapHandle, 0, uintptr(captureHeight),
+	pixelBuffer := acquireCaptureBuffer(captureWidth * captureHeight * 4)
+	scanLines, _, dibErr := procGetDIBits.Call(memoryDC, bitmapHandle, 0, uintptr(captureHeight),
 		uintptr(unsafe.Pointer(&pixelBuffer[0])),
 		uintptr(unsafe.Pointer(&headerInfo)), 0)
-
-	capturedImage := image.NewRGBA(image.Rect(0, 0, captureWidth, captureHeight))
-	for pixelIndex := 0; pixelIndex < captureWidth*captureHeight; pixelIndex++ {
-		byteOffset := pixelIndex * 4
-		// GDI returns BGRA, convert to RGBA
-		capturedImage.Pix[byteOffset+0] = pixelBuffer[byteOffset+2] // R
-		capturedImage.Pix[byteOffset+1] = pixelBuffer[byteOffset+1] // G
-		capturedImage.Pix[byteOffset+2] = pixelBuffer[byteOffset+0] // B
-		capturedImage.Pix[byteOffset+3] = 255                       // A
+	if scanLines == 0 {
+		releaseCaptureBuffer(pixelBuffer)
+		return nil, 0, 0, 0, 0, fmt.Errorf("GetDIBits failed: %v", dibErr)
 	}
 
-	return capturedImage, captureX, captureY, nil
+	bgraToRGBA(pixelBuffer)
+	return pixelBuffer, captureWidth, captureHeight, captureX, captureY, nil
 }

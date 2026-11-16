@@ -64,8 +64,29 @@ func (scriptExecutor *Executor) Execute(ctx context.Context, script model.Script
 		if script.RunMode != model.RunModeInfinite {
 			return nil
 		}
+		if err := nextIteration(ctx, len(script.Actions) == 0); err != nil {
+			return err
+		}
 	}
 }
+
+// nextIteration checks cancellation between iterations of an infinite loop and,
+// when the body is empty, yields briefly so the loop does not spin a CPU core.
+func nextIteration(ctx context.Context, emptyBody bool) error {
+	if !emptyBody {
+		return ctx.Err()
+	}
+	t := time.NewTimer(emptyLoopYield)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+const emptyLoopYield = time.Millisecond
 
 func (scriptExecutor *Executor) executeActions(ctx context.Context, actionList []model.Action) error {
 	i := 0
@@ -104,11 +125,18 @@ func (scriptExecutor *Executor) executeActions(ctx context.Context, actionList [
 				}
 				j++
 			}
-			loopBody := actionList[loopStart+1 : j-1]
+			bodyEnd := j - 1
+			if depth > 0 {
+				bodyEnd = j
+			}
+			loopBody := actionList[loopStart+1 : bodyEnd]
 			count := currentAction.LoopCount
 			if count == 0 {
 				for {
 					if err := scriptExecutor.executeActions(ctx, loopBody); err != nil {
+						return err
+					}
+					if err := nextIteration(ctx, len(loopBody) == 0); err != nil {
 						return err
 					}
 				}
@@ -123,7 +151,6 @@ func (scriptExecutor *Executor) executeActions(ctx context.Context, actionList [
 			continue
 		}
 
-		log.Printf("executing action: type=%s key=%s x=%d y=%d", currentAction.Type, currentAction.Key, currentAction.X, currentAction.Y)
 		if err := scriptExecutor.executeOneAction(ctx, currentAction); err != nil {
 			log.Printf("action error: %v", err)
 			return err
@@ -142,7 +169,6 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 		x, y := scriptExecutor.inputSimulator.GetCursorPos()
 		scriptExecutor.storedPositionX = x
 		scriptExecutor.storedPositionY = y
-		log.Printf("mouse position stored: (%d, %d)", x, y)
 		return nil
 
 	case model.ActionMouseMoveStored:
@@ -259,6 +285,9 @@ func (scriptExecutor *Executor) executeLoop(ctx context.Context, currentAction m
 		// Infinite loop — runs until context cancelled
 		for {
 			if err := scriptExecutor.executeActions(ctx, currentAction.Actions); err != nil {
+				return err
+			}
+			if err := nextIteration(ctx, len(currentAction.Actions) == 0); err != nil {
 				return err
 			}
 		}

@@ -5,10 +5,9 @@ package executor
 import (
 	"fmt"
 	"log"
-	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -228,14 +227,6 @@ func mapVirtualKeyToScanCode(vk uint16) uint16 {
 	return uint16(ret)
 }
 
-func logForegroundWindow() {
-	hwnd, _, _ := procGetForegroundWindow.Call()
-	buf := make([]uint16, 256)
-	procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 256)
-	title := windows.UTF16ToString(buf)
-	log.Printf("foreground window: hwnd=0x%X title=%q", hwnd, title)
-}
-
 func extendedFlags(vk uint16, base uint32) uint32 {
 	if extendedVKCodes[vk] {
 		return base | keyEventFlagExtendedKey
@@ -249,8 +240,6 @@ func (s *InputSimulator) KeyDown(keyName string) error {
 		return err
 	}
 	sc := mapVirtualKeyToScanCode(vk)
-	logForegroundWindow()
-	log.Printf("KeyDown vk=0x%02X sc=0x%02X name=%s", vk, sc, keyName)
 	sendKeyInput(vk, sc, extendedFlags(vk, 0))
 	return nil
 }
@@ -321,114 +310,83 @@ func (s *InputSimulator) UnlockAll() {
 	}
 }
 
+var (
+	mouseHookHandle atomic.Uintptr
+	kbdHookHandle   atomic.Uintptr
+	mouseCallbacks  hookCallbackCache
+	kbdCallbacks    hookCallbackCache
+	rctrlFilter     repeatFilter
+)
+
+var winHookAPI = hookAPI{
+	newCallback: func(fn interface{}) uintptr { return syscall.NewCallback(fn) },
+	setHook: func(hookID int, cb uintptr) uintptr {
+		h, _, _ := procSetWindowsHookExW.Call(uintptr(hookID), cb, 0, 0)
+		if h == 0 {
+			log.Printf("SetWindowsHookExW(%d) failed", hookID)
+		}
+		return h
+	},
+	unhook: func(handle uintptr) { procUnhookWindowsHookEx.Call(handle) },
+	pump: func() {
+		var msg winMsg
+		procPeekMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 1)
+	},
+}
+
+func mouseHookProc(nCode int, wParam, lParam uintptr) uintptr {
+	if nCode >= 0 {
+		mhs := *(**msllhookstruct)(unsafe.Pointer(&lParam))
+		if mhs.flags&llmhfInjected == 0 {
+			return 1 // block physical user mouse input
+		}
+		// Script-generated (SendInput) — pass through
+	}
+	ret, _, _ := procCallNextHookEx.Call(mouseHookHandle.Load(), uintptr(nCode), wParam, lParam)
+	return ret
+}
+
+func keyboardHookProc(nCode int, wParam, lParam uintptr) uintptr {
+	if nCode >= 0 {
+		const (
+			wmKeydown    = 0x0100
+			wmKeyup      = 0x0101
+			wmSyskeydown = 0x0104
+			wmSyskeyup   = 0x0105
+			vkRCtrl      = 0xA3
+		)
+		kbs := *(**kbdllhookstructExec)(unsafe.Pointer(&lParam))
+		if kbs.flags&llkhfInjected == 0 {
+			// Physical key from user — fire emergency toggle once per rctrl press, block everything else
+			if kbs.vkCode == vkRCtrl {
+				isDown := wParam == wmKeydown || wParam == wmSyskeydown
+				isUp := wParam == wmKeyup || wParam == wmSyskeyup
+				if (isDown || isUp) && rctrlFilter.onKey(isDown) {
+					if fn := emergencyToggle; fn != nil {
+						go fn()
+					}
+				}
+			}
+			return 1 // block physical user keyboard input
+		}
+		// Script-generated (SendInput) — pass through
+	}
+	ret, _, _ := procCallNextHookEx.Call(kbdHookHandle.Load(), uintptr(nCode), wParam, lParam)
+	return ret
+}
+
+var (
+	mouseHookProcFn    = mouseHookProc
+	keyboardHookProcFn = keyboardHookProc
+)
+
 // startMouseLockHook installs a WH_MOUSE_LL hook that eats all mouse events.
 func startMouseLockHook() func() {
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{})
-
-	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		defer close(doneCh)
-
-		var hookHandle uintptr
-		cb := syscall.NewCallback(func(nCode int, wParam, lParam uintptr) uintptr {
-			if nCode >= 0 {
-				mhs := (*msllhookstruct)(unsafe.Pointer(lParam))
-				if mhs.flags&llmhfInjected != 0 {
-					// Script-generated (SendInput) — pass through
-					ret, _, _ := procCallNextHookEx.Call(hookHandle, uintptr(nCode), wParam, lParam)
-					return ret
-				}
-				return 1 // block physical user mouse input
-			}
-			ret, _, _ := procCallNextHookEx.Call(hookHandle, uintptr(nCode), wParam, lParam)
-			return ret
-		})
-
-		hookHandle, _, _ = procSetWindowsHookExW.Call(14, cb, 0, 0) // WH_MOUSE_LL
-		if hookHandle == 0 {
-			log.Printf("SetWindowsHookExW(WH_MOUSE_LL) failed")
-			return
-		}
-		defer procUnhookWindowsHookEx.Call(hookHandle)
-
-		var msg winMsg
-		for {
-			select {
-			case <-stopCh:
-				return
-			default:
-				procPeekMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 1)
-				time.Sleep(5 * time.Millisecond)
-			}
-		}
-	}()
-
-	return func() {
-		close(stopCh)
-		<-doneCh
-	}
+	return runHook(winHookAPI, &mouseCallbacks, mouseHookProcFn, 14, &mouseHookHandle, nil)
 }
 
 // startKeyboardLockHook installs a WH_KEYBOARD_LL hook that eats all keyboard events.
 // When rctrl is pressed it fires emergencyToggle (if set) so the user can break out.
 func startKeyboardLockHook() func() {
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{})
-
-	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		defer close(doneCh)
-
-		var hookHandle uintptr
-		cb := syscall.NewCallback(func(nCode int, wParam, lParam uintptr) uintptr {
-			if nCode >= 0 {
-				const (
-					wmKeydown    = 0x0100
-					wmSyskeydown = 0x0104
-					vkRCtrl      = 0xA3
-				)
-				kbs := (*kbdllhookstructExec)(unsafe.Pointer(lParam))
-				if kbs.flags&llkhfInjected != 0 {
-					// Script-generated (SendInput) — pass through
-					ret, _, _ := procCallNextHookEx.Call(hookHandle, uintptr(nCode), wParam, lParam)
-					return ret
-				}
-				// Physical key from user — fire emergency toggle on rctrl, block everything else
-				if (wParam == wmKeydown || wParam == wmSyskeydown) && kbs.vkCode == vkRCtrl {
-					if fn := emergencyToggle; fn != nil {
-						go fn()
-					}
-				}
-				return 1 // block physical user keyboard input
-			}
-			ret, _, _ := procCallNextHookEx.Call(hookHandle, uintptr(nCode), wParam, lParam)
-			return ret
-		})
-
-		hookHandle, _, _ = procSetWindowsHookExW.Call(13, cb, 0, 0) // WH_KEYBOARD_LL
-		if hookHandle == 0 {
-			log.Printf("SetWindowsHookExW(WH_KEYBOARD_LL) failed")
-			return
-		}
-		defer procUnhookWindowsHookEx.Call(hookHandle)
-
-		var msg winMsg
-		for {
-			select {
-			case <-stopCh:
-				return
-			default:
-				procPeekMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 1)
-				time.Sleep(5 * time.Millisecond)
-			}
-		}
-	}()
-
-	return func() {
-		close(stopCh)
-		<-doneCh
-	}
+	return runHook(winHookAPI, &kbdCallbacks, keyboardHookProcFn, 13, &kbdHookHandle, rctrlFilter.reset)
 }
