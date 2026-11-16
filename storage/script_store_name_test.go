@@ -3,7 +3,9 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
 )
@@ -53,5 +55,61 @@ func TestCloneDoesNotOverwriteSanitizedCollision(t *testing.T) {
 	scripts, _ := scriptStore.List()
 	if len(scripts) != 3 {
 		t.Errorf("got %d scripts, want 3", len(scripts))
+	}
+}
+
+func TestNameOrFileTakenSeesPendingQueue(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	beforeQueuedWrite = func(string) {
+		once.Do(func() { close(started) })
+		<-release
+	}
+	defer func() { beforeQueuedWrite = nil }()
+
+	scriptStore.QueueSave(model.Script{ID: "a", Name: "Blocker"})
+	<-started
+	scriptStore.QueueSave(model.Script{ID: "b", Name: "Farm (copy)"})
+
+	if scriptStore.NameExists("Farm (copy)", "") {
+		t.Fatal("precondition: pending script must not be on disk yet")
+	}
+	if !scriptStore.NameOrFileTaken("farm (COPY)") {
+		t.Error("expected case-insensitive match against the pending queue")
+	}
+	if !scriptStore.NameOrFileTaken("Farm copy") {
+		t.Error("expected sanitized-file collision against the pending queue")
+	}
+	if scriptStore.NameOrFileTaken("Farm (copy 2)") {
+		t.Error("unrelated name must be free")
+	}
+	close(release)
+	scriptStore.FlushSaves(2 * time.Second)
+}
+
+func TestOnSaveErrorHookReportsFailedQueuedWrite(t *testing.T) {
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "scripts")
+	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	scriptStore := NewScriptStore(blocked)
+	got := make(chan string, 1)
+	scriptStore.SetOnSaveError(func(s model.Script, err error) {
+		if err != nil {
+			got <- s.ID
+		}
+	})
+	scriptStore.QueueSave(model.Script{ID: "x1", Name: "X"})
+	scriptStore.FlushSaves(2 * time.Second)
+	select {
+	case id := <-got:
+		if id != "x1" {
+			t.Errorf("hook got id %q", id)
+		}
+	default:
+		t.Fatal("expected OnSaveError to fire")
 	}
 }

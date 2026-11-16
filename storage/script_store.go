@@ -38,12 +38,24 @@ type ScriptStore struct {
 	pendingOrd []string
 	draining   bool
 	idle       chan struct{} // closed when the worker drains
+	onSaveErr  func(script model.Script, err error)
 }
 
 // NewScriptStore creates a ScriptStore for the given directory.
 func NewScriptStore(scriptsDirectory string) *ScriptStore {
 	return &ScriptStore{scriptsDirectory: scriptsDirectory}
 }
+
+// SetOnSaveError registers a hook called from the save worker when a queued write fails.
+// The hook runs without any store lock held and must not block.
+func (scriptStore *ScriptStore) SetOnSaveError(hook func(script model.Script, err error)) {
+	scriptStore.queueMu.Lock()
+	scriptStore.onSaveErr = hook
+	scriptStore.queueMu.Unlock()
+}
+
+// SanitizeName returns the file-name stem a script name maps to.
+func SanitizeName(name string) string { return sanitizeName(name) }
 
 // sanitizeName converts a script name to a safe filename (lowercase, underscores).
 func sanitizeName(name string) string {
@@ -243,14 +255,28 @@ func (scriptStore *ScriptStore) FlushSaves(timeout time.Duration) bool {
 
 // writeQueued writes a queued snapshot only if it is still the latest for its ID.
 func (scriptStore *ScriptStore) writeQueued(item queuedSave) {
+	err := scriptStore.writeQueuedLocked(item)
+	if err == nil {
+		return
+	}
+	scriptStore.queueMu.Lock()
+	hook := scriptStore.onSaveErr
+	scriptStore.queueMu.Unlock()
+	if hook != nil {
+		hook(item.script, err)
+	}
+}
+
+func (scriptStore *ScriptStore) writeQueuedLocked(item queuedSave) error {
 	scriptStore.mu.Lock()
 	defer scriptStore.mu.Unlock()
 	scriptStore.queueMu.Lock()
 	current := scriptStore.gen[item.script.ID] == item.token
 	scriptStore.queueMu.Unlock()
-	if current {
-		scriptStore.writeLocked(item.script)
+	if !current {
+		return nil
 	}
+	return scriptStore.writeLocked(item.script)
 }
 
 func (scriptStore *ScriptStore) drainQueue() {

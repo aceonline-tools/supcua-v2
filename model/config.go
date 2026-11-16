@@ -22,6 +22,9 @@ type AppConfig struct {
 
 	AutoActiveEnabled     bool   `json:"auto_active_enabled"`
 	AutoActiveProcessName string `json:"auto_active_process_name"`
+
+	Theme           string   `json:"theme,omitempty"`
+	CollapsedGroups []string `json:"collapsed_groups,omitempty"`
 }
 
 // DefaultConfig returns sensible defaults for a fresh install.
@@ -34,5 +37,6 @@ func DefaultConfig() AppConfig {
 		OverlayPosition:    WindowPos{X: 10, Y: 10},
 		ScriptsDir:         "./scripts",
 		KeyPressDurationMs: 10,
+		Theme:              "system",
 	}
 }

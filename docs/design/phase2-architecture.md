@@ -1,6 +1,6 @@
 # Phase 2 architecture — WebView2 UI (spike result + DRAFT backend contract)
 
-Base: `feat/modern-ui @ 328926a` (PR #1 clone/auto-active merged). PR #3 mechanisms are cited as `@3007ac4`. Status: **DRAFT — the contract (§9) awaits Lead acceptance.** Spike code: `spike/` (own module). Windows runtime behaviour is **unproven locally** (no Windows here); it is covered by `spike/SMOKE.md` and `spike/ci/webview2-spike.yml`.
+Base: `feat/modern-ui @ 328926a` (PR #1 clone/auto-active merged). PR #3 mechanisms are cited as `@3007ac4`. Status: **§9 contract ACCEPTED (with the amendments in §9.0); the rest is the spike result.** Spike code: `spike/` (own module). Windows runtime behaviour is **unproven locally** (no Windows here); it is covered by `spike/SMOKE.md` and `spike/ci/webview2-spike.yml`.
 
 Legend: **[V]** verified here (build, run, or source read); **[D]** documentation only; **[A]** assumed, not verified; **[CI]** to be proven by the Windows runner.
 
@@ -119,7 +119,15 @@ Today `app.Controller.OnStatusChange` is a single callback (`app/controller.go:3
 2. `release.sh --build-only [--version X] [--out DIR]`: parsed **first**, before the `git` version/tag logic (`release.sh:~10-22`); sets `VERSION=${X:-dev}`; calls `scripts/build.sh`; `exit 0` before line 35. Refuse `--build-only` combined with any publish flag.
 3. A test: `release.sh --build-only` run with `git`, `gh`, `aws` shadowed by failing stubs in `PATH` must exit 0 (proves no publish call). `spike/build.sh` is the template (no tag/push/upload paths).
 
-## 9. DRAFT API contract
+## 9. API contract — ACCEPTED
+
+### 9.0 Amendments and bridge interface
+
+- `StateDTO` gains required `mouse_locked` / `keyboard_locked` (executor lock state). Run mode is `once|infinite`, hotkey mode `toggle|separate`. The host window uses the native frame.
+- **D1** decided: autosave-on-close parity. `editor.close` returns `{saved, rev, reason?}` (UI shows "Saved" / "Not saved: <reason>"); an optional `script` param is the draft to autosave, otherwise the last draft whose `editor.save` failed. **D2** decided: `key_press_duration_ms` is restart-only (no `executor/` change).
+- Collapsed groups go through `scripts.setGroupCollapsed` (config `collapsed_groups`); theme is config `theme`; both additive and `omitempty`-safe.
+- Package `bridge/` (platform-neutral, no walk/win imports): `type Emitter interface{ Emit(event string, payload any) }`, `type UIThread interface{ Post(func()) }`, `type Handler = func(json.RawMessage) (any, error)`, `New(Deps, Emitter) *Bridge`, `(*Bridge).Methods() map[string]Handler`, `(*Bridge).Shutdown(timeout) error` (UI thread: `app.closing` → stop captures → `SetEditDialogOpen(false)` → `autoActive.Stop` → persist overlay position → `FlushSaves`). `Deps` holds `Controller`, `Store`, `Config`, `Hotkeys`, `AutoActive`, `Locks`, `Overlay`, `UI`, `Capture` (platform hook behind `CaptureBackend`) and `Host` (hide/show/exit, clipboard, boot info, hotkey rebind, update). Errors are `*bridge.Error{code, message, field?, conflicts?}`. Host-facing helpers: `NotifyBlur`, `NotifyStateChanged`, `NotifyUpdateAvailable`, `NavGoto`, `Reload`. Handlers run only on the host's single RPC worker; the status Hub (`app/status`, `Controller.Subscribe`) may call the state subscriber from any goroutine.
+
 
 Transport (`spike/rpc/rpc.go`): JS → `chrome.webview.postMessage(JSON.stringify({id, method, params}))`; Go → `window.__resolve({id, ok, result|error})`; events → `window.__emit(name, payload)`. Methods are looked up by **string key in a map**, params decoded into explicit json-tagged structs — no reflection by name, so garble-safe [V]. One worker serializes all calls; queue 64, overflow ⇒ `BUSY`.
 
@@ -163,9 +171,21 @@ Transport (`spike/rpc/rpc.go`): JS → `chrome.webview.postMessage(JSON.stringif
 
 ### 9.2 Events (Go → JS)
 
-`state` (the Hub snapshot, §5) · `scripts.changed {rev}` (any external/bulk change; frontend refetches `scripts.list`) · `settings.changed {fields[]}` · `capture.hotkey {field, hotkey:Hotkey\|null, display}` · `capture.key {key}` · `capture.mouse {x,y}` · `capture.ended {reason: stopped\|blur\|timeout\|editorClosed}` · `update.available {tag}` · `update.progress {pct}` · `update.failed {message}` · `save.failed {scriptId, name, message}` · `nav.goto {route}` (tray "Auto Active Process…" → Settings) · `app.closing`.
+`state` (the Hub snapshot, §5) · `scripts.changed {rev}` (any external/bulk change; frontend refetches `scripts.list`) · `settings.changed {fields[]}` · `capture.hotkey {field, hotkey:Hotkey\|null, display}` · `capture.key {key}` · `capture.mouse {x,y}` · `capture.ended {reason: stopped\|blur\|timeout\|editorClosed}` · `update.available {tag}` · `update.progress {pct}` · `update.failed {message}` · `save.failed {scriptId, name, message}` (from `ScriptStore.SetOnSaveError`) · `nav.goto {route}` (tray "Auto Active Process…" → Settings) · `app.closing`.
 
-### 9.3 DTOs (every field tagged; sketch)
+### 9.3 DTOs (every field tagged; sketch — the table below is authoritative for the types `frontend/src/api/types.ts` defines)
+
+| DTO | JSON fields (snake_case unless noted) |
+|---|---|
+| `ScriptSummary` | `id, name, group, run_mode, hotkey_mode, hotkey_label, enabled, running` |
+| `GroupDTO` | `name, count, all_enabled, collapsed` |
+| `ScriptList` | `rev, scripts[], groups[]` |
+| `SettingsDTO` | `theme, global_hotkey, capture_hotkey, overlay_hotkey` (display strings, e.g. `Ctrl + O`), `overlay_enabled, key_press_duration_ms, scripts_dir, auto_active_enabled, auto_active_process_name, collapsed_groups[]` |
+| `SettingsUpdateResult` | `applied[], restartRequired[], state` (camelCase) |
+| `EditorSession` / `HotkeyConflict` / `BootState` | camelCase: `sessionId, script, catalog` / `scriptId, name, field, hotkey` / `mode, version, macs, runtimeVersion` |
+| `ActionSpec` / `ParamSpec` | `type, group, params[]` / `name, kind, min?, max?, default?` (param `name` = Action JSON tag) |
+
+Fixtures in `frontend/src/api/fixtures/*.json` are decoded strictly into the Go DTOs by `bridge/bridge_test.go`.
 
 ```go
 type StateDTO struct {
@@ -215,8 +235,8 @@ type OverlayDTO struct { Enabled, Visible, Draggable bool; X, Y int }
 
 ### 9.7 Decisions needed from Lead/Human
 
-- **D1** Editor semantics: keep autosave-on-close (parity) or add explicit Cancel (changes behaviour; recommend parity + a visible "Saved"/"Not saved: name taken" indicator).
-- **D2** Make `key_press_duration_ms` live (small executor change) or restart-only.
+- **D1** (decided, §9.0) Editor semantics: keep autosave-on-close (parity) or add explicit Cancel (changes behaviour; recommend parity + a visible "Saved"/"Not saved: name taken" indicator).
+- **D2** (decided: restart-only) Make `key_press_duration_ms` live (small executor change) or restart-only.
 - **D3** Adopt a local patch/fork of jchv `pkg/edge` (Close, PostWebMessageAsJson, resource serving) vs the Wails fork (+352 init callbacks).
 
 ## 10. Unproven / residual risks

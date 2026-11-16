@@ -1,0 +1,271 @@
+package bridge
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/yanmad27/supcua-v2/model"
+	"github.com/yanmad27/supcua-v2/storage"
+)
+
+var keyTokenRe = regexp.MustCompile(`^[a-z0-9_]{1,16}$`)
+
+var validModifiers = map[string]bool{"ctrl": true, "alt": true, "shift": true, "win": true}
+
+var keyDisplay = map[string]string{
+	"lctrl": "LCtrl", "rctrl": "RCtrl", "lshift": "LShift", "rshift": "RShift",
+	"lalt": "LAlt", "ralt": "RAlt",
+}
+
+// DisplayHotkey renders a hotkey as "Ctrl + O". The result round-trips through ParseHotkey.
+func DisplayHotkey(hk model.Hotkey) string {
+	parts := make([]string, 0, len(hk.Modifiers)+1)
+	for _, m := range hk.Modifiers {
+		parts = append(parts, titleCase(m))
+	}
+	return strings.Join(append(parts, displayKey(hk.Key)), " + ")
+}
+
+func displayKey(key string) string {
+	k := strings.ToLower(key)
+	if d, ok := keyDisplay[k]; ok {
+		return d
+	}
+	if len(k) == 1 || (len(k) > 1 && k[0] == 'f' && isDigits(k[1:])) {
+		return strings.ToUpper(k)
+	}
+	return titleCase(k)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
+}
+
+// ParseHotkey parses a display string ("Ctrl + O", "RCtrl", "alt+f5") into a model hotkey.
+func ParseHotkey(text string) (model.Hotkey, bool) {
+	if len(text) > 64 {
+		return model.Hotkey{}, false
+	}
+	tokens := strings.Split(text, "+")
+	mods := []string{}
+	var key string
+	for i, tok := range tokens {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if i < len(tokens)-1 {
+			if !validModifiers[tok] {
+				return model.Hotkey{}, false
+			}
+			mods = append(mods, tok)
+			continue
+		}
+		key = tok
+	}
+	if !keyTokenRe.MatchString(key) {
+		return model.Hotkey{}, false
+	}
+	return model.Hotkey{Modifiers: mods, Key: key}, true
+}
+
+// validHotkey checks a script hotkey's shape.
+func validHotkey(hk *model.Hotkey) bool {
+	if hk == nil {
+		return true
+	}
+	if !keyTokenRe.MatchString(strings.ToLower(hk.Key)) || len(hk.Modifiers) > 4 {
+		return false
+	}
+	for _, m := range hk.Modifiers {
+		if !validModifiers[strings.ToLower(m)] {
+			return false
+		}
+	}
+	return true
+}
+
+func scriptHotkeyLabel(s model.Script) string {
+	switch s.HotkeyMode {
+	case model.HotkeyModeToggle:
+		if s.ToggleHotkey != nil {
+			return DisplayHotkey(*s.ToggleHotkey)
+		}
+	case model.HotkeyModeSeparate:
+		start, stop := "", ""
+		if s.StartHotkey != nil {
+			start = DisplayHotkey(*s.StartHotkey)
+		}
+		if s.StopHotkey != nil {
+			stop = DisplayHotkey(*s.StopHotkey)
+		}
+		if start != "" && stop != "" {
+			return start + " / " + stop
+		}
+		return start + stop
+	}
+	return ""
+}
+
+var simpleLabels = map[string]string{
+	model.ActionMouseLeftClick:   "Mouse Left Click",
+	model.ActionMouseRightClick:  "Mouse Right Click",
+	model.ActionMouseLeftDouble:  "Mouse Left Double Click",
+	model.ActionMouseRightDouble: "Mouse Right Double Click",
+	model.ActionMouseLeftDown:    "Mouse Left Down",
+	model.ActionMouseLeftUp:      "Mouse Left Up",
+	model.ActionMouseRightDown:   "Mouse Right Down",
+	model.ActionMouseRightUp:     "Mouse Right Up",
+	model.ActionMouseStorePos:    "Mouse Store Position",
+	model.ActionMouseMoveStored:  "Mouse Move to Stored",
+	model.ActionLockMouse:        "Lock Mouse",
+	model.ActionUnlockMouse:      "Unlock Mouse",
+	model.ActionLockKeyboard:     "Lock Keyboard",
+	model.ActionUnlockKeyboard:   "Unlock Keyboard",
+	"loop_end":                   "End Loop",
+}
+
+// describeAction single-sources the action list labels (parity with ui/script_edit_dialog.go).
+func describeAction(a model.Action) string {
+	if l, ok := simpleLabels[a.Type]; ok {
+		return l
+	}
+	switch a.Type {
+	case model.ActionMouseMove:
+		if a.Source == "found" {
+			return "Mouse Move -> found position"
+		}
+		return fmt.Sprintf("Mouse Move -> (%d, %d)", a.X, a.Y)
+	case model.ActionKeyPress:
+		return "Key Press: " + a.Key
+	case model.ActionKeyDown:
+		return "Key Down: " + a.Key
+	case model.ActionKeyUp:
+		return "Key Up: " + a.Key
+	case model.ActionDelay:
+		return fmt.Sprintf("Delay: %dms", a.DelayMs)
+	case model.ActionLoop:
+		if a.LoopCount == 0 {
+			return "Loop (infinite)"
+		}
+		return fmt.Sprintf("Loop (%dx)", a.LoopCount)
+	case model.ActionWaitForImage:
+		return fmt.Sprintf("Wait For Image (timeout: %dms)", a.TimeoutMs)
+	case model.ActionIfImage:
+		return fmt.Sprintf("If Image (then: %d, else: %d)", len(a.ThenActions), len(a.ElseActions))
+	}
+	return a.Type
+}
+
+func intp(v int) *int { return &v }
+
+func buildCatalog() []ActionSpec {
+	xy := []ParamSpec{{Name: "x", Kind: "int", Default: 0}, {Name: "y", Kind: "int", Default: 0}}
+	key := []ParamSpec{{Name: "key", Kind: "string", Default: ""}}
+	none := []ParamSpec{}
+	return []ActionSpec{
+		{model.ActionMouseMove, "mouse", xy},
+		{model.ActionMouseLeftClick, "mouse", none},
+		{model.ActionMouseRightClick, "mouse", none},
+		{model.ActionMouseLeftDouble, "mouse", none},
+		{model.ActionMouseRightDouble, "mouse", none},
+		{model.ActionMouseLeftDown, "mouse", none},
+		{model.ActionMouseLeftUp, "mouse", none},
+		{model.ActionMouseRightDown, "mouse", none},
+		{model.ActionMouseRightUp, "mouse", none},
+		{model.ActionMouseStorePos, "mouse", none},
+		{model.ActionMouseMoveStored, "mouse", none},
+		{model.ActionKeyPress, "keyboard", key},
+		{model.ActionKeyDown, "keyboard", key},
+		{model.ActionKeyUp, "keyboard", key},
+		{model.ActionDelay, "wait", []ParamSpec{{Name: "ms", Kind: "int", Min: intp(1), Max: intp(catalogMaxMs), Default: 100}}},
+		{model.ActionLoop, "loop", []ParamSpec{{Name: "count", Kind: "int", Min: intp(0), Max: intp(maxLoopCount), Default: 0}}},
+		{model.ActionWaitForImage, "image", []ParamSpec{
+			{Name: "timeout_ms", Kind: "int", Min: intp(0), Max: intp(catalogMaxMs), Default: 5000},
+			{Name: "use_found_position", Kind: "bool", Default: false},
+		}},
+		{model.ActionIfImage, "image", []ParamSpec{{Name: "use_found_position", Kind: "bool", Default: false}}},
+		{model.ActionLockMouse, "lock", none},
+		{model.ActionUnlockMouse, "lock", none},
+		{model.ActionLockKeyboard, "lock", none},
+		{model.ActionUnlockKeyboard, "lock", none},
+	}
+}
+
+const (
+	maxDelayMs    = 3_600_000
+	catalogMaxMs  = 600_000
+	maxLoopCount  = 1_000_000
+	maxNameLen    = 120
+	maxActions    = 5000
+	maxActionDeep = 16
+)
+
+func knownActionTypes() map[string]bool {
+	m := map[string]bool{}
+	for _, s := range buildCatalog() {
+		m[s.Type] = true
+	}
+	return m
+}
+
+// validateScript normalises (trims name/group) and validates a client-supplied script.
+func validateScript(s *model.Script, known map[string]bool) *Error {
+	s.Name = strings.TrimSpace(s.Name)
+	s.Group = strings.TrimSpace(s.Group)
+	if s.Name == "" || storage.SanitizeName(s.Name) == "" {
+		return newErr(CodeNameEmpty)
+	}
+	if len(s.Name) > maxNameLen || len(s.Group) > maxNameLen || len(s.ID) > 64 {
+		return badRequest()
+	}
+	if s.RunMode != model.RunModeOnce && s.RunMode != model.RunModeInfinite {
+		return badRequest()
+	}
+	if s.HotkeyMode != model.HotkeyModeToggle && s.HotkeyMode != model.HotkeyModeSeparate {
+		return badRequest()
+	}
+	if !validHotkey(s.ToggleHotkey) || !validHotkey(s.StartHotkey) || !validHotkey(s.StopHotkey) {
+		return badRequest()
+	}
+	if s.Actions == nil {
+		s.Actions = []model.Action{}
+	}
+	count := 0
+	return validateActions(s.Actions, known, 0, &count)
+}
+
+func validateActions(actions []model.Action, known map[string]bool, depth int, count *int) *Error {
+	if depth > maxActionDeep {
+		return badRequest()
+	}
+	for _, a := range actions {
+		*count++
+		if *count > maxActions || (!known[a.Type] && a.Type != "loop_end") {
+			return badRequest()
+		}
+		if a.DelayMs < 0 || a.DelayMs > maxDelayMs || a.TimeoutMs < 0 || a.TimeoutMs > maxDelayMs ||
+			a.LoopCount < 0 || a.LoopCount > maxLoopCount || len(a.Key) > 32 || len(a.Image) > 1024 {
+			return badRequest()
+		}
+		for _, children := range [][]model.Action{a.Actions, a.ThenActions, a.ElseActions} {
+			if err := validateActions(children, known, depth+1, count); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
