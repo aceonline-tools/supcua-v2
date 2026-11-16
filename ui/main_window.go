@@ -239,6 +239,10 @@ func CreateMainWindow(scriptStore *storage.ScriptStore, configStore *storage.Con
 						OnClicked: func() { wc.onEditScript() },
 					},
 					PushButton{
+						Text:      "Clone",
+						OnClicked: func() { wc.onCloneScript() },
+					},
+					PushButton{
 						Text:      "Delete",
 						OnClicked: func() { wc.onDeleteScript() },
 					},
@@ -520,6 +524,27 @@ func (wc *MainWindowController) onEditScript() {
 				wc.tableView.SetCurrentIndex(row)
 			})
 		}
+	}
+}
+
+func (wc *MainWindowController) onCloneScript() {
+	selectedIndex := wc.tableView.CurrentIndex()
+	scriptIdx, ok := wc.rowToScript[selectedIndex]
+	if !ok {
+		return // header row or nothing selected
+	}
+
+	clonedScript := model.CloneScript(wc.allScripts[scriptIdx], wc.scriptStore.NameOrFileTaken)
+	if err := wc.scriptStore.Save(clonedScript); err != nil {
+		walk.MsgBox(wc.mainWindow, "Clone Script", fmt.Sprintf("Failed to clone script: %v", err), walk.MsgBoxIconError)
+		return
+	}
+	wc.refreshScriptList()
+	wc.notifyScriptsChanged()
+	if row := wc.findRowByScriptID(clonedScript.ID); row >= 0 {
+		wc.mainWindow.Synchronize(func() {
+			wc.tableView.SetCurrentIndex(row)
+		})
 	}
 }
 
