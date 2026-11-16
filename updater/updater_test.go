@@ -1,10 +1,13 @@
 package updater
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +27,10 @@ func TestParseStrict(t *testing.T) {
 		{"v10.20.30", true, [3]int{10, 20, 30}},
 		{"1.0.29-rc.1", false, [3]int{}},
 		{"0.0.0-ci.abc", false, [3]int{}},
+		{"v01.2.3", false, [3]int{}},
+		{"v1.02.3", false, [3]int{}},
+		{"1.2.03", false, [3]int{}},
+		{"0.0.0", true, [3]int{}},
 		{"1.0", false, [3]int{}},
 		{"1.0.0.1", false, [3]int{}},
 		{"1.a.0", false, [3]int{}},
@@ -105,7 +112,7 @@ func releaseJSON(tag string, draft, pre bool, assets string) string {
 	return fmt.Sprintf(`{"tag_name":%q,"draft":%t,"prerelease":%t,"assets":[%s]}`, tag, draft, pre, assets)
 }
 
-const goodAsset = `{"name":"supcua-v2.exe","browser_download_url":"https://example.test/supcua-v2.exe","size":10}`
+const goodAsset = `{"name":"supcua-v2.exe","browser_download_url":"https://github.com/aceonline-tools/supcua-v2/releases/download/v1.0.29/supcua-v2.exe","size":10}`
 
 func serveJSON(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +128,7 @@ func TestCheckUpdate_HappyPathAndHeaders(t *testing.T) {
 		serveJSON(releaseJSON("v1.0.29", false, false, goodAsset))(w, r)
 	})
 	v, u, err := CheckUpdate("1.0.28")
-	if err != nil || v != "1.0.29" || u != "https://example.test/supcua-v2.exe" {
+	if err != nil || v != "1.0.29" || u != "https://github.com/aceonline-tools/supcua-v2/releases/download/v1.0.29/supcua-v2.exe" {
 		t.Fatalf("got %q %q %v", v, u, err)
 	}
 	if got.URL.Path != "/repos/aceonline-tools/supcua-v2/releases/latest" {
@@ -170,7 +177,7 @@ func TestCheckUpdate_DevBuildGetsUpdate(t *testing.T) {
 func TestCheckUpdate_NotFound(t *testing.T) {
 	fakeAPI(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	v, u, err := CheckUpdate("1.0.0")
-	if err != nil || v != "" || u != "" {
+	if !errors.Is(err, ErrNoRelease) || v != "" || u != "" {
 		t.Fatalf("got %q %q %v", v, u, err)
 	}
 }
@@ -268,48 +275,215 @@ func TestCheckUpdate_Timeout(t *testing.T) {
 	}
 }
 
-func TestDownloadTo_Success(t *testing.T) {
-	payload := strings.Repeat("MZ", 4096)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, payload)
-	}))
-	defer srv.Close()
+func tlsServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewTLSServer(h)
+	oi, or, ot := initialAllowed, redirectAllowed, transport
+	initialAllowed = func(string) bool { return true }
+	redirectAllowed = func(u *url.URL) bool { return u.Host == srv.Listener.Addr().String() }
+	transport = srv.Client().Transport
+	t.Cleanup(func() { srv.Close(); initialAllowed, redirectAllowed, transport = oi, or, ot })
+	return srv
+}
+
+func mz(n int) string { return "MZ" + strings.Repeat("x", n-2) }
+
+func dl(t *testing.T, url string) (string, error) {
 	dst := filepath.Join(t.TempDir(), "u.exe")
-	if err := downloadTo(srv.URL, dst); err != nil {
+	err := downloadTo(url, dst)
+	if err != nil {
+		if _, serr := os.Stat(dst); !os.IsNotExist(serr) {
+			t.Error("partial file not removed")
+		}
+	}
+	return dst, err
+}
+
+func TestDownloadTo_Success(t *testing.T) {
+	payload := mz(8192)
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, payload) })
+	dst, err := dl(t, srv.URL)
+	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(dst)
-	if string(b) != payload {
-		t.Fatalf("content mismatch, len %d", len(b))
+	if b, _ := os.ReadFile(dst); string(b) != payload {
+		t.Fatal("content mismatch")
+	}
+}
+
+func TestDownloadTo_SizeAndDigest(t *testing.T) {
+	payload := mz(1000)
+	sum := sha256.Sum256([]byte(payload))
+	good := "sha256:" + hex.EncodeToString(sum[:])
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, payload) })
+	cases := []struct {
+		name string
+		a    asset
+		ok   bool
+	}{
+		{"match", asset{Size: 1000, Digest: good}, true},
+		{"size only", asset{Size: 1000}, true},
+		{"size smaller than body", asset{Size: 900}, false},
+		{"size larger than body", asset{Size: 1100}, false},
+		{"digest mismatch", asset{Size: 1000, Digest: "sha256:" + strings.Repeat("0", 64)}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			expected.Store(srv.URL, c.a)
+			t.Cleanup(func() { expected.Delete(srv.URL) })
+			if _, err := dl(t, srv.URL); (err == nil) != c.ok {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestDownloadTo_ChunkedUnknownLength(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("MZ"))
+		w.(http.Flusher).Flush()
+		w.Write([]byte("rest"))
+	})
+	if _, err := dl(t, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	expected.Store(srv.URL, asset{Size: 10})
+	defer expected.Delete(srv.URL)
+	if _, err := dl(t, srv.URL); err == nil {
+		t.Fatal("size mismatch accepted")
+	}
+}
+
+func TestDownloadTo_Oversized(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("MZ"))
+		w.(http.Flusher).Flush()
+		buf := make([]byte, 1<<20)
+		for i := 0; i < 205; i++ {
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+		}
+	})
+	if _, err := dl(t, srv.URL); err == nil {
+		t.Fatal("expected cap error")
+	}
+}
+
+func TestDownloadTo_NonMZ(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>not an exe</html>") })
+	if _, err := dl(t, srv.URL); err == nil {
+		t.Fatal("expected MZ error")
 	}
 }
 
 func TestDownloadTo_Truncated(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1000")
 		w.WriteHeader(200)
-		w.Write([]byte("short"))
+		w.Write([]byte("MZshort"))
 		conn, _, _ := w.(http.Hijacker).Hijack()
 		conn.Close()
-	}))
-	defer srv.Close()
-	dst := filepath.Join(t.TempDir(), "u.exe")
-	if err := downloadTo(srv.URL, dst); err == nil {
+	})
+	if _, err := dl(t, srv.URL); err == nil {
 		t.Fatal("expected error")
-	}
-	if _, err := os.Stat(dst); !os.IsNotExist(err) {
-		t.Fatal("partial file not removed")
 	}
 }
 
 func TestDownloadTo_BadStatus(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-	dst := filepath.Join(t.TempDir(), "u.exe")
-	if err := downloadTo(srv.URL, dst); err == nil {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+	if _, err := dl(t, srv.URL); err == nil {
 		t.Fatal("expected error")
 	}
-	if _, err := os.Stat(dst); !os.IsNotExist(err) {
-		t.Fatal("file created on bad status")
+}
+
+func TestDownloadTo_Redirects(t *testing.T) {
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(10)) }))
+	defer evil.Close()
+	var hops int32
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/evil":
+			http.Redirect(w, r, evil.URL, 302)
+		case "/loop":
+			atomic.AddInt32(&hops, 1)
+			http.Redirect(w, r, "/loop", 302)
+		case "/ok":
+			http.Redirect(w, r, "/final", 302)
+		default:
+			fmt.Fprint(w, mz(10))
+		}
+	})
+	if _, err := dl(t, srv.URL+"/ok"); err != nil {
+		t.Fatalf("allowed redirect: %v", err)
+	}
+	if _, err := dl(t, srv.URL+"/evil"); !errors.Is(err, ErrUntrustedURL) {
+		t.Fatalf("evil redirect: %v", err)
+	}
+	if _, err := dl(t, srv.URL+"/loop"); err == nil || hops > maxRedirects+1 {
+		t.Fatalf("loop: %v hops %d", err, hops)
+	}
+}
+
+func TestDefaultURLTrust(t *testing.T) {
+	p := "https://github.com/aceonline-tools/supcua-v2/releases/download/v1.0.29/supcua-v2.exe"
+	good := []string{p}
+	bad := []string{
+		"http://github.com/aceonline-tools/supcua-v2/releases/download/v1/supcua-v2.exe",
+		"https://evil.com/aceonline-tools/supcua-v2/releases/download/v1/supcua-v2.exe",
+		"https://github.com.evil.com/aceonline-tools/supcua-v2/releases/download/v1/x",
+		"https://github.com/other/repo/releases/download/v1/supcua-v2.exe",
+		"https://github.com/aceonline-tools/supcua-v2/../x",
+		"", "::bad",
+	}
+	for _, u := range good {
+		if !defaultInitialAllowed(u) {
+			t.Errorf("rejected %s", u)
+		}
+	}
+	for _, u := range bad {
+		if defaultInitialAllowed(u) {
+			t.Errorf("accepted %s", u)
+		}
+	}
+	for u, want := range map[string]bool{
+		"https://objects.githubusercontent.com/x": true,
+		"https://github.com/x":                    true,
+		"http://objects.githubusercontent.com/x":  false,
+		"https://githubusercontent.com.evil.com/": false,
+		"https://evilgithubusercontent.com/":      false,
+	} {
+		pu, _ := url.Parse(u)
+		if defaultRedirectAllowed(pu) != want {
+			t.Errorf("redirect %s want %v", u, want)
+		}
+	}
+}
+
+func TestCheckUpdate_UntrustedAssetURL(t *testing.T) {
+	a := `{"name":"supcua-v2.exe","browser_download_url":"https://evil.com/supcua-v2.exe","size":10}`
+	fakeAPI(t, serveJSON(releaseJSON("v1.0.29", false, false, a)))
+	if _, _, err := CheckUpdate("1.0.0"); !errors.Is(err, ErrUntrustedURL) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCheckUpdate_TrailingData(t *testing.T) {
+	fakeAPI(t, serveJSON(releaseJSON("v1.0.29", false, false, goodAsset)+` {"x":1}`))
+	if _, _, err := CheckUpdate("1.0.0"); err == nil {
+		t.Fatal("trailing data accepted")
+	}
+}
+
+func TestCheckUpdate_StoresAssetMetadata(t *testing.T) {
+	a := `{"name":"supcua-v2.exe","browser_download_url":"https://github.com/aceonline-tools/supcua-v2/releases/download/v1.0.29/supcua-v2.exe","size":42,"digest":"sha256:ab"}`
+	fakeAPI(t, serveJSON(releaseJSON("v1.0.29", false, false, a)))
+	_, u, err := CheckUpdate("1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := expected.Load(u)
+	if !ok || v.(asset).Size != 42 || v.(asset).Digest != "sha256:ab" {
+		t.Fatalf("%v %v", v, ok)
 	}
 }

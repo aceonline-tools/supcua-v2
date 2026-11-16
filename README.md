@@ -128,4 +128,4 @@ aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp latest.txt "s3://$
 rm latest.txt
 ```
 
-Upload the exe first, then `latest.txt`, so old clients never see a version whose binary is missing. After that, MinIO can be retired.
+Upload the exe first, then `latest.txt`, so old clients never see a version whose binary is missing. Do not upload to MinIO for any later release. Keep the bridge exe and `latest.txt` hosted until support for clients ≤ v1.0.28 is intentionally ended.
