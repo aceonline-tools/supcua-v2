@@ -63,6 +63,48 @@ jobs:
           cache-dependency-path: go.sum
       - run: go test -race -count=1 ./executor/ ./app/ .
 
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
+  build-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - run: shellcheck release.sh scripts/*.sh
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.0"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install rsrc (job-local GOBIN)
+        run: |
+          GOBIN="$RUNNER_TEMP/tools" go install github.com/akavel/rsrc@v0.10.2
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: release.sh makes no publish call
+        run: scripts/test-release-build-only.sh --plain
+
   release-build:
     runs-on: windows-latest
     steps:
@@ -80,3 +122,68 @@ jobs:
             supcua-v2.exe
             supcua-v2.exe.sha256
           if-no-files-found: error
+
+  app-selftest:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.0"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install garble and rsrc (job-local GOBIN)
+        run: |
+          set -euo pipefail
+          export GOBIN="$RUNNER_TEMP/selftest-tools"
+          go install mvdan.cc/garble@v0.15.0
+          go install github.com/akavel/rsrc@v0.10.2
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - name: Build plain and garble exes
+        run: |
+          set -euo pipefail
+          scripts/build.sh --plain --version 0.0.0-selftest --out out/plain
+          scripts/build.sh --version 0.0.0-selftest --out out/garble
+      - name: Self-tests (plain + garble, both modes)
+        shell: pwsh
+        run: |
+          $fail = 0
+          foreach ($v in "plain","garble") {
+            foreach ($mode in "-selftest","-selftest-noruntime") {
+              $exe = Join-Path $PWD "out/$v/supcua-v2.exe"
+              $o = "out/$v/stdout$mode.txt"; $e = "out/$v/stderr$mode.txt"
+              $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru `
+                   -RedirectStandardOutput $o -RedirectStandardError $e
+              if (-not $p.WaitForExit(120000)) {
+                $p.Kill($true)
+                Write-Host "$v $mode TIMEOUT after 120s"
+                $fail = 1
+                continue
+              }
+              Write-Host "$v $mode exit=$($p.ExitCode)"
+              Get-Content $o, $e -ErrorAction SilentlyContinue
+              if ($p.ExitCode -ne 0) { $fail = 1 }
+              $j = "out/$v/supcua-v2.exe.selftest.json"
+              if (Test-Path $j) { Move-Item $j "out/$v/selftest$mode.json" -Force }
+            }
+          }
+          exit $fail
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: app-selftest-results
+          path: |
+            out/*/selftest*.json
+            out/*/stdout*.txt
+            out/*/stderr*.txt
+          if-no-files-found: warn
