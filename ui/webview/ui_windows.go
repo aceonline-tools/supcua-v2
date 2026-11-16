@@ -52,6 +52,13 @@ type Config struct {
 	OnBounds     func(Bounds)      // after a move/resize ended and before close
 	OnActivate   func(active bool) // host window (de)activated
 	OnPageLoaded func()
+	// OnProcessFailed runs on the UI thread (inside a WebView2 event: post work, never block or
+	// open a modal loop) when a browser/renderer process fails; kind is COREWEBVIEW2_PROCESS_FAILED_KIND.
+	OnProcessFailed func(kind int32)
+	// OnNavigate runs on the UI thread for every allowed top-level navigation AFTER the first page
+	// load (reload or in-app navigation): page state held by the backend (editor session, capture)
+	// is stale from then on.
+	OnNavigate func(uri string)
 }
 
 // UI is the single WebView2 host of the process. All methods are UI-thread only unless noted.
@@ -87,6 +94,9 @@ func New(cfg Config) (*UI, error) {
 	defer func() {
 		if !ok {
 			u.teardown()
+			if u.mw != nil {
+				u.mw.Dispose()
+			}
 			current.Store(nil)
 		}
 	}()
@@ -111,12 +121,24 @@ func New(cfg Config) (*UI, error) {
 	b.MessageCallback = u.disp.Submit // enqueue only
 	b.NavigationStartingCallback = func(uri string) bool {
 		if serve.AllowNavigation(uri) {
+			select {
+			case <-u.loaded: // not the initial navigation
+				if cfg.OnNavigate != nil {
+					cfg.OnNavigate(uri)
+				}
+			default:
+			}
 			return true
 		}
 		u.blockedNav.Add(1)
 		return false
 	}
 	b.NewWindowDeniedCallback = func(string) { u.deniedWin.Add(1) }
+	b.ProcessFailedCallback = func(kind int32) {
+		if cfg.OnProcessFailed != nil {
+			cfg.OnProcessFailed(kind)
+		}
+	}
 	b.WebResourceRequestedCallback = u.serveRequest
 	b.NavigationCompletedCallback = func(*edge.ICoreWebView2, *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		u.loadedOnce.Do(func() {
@@ -137,17 +159,22 @@ func New(cfg Config) (*UI, error) {
 		u.browser = nil // never completed: nothing to Close
 		return nil, fmt.Errorf("webview startup: %w", err)
 	}
+	// Fail closed: a host whose protections could not all be applied is never shown.
 	if err = b.Lockdown(cfg.Debug); err != nil {
-		log.Printf("webview: lockdown: %v", err)
+		return nil, fmt.Errorf("webview lockdown: %w", err)
 	}
 	if err = b.AddResourceFilter(serve.Filter); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("webview resource filter: %w", err)
 	}
-	b.Init(rpc.BootstrapJS)
+	if err = b.AddDocumentCreatedScript(rpc.BootstrapJS); err != nil {
+		return nil, fmt.Errorf("webview bootstrap: %w", err)
+	}
 	b.Resize()
 
 	u.disp.Start(func(resp []byte) { u.postFrame(rpc.EncodeResolve(resp)) })
-	b.Navigate(serve.Origin + "/" + serve.Index)
+	if err = b.NavigateChecked(serve.Origin + "/" + serve.Index); err != nil {
+		return nil, fmt.Errorf("webview navigate: %w", err)
+	}
 	if !cfg.StartHidden {
 		u.Show()
 	}
@@ -165,6 +192,14 @@ func (u *UI) serveRequest(req *edge.ICoreWebView2WebResourceRequest, args *edge.
 	if err := u.browser.Respond(args, r.Status, r.Reason, r.Header, r.Body); err != nil {
 		log.Printf("webview: respond %q: %v", uri, err)
 	}
+}
+
+// Reload reloads the app page (after a renderer failure). UI thread only.
+func (u *UI) Reload() error {
+	if u.browser == nil {
+		return errors.New("webview closed")
+	}
+	return u.browser.Reload()
 }
 
 // Run executes the walk message loop until Quit. Returns walk's exit code.

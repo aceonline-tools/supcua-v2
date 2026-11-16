@@ -336,13 +336,19 @@ func main() {
 		})
 	}}
 
-	var quitOnce sync.Once
-	quitApp := func() { // UI thread; contract §4 rule 7 order
-		quitOnce.Do(func() {
-			if br != nil {
-				if err := br.Shutdown(2 * time.Second); err != nil {
-					log.Printf("warning: %v", err)
-				}
+	// exitFlow is the ONLY way out (X, tray Exit, app.exit, update replacement, fatal page
+	// failure). UI thread. BeginShutdown tells the page and waits off-thread (the pump keeps
+	// running so the page can answer), then runs `then` on the UI thread: final flush,
+	// teardown, and only afterwards finalize (the update replacement). A second request while
+	// one is pending is a no-op.
+	var shutting atomic.Bool
+	exitFlow := func(finalize func() error) {
+		if !shutting.CompareAndSwap(false, true) {
+			return
+		}
+		br.BeginShutdown(1500*time.Millisecond, func() {
+			if err := br.Shutdown(2 * time.Second); err != nil {
+				log.Printf("warning: %v", err)
 			}
 			unregistered := make(chan struct{}) // bounded: the hotkey thread answers each Unregister
 			go func() { hotkeyManager.UnregisterAll(); close(unregistered) }()
@@ -356,7 +362,47 @@ func main() {
 			}
 			overlayCtl.Destroy()
 			if u := late.p.Load(); u != nil {
-				u.Quit()
+				u.Quit() // saves window bounds, tears the host down, ends the pump
+			}
+			if finalize != nil {
+				if err := finalize(); err != nil {
+					log.Printf("update replacement failed: %v", err)
+					return // original executable restored; normal exit
+				}
+				os.Exit(0) // the replacement script restarts the new executable
+			}
+		})
+	}
+	quitApp := func() { exitFlow(nil) }
+	host.OnUpdateReady = func(tmp string) {
+		exitFlow(func() error { return updater.Replace(tmp, executablePath) })
+	}
+
+	// Page failure: end the editor session/capture (the page that owned them is gone), then
+	// reload; a dead browser process or repeated failures take the startup-failure path.
+	var failMu sync.Mutex
+	var failTimes []time.Time
+	var fatalPage atomic.Bool
+	pageFailed := func(kind int32) { // UI thread, inside a WebView2 event: only post work
+		go br.ResetSession("processFailed")
+		late.Post(func() {
+			failMu.Lock()
+			now := time.Now()
+			keep := failTimes[:0]
+			for _, t := range failTimes {
+				if now.Sub(t) < time.Minute {
+					keep = append(keep, t)
+				}
+			}
+			failTimes = append(keep, now)
+			tooMany := len(failTimes) > 3
+			failMu.Unlock()
+			u := late.p.Load()
+			const browserExited = 0 // COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+			if kind == browserExited || tooMany || u == nil || u.Reload() != nil {
+				log.Printf("webview failure kind=%d: leaving the app", kind)
+				fatalPage.Store(true)
+				quitApp()
 			}
 		})
 	}
@@ -406,14 +452,18 @@ func main() {
 	}
 	pos := appConfig.MainWindowPos
 	webUI, err := webview.New(webview.Config{
-		Title:        title,
-		Methods:      methods,
-		Assets:       assets.FS(),
-		DarkTitleBar: wantDark(appConfig.Theme),
-		Initial:      webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
-		MinW:         640,
-		MinH:         420,
-		OnClose:      quitApp, // X exits for real (as before); minimize hides to the tray
+		Title:           title,
+		Methods:         methods,
+		Assets:          assets.FS(),
+		DarkTitleBar:    wantDark(appConfig.Theme),
+		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
+		MinW:            640,
+		MinH:            420,
+		OnClose:         quitApp, // X exits for real (as before); minimize hides to the tray
+		OnProcessFailed: pageFailed,
+		OnNavigate: func(string) { // reload/navigation: the editor session and capture belong to the old page
+			go br.ResetSession("navigation")
+		},
 		OnBounds: func(b webview.Bounds) {
 			want := model.WindowPos{X: b.X, Y: b.Y, Width: b.W, Height: b.H}
 			if configService.Get().MainWindowPos == want {
@@ -519,6 +569,11 @@ func main() {
 
 	webUI.Run() // walk message loop: tray, Synchronize, WebView2
 	watcher.Stop()
+	if fatalPage.Load() {
+		log.Println("supcua-v2 exiting: WebView2 failed")
+		webview.ShowStartupFailure()
+		os.Exit(5)
+	}
 
 	log.Println("supcua-v2 exiting")
 	if res != nil {

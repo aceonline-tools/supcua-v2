@@ -243,28 +243,178 @@ func (e *Chromium) PostWebMessageAsJSON(doc string) error {
 	return hrErr("PostWebMessageAsJson", r)
 }
 
-// Lockdown applies the production settings. With debug=false DevTools, the default
-// context menu, browser accelerator keys (F5/Ctrl+R/F12...), status bar, zoom and
-// script dialogs are off.
+// settings3IID is ICoreWebView2Settings3 (AreBrowserAcceleratorKeysEnabled).
+var settings3IID = windows.GUID{Data1: 0xFDB5AB74, Data2: 0xAF33, Data3: 0x4854, Data4: [8]byte{0x84, 0xF0, 0x0A, 0x63, 0x1D, 0xEB, 0x5E, 0xBA}}
+
+// queryInterface calls IUnknown::QueryInterface (vtable slot 0) on a raw COM pointer.
+func queryInterface(p uintptr, iid *windows.GUID) (uintptr, error) {
+	obj := *(*unsafe.Pointer)(unsafe.Pointer(&p))
+	vtbl := *(*unsafe.Pointer)(obj)
+	qi := *(*uintptr)(vtbl)
+	var out uintptr
+	r, _, _ := ComProc(qi).Call(p, uintptr(unsafe.Pointer(iid)), uintptr(unsafe.Pointer(&out)))
+	if err := hrErr("QueryInterface", r); err != nil {
+		return 0, err
+	}
+	return out, nil
+}
+
+// vtableSlot reads function pointer n of a COM object.
+func vtableSlot(p uintptr, n int) ComProc {
+	obj := *(*unsafe.Pointer)(unsafe.Pointer(&p))
+	vtbl := *(*unsafe.Pointer)(obj)
+	return ComProc(*(*uintptr)(unsafe.Add(vtbl, uintptr(n)*unsafe.Sizeof(uintptr(0)))))
+}
+
+// Lockdown applies the production settings and FAILS CLOSED: every setter's HRESULT is
+// checked and the first failure is returned (the caller must not show the page then). With
+// debug=false DevTools, the default context menu, browser accelerator keys (F5/Ctrl+R/F12),
+// status bar, zoom and script dialogs are off. Accelerator keys live on ICoreWebView2Settings3,
+// reached by QueryInterface (calling its slot on the Settings1 pointer would be invalid).
 func (e *Chromium) Lockdown(debug bool) error {
-	s, err := e.webview.GetSettings()
-	if err != nil && s == nil {
+	if e.webview == nil {
+		return errors.New("webview closed")
+	}
+	var s1 *ICoreWebViewSettings
+	r, _, _ := e.webview.vtbl.GetSettings.Call(uintptr(unsafe.Pointer(e.webview)), uintptr(unsafe.Pointer(&s1)))
+	if err := hrErr("get_Settings", r); err != nil {
 		return err
 	}
-	call := func(proc ComProc, on bool) {
-		v := uintptr(0)
-		if on {
-			v = 1
-		}
-		_, _, _ = proc.Call(uintptr(unsafe.Pointer(s)), v)
+	if s1 == nil {
+		return errors.New("get_Settings returned nil")
 	}
-	call(s.vtbl.PutAreDevToolsEnabled, debug)
-	call(s.vtbl.PutAreDefaultContextMenusEnabled, debug)
-	call(s.vtbl.PutAreBrowserAcceleratorKeysEnabled, debug)
-	call(s.vtbl.PutIsStatusBarEnabled, false)
-	call(s.vtbl.PutIsZoomControlEnabled, false)
-	call(s.vtbl.PutAreDefaultScriptDialogsEnabled, false)
-	return nil
+	p1 := uintptr(unsafe.Pointer(s1))
+	defer comRelease(p1)
+	b := func(v bool) uintptr {
+		if v {
+			return 1
+		}
+		return 0
+	}
+	var first error
+	put := func(op string, proc ComProc, self uintptr, on bool) {
+		r, _, _ := proc.Call(self, b(on))
+		if err := hrErr(op, r); err != nil && first == nil {
+			first = err
+		}
+	}
+	put("put_AreDevToolsEnabled", s1.vtbl.PutAreDevToolsEnabled, p1, debug)
+	put("put_AreDefaultContextMenusEnabled", s1.vtbl.PutAreDefaultContextMenusEnabled, p1, debug)
+	put("put_IsStatusBarEnabled", s1.vtbl.PutIsStatusBarEnabled, p1, false)
+	put("put_IsZoomControlEnabled", s1.vtbl.PutIsZoomControlEnabled, p1, false)
+	put("put_AreDefaultScriptDialogsEnabled", s1.vtbl.PutAreDefaultScriptDialogsEnabled, p1, false)
+
+	p3, err := queryInterface(p1, &settings3IID)
+	if err != nil {
+		if first == nil {
+			first = err
+		}
+	} else {
+		defer comRelease(p3)
+		// IUnknown(3) + Settings1(18) + Settings2(2): Get at 23, Put at 24.
+		put("put_AreBrowserAcceleratorKeysEnabled", vtableSlot(p3, 24), p3, debug)
+	}
+	return first
+}
+
+// AddDocumentCreatedScript registers a script that runs in every new document before page
+// scripts; the HRESULT is checked.
+func (e *Chromium) AddDocumentCreatedScript(script string) error {
+	if e.webview == nil {
+		return errors.New("webview closed")
+	}
+	p, err := windows.UTF16PtrFromString(script)
+	if err != nil {
+		return err
+	}
+	r, _, _ := e.webview.vtbl.AddScriptToExecuteOnDocumentCreated.Call(uintptr(unsafe.Pointer(e.webview)), uintptr(unsafe.Pointer(p)), 0)
+	return hrErr("AddScriptToExecuteOnDocumentCreated", r)
+}
+
+// NavigateChecked navigates the top-level page and reports the HRESULT.
+func (e *Chromium) NavigateChecked(url string) error {
+	if e.webview == nil {
+		return errors.New("webview closed")
+	}
+	p, err := windows.UTF16PtrFromString(url)
+	if err != nil {
+		return err
+	}
+	r, _, _ := e.webview.vtbl.Navigate.Call(uintptr(unsafe.Pointer(e.webview)), uintptr(unsafe.Pointer(p)))
+	return hrErr("Navigate", r)
+}
+
+// Reload reloads the current page.
+func (e *Chromium) Reload() error {
+	if e.webview == nil {
+		return errors.New("webview closed")
+	}
+	r, _, _ := e.webview.vtbl.Reload.Call(uintptr(unsafe.Pointer(e.webview)))
+	return hrErr("Reload", r)
+}
+
+// ---- ProcessFailed ----
+
+type _ICoreWebView2ProcessFailedEventArgsVtbl struct {
+	_IUnknownVtbl
+	GetProcessFailedKind ComProc
+}
+
+type ICoreWebView2ProcessFailedEventArgs struct {
+	vtbl *_ICoreWebView2ProcessFailedEventArgsVtbl
+}
+
+type _ICoreWebView2ProcessFailedEventHandlerVtbl struct {
+	_IUnknownVtbl
+	Invoke ComProc
+}
+
+type iCoreWebView2ProcessFailedEventHandlerImpl interface {
+	_IUnknownImpl
+	ProcessFailed(sender *ICoreWebView2, args *ICoreWebView2ProcessFailedEventArgs) uintptr
+}
+
+type iCoreWebView2ProcessFailedEventHandler struct {
+	vtbl *_ICoreWebView2ProcessFailedEventHandlerVtbl
+	impl iCoreWebView2ProcessFailedEventHandlerImpl
+}
+
+func _procFailQI(this *iCoreWebView2ProcessFailedEventHandler, refiid, object uintptr) uintptr {
+	return this.impl.QueryInterface(refiid, object)
+}
+func _procFailAddRef(this *iCoreWebView2ProcessFailedEventHandler) uintptr { return this.impl.AddRef() }
+func _procFailRelease(this *iCoreWebView2ProcessFailedEventHandler) uintptr {
+	return this.impl.Release()
+}
+func _procFailInvoke(this *iCoreWebView2ProcessFailedEventHandler, sender *ICoreWebView2, args *ICoreWebView2ProcessFailedEventArgs) uintptr {
+	return this.impl.ProcessFailed(sender, args)
+}
+
+var _processFailedFn = _ICoreWebView2ProcessFailedEventHandlerVtbl{
+	_IUnknownVtbl{
+		NewComProc(_procFailQI),
+		NewComProc(_procFailAddRef),
+		NewComProc(_procFailRelease),
+	},
+	NewComProc(_procFailInvoke),
+}
+
+func newICoreWebView2ProcessFailedEventHandler(impl iCoreWebView2ProcessFailedEventHandlerImpl) *iCoreWebView2ProcessFailedEventHandler {
+	return &iCoreWebView2ProcessFailedEventHandler{vtbl: &_processFailedFn, impl: impl}
+}
+
+// ProcessFailed forwards the failure kind; it runs inside a WebView2 event, so the callback
+// must only record/post work.
+func (e *Chromium) ProcessFailed(_ *ICoreWebView2, args *ICoreWebView2ProcessFailedEventArgs) uintptr {
+	var kind int32
+	r, _, _ := args.vtbl.GetProcessFailedKind.Call(uintptr(unsafe.Pointer(args)), uintptr(unsafe.Pointer(&kind)))
+	if int32(r) < 0 {
+		kind = -1
+	}
+	if e.ProcessFailedCallback != nil {
+		e.ProcessFailedCallback(kind)
+	}
+	return 0
 }
 
 // RequestInfo returns the URI and HTTP method of a web resource request.
@@ -326,11 +476,6 @@ func (e *Chromium) AddResourceFilter(filter string) error {
 	const contextAll = 0
 	r, _, _ := e.webview.vtbl.AddWebResourceRequestedFilter.Call(uintptr(unsafe.Pointer(e.webview)), uintptr(unsafe.Pointer(p)), contextAll)
 	return hrErr("AddWebResourceRequestedFilter", r)
-}
-
-// AddDocumentCreatedScript registers a script that runs in every new document before page scripts.
-func (e *Chromium) AddDocumentCreatedScript(script string) {
-	e.Init(script)
 }
 
 // ErrEmbedTimeout is returned by EmbedTimeout when the runtime never answered.

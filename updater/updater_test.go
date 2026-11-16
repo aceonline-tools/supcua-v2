@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -487,5 +488,70 @@ func TestCheckUpdate_StoresAssetMetadata(t *testing.T) {
 	v, ok := expected.Load(u)
 	if !ok || v.(asset).Size != 42 || v.(asset).Digest != "sha256:ab" {
 		t.Fatalf("%v %v", v, ok)
+	}
+}
+
+func TestDownload_VerifiesAndNeverTouchesExe(t *testing.T) {
+	payload := mz(4096)
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, payload) })
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "supcua-v2.exe")
+	os.WriteFile(exe, []byte("MZcurrent"), 0o755)
+	tmp, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(tmp) != dir || filepath.Base(tmp) != UpdateTempName {
+		t.Fatalf("temp path %q", tmp)
+	}
+	if b, _ := os.ReadFile(tmp); string(b) != payload {
+		t.Fatal("content mismatch")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+		t.Fatal("Download must not modify the running executable")
+	}
+}
+
+func TestDownload_RejectsUntrustedAndNonPE(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "supcua-v2.exe")
+	if _, err := Download("https://evil.example/x.exe", exe); !errors.Is(err, ErrUntrustedURL) {
+		t.Fatalf("untrusted URL: %v", err)
+	}
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>not an exe</html>") })
+	if _, err := Download(srv.URL, exe); err == nil {
+		t.Fatal("non-PE download must fail")
+	}
+	if _, err := os.Stat(filepath.Join(dir, UpdateTempName)); !os.IsNotExist(err) {
+		t.Fatal("failed download must leave no temp file")
+	}
+}
+
+func TestReplace_FailureRestoresExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("would launch the real batch script")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "supcua-v2.exe")
+	tmp := filepath.Join(dir, UpdateTempName)
+	os.WriteFile(exe, []byte("MZcurrent"), 0o755)
+	os.WriteFile(tmp, []byte("MZnew"), 0o755)
+	if err := Replace(tmp, exe); err == nil { // no cmd.exe off Windows: launch fails
+		t.Fatal("expected launch failure")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+		t.Fatalf("executable not restored: %q", b)
+	}
+	if _, err := os.Stat(exe + ".old"); !os.IsNotExist(err) {
+		t.Fatal(".old must not remain after a restore")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "update.bat")); !os.IsNotExist(err) {
+		t.Fatal("update.bat must be removed after a failed launch")
+	}
+}
+
+func TestReplace_MissingExecutable(t *testing.T) {
+	if err := Replace(filepath.Join(t.TempDir(), "x"), filepath.Join(t.TempDir(), "missing.exe")); err == nil {
+		t.Fatal("expected rename error")
 	}
 }

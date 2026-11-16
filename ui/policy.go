@@ -19,5 +19,5 @@ func NewPolicy(selftest bool) Policy {
 	if selftest {
 		return Policy{SelfTestMethods: true, ExitWhenDone: true}
 	}
-	return Policy{CheckLicense: true, RegisterHotkeys: true, ScriptsMayRun: true, CheckForUpdates: true, StartAutoActive: true, UseUserData: true}
+	return Policy{CheckLicense: true, RegisterHotkeys: true, CheckForUpdates: true, StartAutoActive: true, UseUserData: true}
 }

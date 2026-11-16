@@ -33,6 +33,8 @@ type Chromium struct {
 	navigationStarting    *iCoreWebView2NavigationStartingEventHandler  // PATCH
 	newWindowRequested    *iCoreWebView2NewWindowRequestedEventHandler  // PATCH
 	initErr               error                                         // PATCH
+	processFailed         *iCoreWebView2ProcessFailedEventHandler       // PATCH
+	cancelled             uint32                                        // PATCH: set when init was abandoned; late completions must not recreate resources
 
 	environment *ICoreWebView2Environment
 
@@ -51,6 +53,8 @@ type Chromium struct {
 
 	// PATCH: return false to cancel the navigation. Runs on the UI thread, must not block.
 	NavigationStartingCallback func(uri string) bool
+	// PATCH: browser/renderer process failure (kind = COREWEBVIEW2_PROCESS_FAILED_KIND).
+	ProcessFailedCallback func(kind int32)
 	// PATCH: popups are always denied; this only observes.
 	NewWindowDeniedCallback func(uri string)
 }
@@ -77,6 +81,7 @@ func NewChromium() *Chromium {
 	e.navigationCompleted = newICoreWebView2NavigationCompletedEventHandler(e)
 	e.navigationStarting = newICoreWebView2NavigationStartingEventHandler(e)
 	e.newWindowRequested = newICoreWebView2NewWindowRequestedEventHandler(e)
+	e.processFailed = newICoreWebView2ProcessFailedEventHandler(e)
 	e.permissions = make(map[CoreWebView2PermissionKind]CoreWebView2PermissionState)
 
 	return e
@@ -102,19 +107,31 @@ func (e *Chromium) EmbedTimeout(hwnd uintptr, timeout time.Duration) error {
 		dataPath = filepath.Join(os.Getenv("AppData"), filepath.Base(windows.UTF16ToString(currentExePath)))
 	}
 
+	// PATCH: any failure below abandons the init: resources created so far are released and
+	// a late completion callback is ignored (cancelled).
+	var embedErr error
+	defer func() {
+		if embedErr != nil {
+			atomic.StoreUint32(&e.cancelled, 1)
+			e.Close()
+		}
+	}()
 	res, err := createCoreWebView2EnvironmentWithOptions(nil, windows.StringToUTF16Ptr(dataPath), 0, e.envCompleted)
 	if err != nil {
-		return fmt.Errorf("WebView2 loader: %w", err)
+		embedErr = fmt.Errorf("WebView2 loader: %w", err)
+		return embedErr
 	}
 	if int32(res) < 0 {
-		return fmt.Errorf("CreateCoreWebView2EnvironmentWithOptions: HRESULT 0x%08X", uint32(res))
+		embedErr = fmt.Errorf("CreateCoreWebView2EnvironmentWithOptions: HRESULT 0x%08X", uint32(res))
+		return embedErr
 	}
 	deadline := time.Now().Add(timeout)
 	var msg w32.Msg
 	for atomic.LoadUintptr(&e.inited) == 0 {
 		left := time.Until(deadline)
 		if left <= 0 {
-			return ErrEmbedTimeout
+			embedErr = ErrEmbedTimeout
+			return embedErr
 		}
 		// Wait for input (or a posted message) without blocking past the deadline.
 		_, _, _ = procMsgWaitForMultipleObjects.Call(0, 0, 0, uintptr(left.Milliseconds()+1), qsAllInput)
@@ -124,16 +141,17 @@ func (e *Chromium) EmbedTimeout(hwnd uintptr, timeout time.Duration) error {
 				break
 			}
 			if msg.Message == wmQuit {
-				return errors.New("quit received while creating WebView2")
+				embedErr = errors.New("quit received while creating WebView2")
+				return embedErr
 			}
 			_, _, _ = w32.User32TranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 			_, _, _ = w32.User32DispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
 		}
 	}
 	if e.initErr != nil {
-		return e.initErr
+		embedErr = e.initErr
+		return embedErr
 	}
-	e.Init("window.external={invoke:s=>window.chrome.webview.postMessage(s)}")
 	return nil
 }
 
@@ -193,6 +211,9 @@ func (e *Chromium) Release() uintptr {
 }
 
 func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environment) uintptr {
+	if atomic.LoadUint32(&e.cancelled) != 0 { // PATCH: init abandoned (timeout/failure)
+		return 0
+	}
 	if int32(res) < 0 { // PATCH: no log.Fatalf
 		e.initErr = fmt.Errorf("creating environment failed: HRESULT 0x%08X", uint32(res))
 		atomic.StoreUintptr(&e.inited, 1)
@@ -210,6 +231,12 @@ func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environme
 }
 
 func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller *ICoreWebView2Controller) uintptr {
+	if atomic.LoadUint32(&e.cancelled) != 0 { // PATCH: late completion after timeout: do not keep it
+		if int32(res) >= 0 && controller != nil {
+			_, _, _ = controller.vtbl.Close.Call(uintptr(unsafe.Pointer(controller)))
+		}
+		return 0
+	}
 	if int32(res) < 0 { // PATCH: no log.Fatalf
 		e.initErr = fmt.Errorf("creating controller failed: HRESULT 0x%08X", uint32(res))
 		atomic.StoreUintptr(&e.inited, 1)
@@ -219,47 +246,47 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 	e.controller = controller
 
 	var token _EventRegistrationToken
-	_, _, _ = controller.vtbl.GetCoreWebView2.Call(
+	// PATCH: every step is HRESULT-checked; any failure aborts init (fail closed).
+	fail := func(op string, r uintptr) bool {
+		if int32(r) >= 0 {
+			return false
+		}
+		e.initErr = fmt.Errorf("%s: HRESULT 0x%08X", op, uint32(r))
+		atomic.StoreUintptr(&e.inited, 1)
+		return true
+	}
+	r, _, _ := controller.vtbl.GetCoreWebView2.Call(
 		uintptr(unsafe.Pointer(controller)),
-		uintptr(unsafe.Pointer(&e.webview)),
+		uintptr(unsafe.Pointer(&e.webview)), // out-param already holds one reference (released in Close)
 	)
-	_, _, _ = e.webview.vtbl.AddRef.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-	)
-	_, _, _ = e.webview.vtbl.AddWebMessageReceived.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-		uintptr(unsafe.Pointer(e.webMessageReceived)),
+	if fail("get_CoreWebView2", r) || e.webview == nil {
+		if e.initErr == nil {
+			e.initErr = errors.New("get_CoreWebView2 returned no webview")
+			atomic.StoreUintptr(&e.inited, 1)
+		}
+		return 0
+	}
+	add := func(op string, call ComProc, h unsafe.Pointer) bool {
+		r, _, _ := call.Call(uintptr(unsafe.Pointer(e.webview)), uintptr(h), uintptr(unsafe.Pointer(&token)))
+		return !fail(op, r)
+	}
+	if !add("add_WebMessageReceived", e.webview.vtbl.AddWebMessageReceived, unsafe.Pointer(e.webMessageReceived)) ||
+		!add("add_PermissionRequested", e.webview.vtbl.AddPermissionRequested, unsafe.Pointer(e.permissionRequested)) ||
+		!add("add_WebResourceRequested", e.webview.vtbl.AddWebResourceRequested, unsafe.Pointer(e.webResourceRequested)) ||
+		!add("add_NavigationCompleted", e.webview.vtbl.AddNavigationCompleted, unsafe.Pointer(e.navigationCompleted)) ||
+		!add("add_NavigationStarting", e.webview.vtbl.AddNavigationStarting, unsafe.Pointer(e.navigationStarting)) ||
+		!add("add_NewWindowRequested", e.webview.vtbl.AddNewWindowRequested, unsafe.Pointer(e.newWindowRequested)) ||
+		!add("add_ProcessFailed", e.webview.vtbl.AddProcessFailed, unsafe.Pointer(e.processFailed)) {
+		return 0
+	}
+	r, _, _ = e.controller.vtbl.AddAcceleratorKeyPressed.Call(
+		uintptr(unsafe.Pointer(e.controller)),
+		uintptr(unsafe.Pointer(e.acceleratorKeyPressed)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	_, _, _ = e.webview.vtbl.AddPermissionRequested.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-		uintptr(unsafe.Pointer(e.permissionRequested)),
-		uintptr(unsafe.Pointer(&token)),
-	)
-	_, _, _ = e.webview.vtbl.AddWebResourceRequested.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-		uintptr(unsafe.Pointer(e.webResourceRequested)),
-		uintptr(unsafe.Pointer(&token)),
-	)
-	_, _, _ = e.webview.vtbl.AddNavigationCompleted.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-		uintptr(unsafe.Pointer(e.navigationCompleted)),
-		uintptr(unsafe.Pointer(&token)),
-	)
-
-	// PATCH: navigation lock + popup deny
-	_, _, _ = e.webview.vtbl.AddNavigationStarting.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-		uintptr(unsafe.Pointer(e.navigationStarting)),
-		uintptr(unsafe.Pointer(&token)),
-	)
-	_, _, _ = e.webview.vtbl.AddNewWindowRequested.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-		uintptr(unsafe.Pointer(e.newWindowRequested)),
-		uintptr(unsafe.Pointer(&token)),
-	)
-
-	_ = e.controller.AddAcceleratorKeyPressed(e.acceleratorKeyPressed, &token)
+	if fail("add_AcceleratorKeyPressed", r) {
+		return 0
+	}
 
 	atomic.StoreUintptr(&e.inited, 1)
 

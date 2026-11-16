@@ -305,17 +305,27 @@ func checkMZ(path string) error {
 	return nil
 }
 
-// DownloadAndReplace downloads the new exe and schedules a replacement via a batch script, then exits.
-func DownloadAndReplace(dlURL, exePath string) error {
-	dir := filepath.Dir(exePath)
-	tmpExe := filepath.Join(dir, "supcua-v2-update.exe")
+// UpdateTempName is the file Download writes next to the executable.
+const UpdateTempName = "supcua-v2-update.exe"
 
-	// Remove stale temp file from a previous failed update
-	os.Remove(tmpExe)
-
+// Download fetches and verifies the new executable (trusted-host allowlist, size, sha256 when
+// known, MZ header) into a temp file next to exePath and returns its path. It never touches
+// the running executable, so the caller can shut down cleanly before Replace.
+func Download(dlURL, exePath string) (string, error) {
+	tmpExe := filepath.Join(filepath.Dir(exePath), UpdateTempName)
+	os.Remove(tmpExe) // stale file from a previous failed update
 	if err := downloadTo(dlURL, tmpExe); err != nil {
-		return err
+		return "", err
 	}
+	return tmpExe, nil
+}
+
+// Replace schedules the swap of exePath with the verified tmpExe through a batch script and
+// returns; the caller must exit promptly (the script force-kills this process after ~0 s and
+// restarts the new exe). If the batch cannot be written or launched the original executable is
+// put back and an error returned.
+func Replace(tmpExe, exePath string) error {
+	dir := filepath.Dir(exePath)
 
 	// Rename the running exe out of the way now (Windows allows renaming open files).
 	// Then the batch just needs to move the update into place after we exit.
@@ -324,6 +334,7 @@ func DownloadAndReplace(dlURL, exePath string) error {
 	if err := os.Rename(exePath, oldExe); err != nil {
 		return fmt.Errorf("rename current exe: %w", err)
 	}
+	restore := func() { os.Rename(oldExe, exePath) }
 
 	pid := os.Getpid()
 	batPath := filepath.Join(dir, "update.bat")
@@ -338,15 +349,30 @@ del "%%~f0"
 `, pid, tmpExe, exePath, exePath, oldExe)
 
 	if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
+		restore()
 		return fmt.Errorf("write batch: %w", err)
 	}
 
 	cmd := exec.Command("cmd", "/c", "start", "/b", "cmd", "/c", batPath)
 	cmd.Dir = dir
 	if err := cmd.Start(); err != nil {
+		restore()
+		os.Remove(batPath)
 		return fmt.Errorf("launch batch: %w", err)
 	}
+	return nil
+}
 
+// DownloadAndReplace downloads the new exe and schedules a replacement via a batch script, then exits.
+// Callers that must run an orderly shutdown first use Download, shut down, then Replace.
+func DownloadAndReplace(dlURL, exePath string) error {
+	tmpExe, err := Download(dlURL, exePath)
+	if err != nil {
+		return err
+	}
+	if err := Replace(tmpExe, exePath); err != nil {
+		return err
+	}
 	os.Exit(0)
 	return nil
 }
