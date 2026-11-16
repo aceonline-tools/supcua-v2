@@ -107,6 +107,7 @@ export class MockBackend implements Transport {
   private seed: MockSeed;
   private bodies = new Map<string, Script>();
   private session: string | null = null;
+  private activeCap: string | null = null;
   private rev = 1;
   private nextId = 100;
   private emit: (name: string, payload: unknown) => void = () => {};
@@ -120,6 +121,7 @@ export class MockBackend implements Transport {
   }
 
   push(name: string, payload: unknown): void {
+    if (name === 'capture.ended') this.activeCap = null; // host semantics: ended means nothing is active
     this.emit(name, payload);
   }
 
@@ -197,6 +199,7 @@ export class MockBackend implements Transport {
         return {};
       case 'state.get': return st.state;
       case 'app.setGlobalActive': st.state.global_active = !!p.active; return st.state;
+      case 'app.closingReady': return {};
       case 'app.exit': case 'window.hide': case 'window.show': return {};
       case 'scripts.list': return this.list();
       case 'scripts.setEnabled': {
@@ -240,6 +243,7 @@ export class MockBackend implements Transport {
           ? this.body(p.id)
           : { id: '', name: '', enabled: true, run_mode: 'once', hotkey_mode: 'toggle', toggle_hotkey: null, actions: [] };
         this.session = `e${this.nextId++}`;
+        this.activeCap = null;
         st.state.editor_open = true;
         return { sessionId: this.session, script, catalog: MOCK_CATALOG };
       }
@@ -269,6 +273,7 @@ export class MockBackend implements Transport {
         this.requireSession(p.sessionId);
         this.session = null;
         st.state.editor_open = false;
+        if (this.activeCap) { this.activeCap = null; this.emit('capture.ended', { reason: 'editorClosed' }); }
         return { saved: false, rev: this.rev };
       }
       case 'editor.describeActions': return (p.actions as Action[]).map(describe);
@@ -276,9 +281,15 @@ export class MockBackend implements Transport {
       case 'editor.fromJSON': {
         try { return { script: JSON.parse(p.text) }; } catch { throw new ApiError({ code: 'BAD_REQUEST', message: 'Invalid JSON' }); }
       }
-      case 'capture.hotkey.start': case 'capture.key.start': case 'capture.stop':
-      case 'capture.mouse.start': case 'capture.mouse.stop':
+      case 'capture.hotkey.start': case 'capture.key.start': case 'capture.mouse.start':
         this.requireSession(p.sessionId);
+        // bridge/capture.go Start: ends the previous capture first and emits capture.ended{stopped}
+        if (this.activeCap) this.emit('capture.ended', { reason: 'stopped' });
+        this.activeCap = method;
+        return {};
+      case 'capture.stop': case 'capture.mouse.stop':
+        this.requireSession(p.sessionId);
+        if (this.activeCap) { this.activeCap = null; this.emit('capture.ended', { reason: 'stopped' }); }
         return {};
       case 'clipboard.write': case 'update.apply': case 'update.skip': return {};
       case 'settings.get': return { ...st.settings, collapsed_groups: st.collapsed };

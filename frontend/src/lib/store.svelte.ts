@@ -42,6 +42,8 @@ export class AppStore {
   error = $state('');
   systemDark = $state(true);
   update = $state<UpdateState | null>(null);
+  pendingRoute: Route | null = null;
+  private closingNotified = false;
   readonly editor: EditorStore;
   private disposers: (() => void)[] = [];
 
@@ -84,7 +86,9 @@ export class AppStore {
   }
 
   applyTheme(): void {
-    if (typeof document !== 'undefined') document.documentElement.dataset.theme = this.effectiveTheme;
+    if (typeof document === 'undefined') return;
+    document.documentElement.dataset.theme = this.effectiveTheme;
+    try { localStorage.setItem('supcua.theme', this.effectiveTheme); } catch { /* storage unavailable */ }
   }
 
   async init(): Promise<void> {
@@ -99,7 +103,7 @@ export class AppStore {
       this.disposers.push(() => mq.removeEventListener('change', onChange));
     }
     this.disposers.push(
-      this.api.on('state', (s) => { this.state = s; this.applyTheme(); }),
+      this.api.on('state', (s) => { this.state = s; this.applyTheme(); this.editor.onActivated(); }),
       this.api.on('scripts.changed', () => void this.loadScripts()),
       this.api.on('settings.changed', () => void this.loadSettings()),
       this.api.on('update.available', (e) => { this.update = { tag: e.tag, applying: false, pct: 0, failed: '' }; }),
@@ -107,9 +111,10 @@ export class AppStore {
       this.api.on('update.failed', (e) => { if (this.update) { this.update.applying = false; this.update.failed = e.message; } }),
       this.api.on('save.failed', (e) => { this.unsaved[e.scriptId] = e.message; }),
       this.api.on('nav.goto', (e) => {
-        if (e.route === 'settings') this.route = { name: 'settings' };
-        else if (e.route === 'scripts') this.route = { name: 'scripts' };
+        if (e.route === 'settings') void this.navigate({ name: 'settings' });
+        else if (e.route === 'scripts') void this.navigate({ name: 'scripts' });
       }),
+      this.api.on('app.closing', (e) => void this.onAppClosing(e.deadline_ms)),
     );
     try {
       const [boot, state] = await Promise.all([this.api.call('app.getBootState'), this.api.call('state.get')]);
@@ -141,8 +146,34 @@ export class AppStore {
     this.settings = await this.api.call('settings.get');
   }
 
-  go(route: Route): void {
+  // Every way out of the editor goes through the guarded autosave-and-close.
+  async navigate(route: Route): Promise<boolean> {
+    if (this.editor.sessionId) {
+      this.pendingRoute = route;
+      const r = await this.editor.close();
+      if (r === 'failed') this.pendingRoute = null;
+      if (r !== 'closed') return false;
+      return true;
+    }
     this.route = route;
+    return true;
+  }
+
+  go(route: Route): void {
+    void this.navigate(route);
+  }
+
+  async onAppClosing(deadlineMs: number): Promise<void> {
+    if (this.closingNotified) return;
+    this.closingNotified = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.max(0, (deadlineMs || 2000) - 300)); });
+    try {
+      await Promise.race([this.editor.flushForClose().catch(() => {}), budget]);
+    } finally {
+      clearTimeout(timer);
+      await this.api.call('app.closingReady').catch(() => {});
+    }
   }
 
   select(id: string | null): void {

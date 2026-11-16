@@ -27,7 +27,9 @@ export interface Client {
 export function createClient(transport: Transport): Client {
   const listeners = new Map<string, Set<(payload: never) => void>>();
   transport.subscribe((name, payload) => {
-    listeners.get(name)?.forEach((h) => h(payload as never));
+    listeners.get(name)?.forEach((h) => {
+      try { h(payload as never); } catch (e) { console.error('event handler failed', name, e); }
+    });
   });
   return {
     async call(method, ...params) {
@@ -63,13 +65,27 @@ declare global {
 
 const CALL_TIMEOUT_MS = 30_000;
 
+function isEnvelope(v: unknown): v is ResolveMessage {
+  if (typeof v !== 'object' || v === null) return false;
+  const m = v as Record<string, unknown>;
+  if (!Number.isInteger(m.id) || typeof m.ok !== 'boolean') return false;
+  if (m.ok) return true;
+  const e = m.error as Record<string, unknown> | undefined;
+  return typeof e === 'object' && e !== null && typeof e.code === 'string' && typeof e.message === 'string';
+}
+
 function createWebViewTransport(host: WebViewHost): Transport {
   let nextId = 1;
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void; timer: ReturnType<typeof setTimeout> }>();
   let emit: (name: string, payload: unknown) => void = () => {};
 
   window.__resolve = (raw) => {
-    const msg: ResolveMessage = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    let parsed: unknown = raw;
+    if (typeof raw === 'string') {
+      try { parsed = JSON.parse(raw); } catch { return; }
+    }
+    if (!isEnvelope(parsed)) return;
+    const msg = parsed;
     const entry = pending.get(msg.id);
     if (!entry) return;
     pending.delete(msg.id);
@@ -77,7 +93,10 @@ function createWebViewTransport(host: WebViewHost): Transport {
     if (msg.ok) entry.resolve(msg.result);
     else entry.reject(new ApiError(msg.error ?? { code: 'INTERNAL', message: 'Internal error' }));
   };
-  window.__emit = (name, payload) => emit(name, payload);
+  window.__emit = (name, payload) => {
+    if (typeof name !== 'string') return;
+    try { emit(name, payload); } catch (e) { console.error('emit failed', e); }
+  };
 
   return {
     call(method, params) {

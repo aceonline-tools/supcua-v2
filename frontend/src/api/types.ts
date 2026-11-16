@@ -160,7 +160,7 @@ export interface HotkeyConflict {
   hotkey: Hotkey;
 }
 
-export type CaptureEndReason = 'stopped' | 'blur' | 'timeout' | 'editorClosed';
+export type CaptureEndReason = 'stopped' | 'blur' | 'timeout' | 'editorClosed' | 'sessionReset';
 
 export type ErrorCode =
   | 'BAD_REQUEST' | 'UNKNOWN_METHOD' | 'BUSY' | 'INTERNAL' | 'NOT_FOUND' | 'NAME_EMPTY'
@@ -179,6 +179,7 @@ export interface Methods {
   'app.ready': { params: undefined; result: Record<string, never> };
   'state.get': { params: undefined; result: StateDTO };
   'app.setGlobalActive': { params: { active: boolean }; result: StateDTO };
+  'app.closingReady': { params: undefined; result: Record<string, never> };
   'app.exit': { params: undefined; result: Record<string, never> };
   'window.hide': { params: undefined; result: Record<string, never> };
   'scripts.list': { params: undefined; result: ScriptList };
@@ -223,7 +224,7 @@ export interface Events {
   'update.progress': { pct: number };
   'update.failed': { message: string };
   'nav.goto': { route: string };
-  'app.closing': Record<string, never>;
+  'app.closing': { deadline_ms: number };
 }
 
 export type EventName = keyof Events;

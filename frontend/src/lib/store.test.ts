@@ -97,3 +97,13 @@ describe('settings', () => {
     expect(store.settings?.key_press_duration_ms).toBe(20);
   });
 });
+
+describe('theme persistence for first paint', () => {
+  it('stores the effective theme for the pre-paint script', async () => {
+    await store.setTheme('light');
+    expect(localStorage.getItem('supcua.theme')).toBe('light');
+    store.systemDark = true;
+    await store.setTheme('system');
+    expect(localStorage.getItem('supcua.theme')).toBe('dark');
+  });
+});

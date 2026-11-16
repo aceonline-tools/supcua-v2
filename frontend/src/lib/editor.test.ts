@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, createClient } from '../api/client';
 import { MockBackend } from '../api/mock';
 import { AppStore } from './store.svelte';
@@ -197,5 +197,136 @@ describe('license and update', () => {
     await store.skipUpdate();
     expect(store.update).toBeNull();
     expect(count('update.skip')).toBe(1);
+  });
+});
+
+const seq = () => mock.calls.map((c) => c.method);
+
+describe('capture transitions (bridge order)', () => {
+  it('starting a hotkey capture over mouse picking keeps the new capture; accepting stops it and resumes mouse', async () => {
+    await store.openEditor('s3');
+    expect(count('capture.mouse.start')).toBe(1);
+    await store.editor.startCapture('toggle');
+    expect(store.editor.capturing).toBe('toggle'); // the host's ended{stopped} for the mouse capture was ignored
+    mock.push('capture.hotkey', { field: 'toggle', hotkey: { modifiers: [], key: 'f9' }, display: 'F9' });
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+    expect(count('capture.stop')).toBe(1);
+    expect(store.editor.script?.toggle_hotkey?.key).toBe('f9');
+    expect(store.editor.capturing).toBeNull();
+  });
+
+  it('key capture: accepted key stops the capture and resumes mouse', async () => {
+    await store.openEditor('s3');
+    await store.editor.startKeyCapture();
+    expect(store.editor.capturing).toBe('key');
+    mock.push('capture.key', { key: 'q' });
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+    expect(store.editor.builder.key).toBe('q');
+    expect(count('capture.stop')).toBe(1);
+  });
+
+  it('cancel resumes mouse exactly once', async () => {
+    await store.openEditor('s3');
+    await store.editor.startCapture('toggle');
+    await store.editor.cancelCapture();
+    await Promise.resolve();
+    expect(count('capture.mouse.start')).toBe(2);
+    expect(store.editor.capturing).toBeNull();
+  });
+
+  it('timeout resumes mouse; blur waits for re-activation', async () => {
+    await store.openEditor('s3');
+    mock.push('capture.ended', { reason: 'timeout' });
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+    mock.push('capture.ended', { reason: 'blur' });
+    await Promise.resolve();
+    expect(count('capture.mouse.start')).toBe(2);
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(3));
+  });
+
+  it('sessionReset drops the editor and reports it', async () => {
+    await store.openEditor('s3');
+    mock.push('capture.ended', { reason: 'sessionReset' });
+    await vi.waitFor(() => expect(store.route.name).toBe('scripts'));
+    expect(store.editor.sessionId).toBeNull();
+    expect(store.error).toContain('reset');
+  });
+});
+
+describe('leaving the editor', () => {
+  it('nav.goto saves and closes before navigating', async () => {
+    await store.openEditor('s3');
+    store.editor.script!.name = 'Renamed';
+    store.editor.markDirty();
+    mock.push('nav.goto', { route: 'settings' });
+    await vi.waitFor(() => expect(store.route.name).toBe('settings'));
+    expect(seq().indexOf('editor.save')).toBeLessThan(seq().indexOf('editor.close'));
+    expect(store.scripts.find((s) => s.id === 's3')?.name).toBe('Renamed');
+  });
+
+  it('nav.goto stays in the editor while a hotkey conflict is unresolved, then continues to the target', async () => {
+    await store.openEditor('s3');
+    store.editor.script!.toggle_hotkey = { modifiers: [], key: 'f5' };
+    store.editor.markDirty();
+    mock.push('nav.goto', { route: 'settings' });
+    await vi.waitFor(() => expect(store.editor.conflicts).not.toBeNull());
+    expect(store.route.name).toBe('editor');
+    await store.editor.resolveConflict(true);
+    expect(store.route.name).toBe('settings');
+  });
+
+  it('a second open while a session exists is reported, not ignored', async () => {
+    await store.openEditor('s3');
+    await store.openEditor('s1');
+    expect(store.error).toContain('already open');
+    expect(store.editor.script?.id).toBe('s3');
+  });
+});
+
+describe('new scripts', () => {
+  it('are saved on close even if untouched, with a default name', async () => {
+    await store.openNew();
+    expect(store.editor.dirty).toBe(true);
+    store.editor.script!.name = 'Brand new';
+    await store.editor.close();
+    expect(store.scripts.some((s) => s.name === 'Brand new')).toBe(true);
+  });
+
+  it('an untouched nameless new script closes quietly', async () => {
+    await store.openNew();
+    await store.editor.close();
+    expect(store.error).toBe('');
+    expect(store.route.name).toBe('scripts');
+  });
+});
+
+describe('native close', () => {
+  it('app.closing with a dirty editor saves, closes, then reports ready (in order)', async () => {
+    await store.openEditor('s3');
+    store.editor.script!.name = 'Edited on exit';
+    store.editor.markDirty();
+    mock.push('app.closing', { deadline_ms: 2000 });
+    await vi.waitFor(() => expect(count('app.closingReady')).toBe(1));
+    const s = seq();
+    expect(s.indexOf('editor.save')).toBeLessThan(s.indexOf('editor.close'));
+    expect(s.indexOf('editor.close')).toBeLessThan(s.indexOf('app.closingReady'));
+    expect(store.scripts.find((x) => x.id === 's3')?.name).toBe('Edited on exit');
+  });
+
+  it('still reports ready when there is no editor, and when save fails', async () => {
+    mock.push('app.closing', { deadline_ms: 2000 });
+    await vi.waitFor(() => expect(count('app.closingReady')).toBe(1));
+    expect(count('editor.save')).toBe(0);
+
+    const m2 = new FlakyBackend();
+    const s2 = new AppStore(createClient(m2));
+    await s2.init();
+    await s2.openEditor('s3');
+    m2.failSaveFor.add('s3');
+    s2.editor.markDirty();
+    m2.push('app.closing', { deadline_ms: 2000 });
+    await vi.waitFor(() => expect(m2.calls.some((c) => c.method === 'app.closingReady')).toBe(true));
+    expect(m2.calls.some((c) => c.method === 'editor.close')).toBe(true);
   });
 });

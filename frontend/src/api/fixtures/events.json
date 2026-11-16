@@ -36,7 +36,7 @@
  "nav.goto": {
   "route": "settings"
  },
- "app.closing": {},
+ "app.closing": {"deadline_ms": 2000},
  "capture.hotkey": {
   "field": "toggle",
   "hotkey": {
