@@ -57,8 +57,8 @@ type Config struct {
 	// The callee recovers with EnqueueRPCJob (reset) followed by a posted Reload.
 	OnProcessFailed func(kind int32)
 	// OnFatal runs on the UI thread when a security handler failed (navigation not cancelled,
-	// popup not denied), AFTER the host has quarantined itself (see Quarantine): the callee must
-	// take the ordered exit under a hard watchdog and show the startup-failure box.
+	// popup not denied), BEFORE the host quarantines itself (see Quarantine): the callee must arm
+	// its hard exit watchdog synchronously, then post the ordered exit; never block.
 	OnFatal func(err error)
 }
 
@@ -123,11 +123,11 @@ func New(cfg Config) (*UI, error) {
 	b.MessageCallback = u.disp.Submit // enqueue only
 	b.NavigationStartingCallback = u.allowNavigation
 	b.FatalCallback = func(err error) {
+		if cfg.OnFatal != nil {
+			cfg.OnFatal(err) // first: arms the exit watchdog before any step that could hang
+		}
 		log.Printf("webview: security handler failed: %v", err)
 		u.Quarantine() // synchronous: no further page input reaches the backend, the page is gone
-		if cfg.OnFatal != nil {
-			cfg.OnFatal(err)
-		}
 	}
 	b.NewWindowDeniedCallback = func(string) { u.deniedWin.Add(1) }
 	b.ProcessFailedCallback = func(kind int32) {

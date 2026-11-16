@@ -243,7 +243,7 @@ func main() {
 			Title: title, Methods: ui.NotLicensedMethods(host), Assets: assets.FS(),
 			DarkTitleBar: systemPrefersDark(), MinW: 480, MinH: 360,
 			OnClose: quit,
-			OnFatal: func(error) { // already quarantined; nothing to flush
+			OnFatal: func(error) { // the host quarantines right after this returns; nothing to flush
 				watchdog.Arm(fatalExitBound, 5, "fatal exit")
 				u.Post(u.Quit)
 			},
@@ -414,24 +414,37 @@ func main() {
 	// startup-failure box and exits 5. UI thread.
 	var fatalPage atomic.Bool
 	fatal := func(why string) {
+		watchdog.Arm(fatalExitBound, 5, "fatal exit") // first: every later step may hang
+		fatalPage.Store(true)
 		log.Printf("webview failure: %s: leaving the app", why)
 		if u := late.p.Load(); u != nil {
 			u.Quarantine()
 		}
-		watchdog.Arm(fatalExitBound, 5, "fatal exit")
-		fatalPage.Store(true)
 		late.Post(quitApp)
 	}
 
-	// Renderer failure: the crashed renderer can send nothing more, so a reset job queued on the
-	// RPC worker runs after every call it already sent (queued or in flight) and before any call
-	// of the reloaded document, which only exists once the job has posted the host Reload. A
-	// dead browser process or repeated failures take the fatal path. UI thread, inside a
-	// WebView2 event: only post/enqueue work.
+	// Process failure (ui.ProcessFailureAction): only a render-process exit is recovered. The
+	// crashed renderer can send nothing more, so a reset job queued on the RPC worker runs after
+	// every call it already sent (queued or in flight) and before any call of the reloaded
+	// document, which only exists once the job has posted the host Reload. Reset + Reload must
+	// finish within recoveryBound, else fatal. Browser exit, an unresponsive renderer and
+	// repeated failures are fatal; auxiliary processes are only logged. UI thread, inside a
+	// WebView2 event: only arm, post and enqueue.
+	const recoveryBound = 10 * time.Second
 	var failTimes []time.Time // UI thread only
 	pageFailed := func(kind int32) {
 		u := late.p.Load()
 		if u == nil || shutting.Load() {
+			return
+		}
+		action := ui.ProcessFailureAction(kind)
+		log.Printf("webview: process failed (kind %d, action %d)", kind, action)
+		switch action {
+		case ui.FailureIgnore:
+			return
+		case ui.FailureFatal:
+			watchdog.Arm(fatalExitBound, 5, "fatal exit")
+			late.Post(func() { fatal("process failed") })
 			return
 		}
 		now := time.Now()
@@ -442,23 +455,32 @@ func main() {
 			}
 		}
 		failTimes = append(keep, now)
-		const browserExited = 0 // COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
-		if kind == browserExited || len(failTimes) > 3 {
-			late.Post(func() { fatal("process failed") })
+		if len(failTimes) > 3 {
+			watchdog.Arm(fatalExitBound, 5, "fatal exit")
+			late.Post(func() { fatal("repeated renderer failures") })
 			return
 		}
+		deadline := ui.StartDeadline(recoveryBound, func() {
+			late.Post(func() { fatal("renderer recovery did not finish") })
+		})
 		queued := u.EnqueueRPCJob(func() {
 			br.ResetSession("processFailed")
 			late.Post(func() {
 				if shutting.Load() { // exit already began: never reload
+					deadline.Done()
 					return
 				}
-				if err := u.Reload(); err != nil {
+				err := u.Reload()
+				if !deadline.Done() { // too late: the fatal path is already posted
+					return
+				}
+				if err != nil {
 					fatal("reload: " + err.Error())
 				}
 			})
 		})
 		if !queued {
+			deadline.Done()
 			log.Println("webview: renderer failed after the RPC dispatcher closed; not reloading")
 		}
 	}
@@ -517,7 +539,7 @@ func main() {
 		MinH:            420,
 		OnClose:         quitApp, // X exits for real (as before); minimize hides to the tray
 		OnProcessFailed: pageFailed,
-		OnFatal: func(err error) { // a security handler failed (host already quarantined)
+		OnFatal: func(err error) { // a security handler failed; the host quarantines right after this returns
 			watchdog.Arm(fatalExitBound, 5, "fatal exit")
 			fatalPage.Store(true)
 			late.Post(func() { fatal(err.Error()) })

@@ -770,3 +770,20 @@ func TestReplace_UnquotablePathRefusedBeforeTouchingExe(t *testing.T) {
 		t.Fatal("no .old may be created")
 	}
 }
+
+func TestBatchCommand_RelativeConstantScript(t *testing.T) {
+	dir := `C:\Program Files\%TEMP%\R&D`
+	c := batchCommand(dir)
+	want := []string{"cmd", "/c", "start", "/b", "cmd", "/c", `.\update.bat`}
+	if strings.Join(c.Args, "|") != strings.Join(want, "|") {
+		t.Fatalf("argv %q", c.Args)
+	}
+	if c.Dir != dir {
+		t.Fatalf("dir %q", c.Dir)
+	}
+	for _, a := range c.Args {
+		if strings.Contains(a, dir) || strings.ContainsAny(a, "\" %!&") {
+			t.Fatalf("argument %q carries a path or needs quoting", a)
+		}
+	}
+}

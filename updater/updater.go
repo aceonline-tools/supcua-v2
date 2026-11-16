@@ -445,8 +445,7 @@ func Replace(d Downloaded, exePath string) error {
 		return fmt.Errorf("write batch: %w", err)
 	}
 
-	cmd := exec.Command("cmd", "/c", "start", "/b", "cmd", "/c", batPath)
-	cmd.Dir = dir
+	cmd := batchCommand(dir)
 	if err := cmd.Start(); err != nil {
 		restore()
 		os.Remove(batPath)
@@ -513,4 +512,16 @@ func buildBatch(pid int, tmpExe, exePath, oldExe string) (string, error) {
 		`del "%~f0"`,
 	}
 	return strings.Join(lines, "\r\n") + "\r\n", nil
+}
+
+// batchName is the launched script, relative to the install directory: no absolute path ever
+// reaches a cmd command line. It needs no quoting (no spaces or cmd metacharacters), and the
+// ".\" prefix makes cmd run the file in cmd.Dir instead of searching PATH.
+const batchName = `.\update.bat`
+
+// batchCommand starts update.bat detached, in dir.
+func batchCommand(dir string) *exec.Cmd {
+	cmd := exec.Command("cmd", "/c", "start", "/b", "cmd", "/c", batchName)
+	cmd.Dir = dir
+	return cmd
 }
