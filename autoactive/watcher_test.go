@@ -200,19 +200,30 @@ func TestTransitionDispatchedEvenWhenStateLooksUnchanged(t *testing.T) {
 func TestStaleGenerationDetectedAfterStop(t *testing.T) {
 	environment := newFakeEnvironment(false)
 	environment.setForeground(`C:\ACEonline.exe`, nil)
-	var dispatched uint64
+	dispatchedGenerations := make(chan uint64, 16)
 	options := environment.options()
-	options.SetActive = func(active bool, generation uint64) { dispatched = generation }
+	options.SetActive = func(active bool, generation uint64) { dispatchedGenerations <- generation }
 	watcher := NewWatcher(options)
+
 	watcher.Start()
-	environment.awaitPolls(t, 2)
-	watcher.Stop()
-	if dispatched == 0 || dispatched == watcher.Generation() {
-		t.Fatalf("callback generation %d must be stale after Stop (current %d)", dispatched, watcher.Generation())
+	var firstGeneration uint64
+	select {
+	case firstGeneration = <-dispatchedGenerations:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no dispatch after Start")
 	}
+	if firstGeneration != watcher.Generation() {
+		t.Fatalf("live callback generation %d must match current %d", firstGeneration, watcher.Generation())
+	}
+
+	watcher.Stop()
+	if firstGeneration == watcher.Generation() {
+		t.Fatalf("callback generation %d must be stale after Stop", firstGeneration)
+	}
+
 	watcher.Start()
 	defer watcher.Stop()
-	if dispatched == watcher.Generation() {
+	if firstGeneration == watcher.Generation() {
 		t.Fatal("restart must not revive old generation")
 	}
 }
