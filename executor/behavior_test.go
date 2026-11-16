@@ -357,10 +357,12 @@ func TestDelay_ZeroReturnsPromptly(t *testing.T) {
 // ---- cancellation at every level ----
 
 // cancelAfterEvent runs s, waits for trigger (an observable checkpoint inside
-// the script), then requires Execute to still be running after a settle window
-// before cancelling. Every script passed here ends in a blocking construct, so
-// "still running after the checkpoint" proves execution reached it (e.g. a 1h
-// delay was entered) rather than being cancelled on the way there.
+// the script), then checks Execute has not returned after a short settle
+// window before cancelling. The check is best-effort: it makes a cancel that
+// lands before the script reached its blocking construct unlikely, but a
+// descheduled executor goroutine can still be cancelled early, so the failure
+// mode is a false pass, never a false failure. Scripts passed here must block
+// (or loop) far longer than any test timeout so they cannot finish on their own.
 func cancelAfterEvent(t *testing.T, s model.Script, det ImageDetectorInterface, trigger func(*fakeSim) bool) (*fakeSim, error) {
 	t.Helper()
 	sim := &fakeSim{}
@@ -479,7 +481,7 @@ func TestCancel_InsideIfElse(t *testing.T) {
 }
 
 func TestCancel_InsideCountedLoopOfDelays(t *testing.T) {
-	s := once(loopOf(1000, act(model.ActionMouseLeftDown), model.Action{Type: model.ActionDelay, DelayMs: 5}), act(model.ActionMouseRightDown))
+	s := once(loopOf(1000000, act(model.ActionMouseLeftDown), model.Action{Type: model.ActionDelay, DelayMs: 5}), act(model.ActionMouseRightDown))
 	sim, err := cancelAfterEvent(t, s, nil, func(f *fakeSim) bool { return f.count("ldown") >= 2 })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
