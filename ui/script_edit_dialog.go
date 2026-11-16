@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -524,24 +525,14 @@ func (ctrl *scriptEditController) attachHotkeyCaptures() {
 	}
 
 	dialogHWND := ctrl.dialog.Handle()
-	var hookHandle uintptr
-
-	hookProc := syscall.NewCallback(func(nCode int, wParam, lParam uintptr) uintptr {
-		const wmKeydown    = 0x0100
-		const wmKeyup      = 0x0101
+	handler := func(wParam uintptr, vk uint32) bool {
+		const wmKeydown = 0x0100
 		const wmSyskeydown = 0x0104
-		const wmSyskeyup   = 0x0105
-
-		if nCode >= 0 {
-			fg, _, _ := procGetForegroundWindow.Call()
-			if uintptr(dialogHWND) == fg {
-				kbs := (*kbdllhookstruct)(unsafe.Pointer(lParam))
-				vk := kbs.vkCode
 				isAlt := vk == 0x12 || vk == 0xA4 || vk == 0xA5 // VK_MENU, VK_LMENU, VK_RMENU
 
 				// Suppress Alt key so Windows doesn't enter menu mode
 				if isAlt {
-					return 1
+					return true
 				}
 
 				if wParam == wmKeydown || wParam == wmSyskeydown {
@@ -554,7 +545,7 @@ func (ctrl *scriptEditController) attachHotkeyCaptures() {
 							})
 							// Suppress Tab so it doesn't move focus away
 							if vk == 0x09 {
-								return 1
+								return true
 							}
 						}
 					}
@@ -582,21 +573,60 @@ func (ctrl *scriptEditController) attachHotkeyCaptures() {
 						}
 					}
 				}
-			}
-		}
+		return false
+	}
 
-		ret, _, _ := procCallNextHookEx.Call(hookHandle, uintptr(nCode), wParam, lParam)
-		return ret
-	})
-
-	hookHandle, _, _ = procSetWindowsHookExW.Call(13, hookProc, 0, 0) // WH_KEYBOARD_LL = 13
+	hwnd := uintptr(dialogHWND)
+	hookHandle := registerEditHook(hwnd, handler)
 
 	ctrl.dialog.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
-		if hookHandle != 0 {
-			procUnhookWindowsHookEx.Call(hookHandle)
-			hookHandle = 0
-		}
+		unregisterEditHook(hwnd, hookHandle)
 	})
+}
+
+var (
+	editHookCallbackOnce sync.Once
+	editHookCallback     uintptr
+	editHookMu           sync.Mutex
+	editHookHandlers     = map[uintptr]func(wParam uintptr, vk uint32) bool{}
+)
+
+func editHookProc(nCode int, wParam, lParam uintptr) uintptr {
+	if nCode >= 0 {
+		if fg, _, _ := procGetForegroundWindow.Call(); fg != 0 {
+			editHookMu.Lock()
+			handler := editHookHandlers[fg]
+			editHookMu.Unlock()
+			if handler != nil {
+				kbs := *(**kbdllhookstruct)(unsafe.Pointer(&lParam))
+				if handler(wParam, kbs.vkCode) {
+					return 1
+				}
+			}
+		}
+	}
+	ret, _, _ := procCallNextHookEx.Call(0, uintptr(nCode), wParam, lParam)
+	return ret
+}
+
+// registerEditHook binds handler to the dialog window and installs a WH_KEYBOARD_LL hook
+// that reuses a single process-wide callback (NewCallback slots are never freed).
+func registerEditHook(hwnd uintptr, handler func(wParam uintptr, vk uint32) bool) uintptr {
+	editHookCallbackOnce.Do(func() { editHookCallback = syscall.NewCallback(editHookProc) })
+	editHookMu.Lock()
+	editHookHandlers[hwnd] = handler
+	editHookMu.Unlock()
+	h, _, _ := procSetWindowsHookExW.Call(13, editHookCallback, 0, 0) // WH_KEYBOARD_LL = 13
+	return h
+}
+
+func unregisterEditHook(hwnd, hookHandle uintptr) {
+	if hookHandle != 0 {
+		procUnhookWindowsHookEx.Call(hookHandle)
+	}
+	editHookMu.Lock()
+	delete(editHookHandlers, hwnd)
+	editHookMu.Unlock()
 }
 
 func vkCodeToName(vk uint32) string {

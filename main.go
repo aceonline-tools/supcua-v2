@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -40,7 +41,7 @@ func main() {
 	applicationDirectory := filepath.Dir(executablePath)
 
 	// Log to file since -H windowsgui hides console
-	logFile, logErr := os.OpenFile(filepath.Join(applicationDirectory, "supcua-v2.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFile, logErr := newRotatingWriter(filepath.Join(applicationDirectory, "supcua-v2.log"), 5<<20)
 	if logErr == nil {
 		log.SetOutput(logFile)
 		defer logFile.Close()
@@ -135,33 +136,25 @@ func main() {
 	// Allow rctrl to toggle global active even during keyboard lock
 	executor.SetEmergencyToggle(appController.ToggleGlobalStatus)
 
-	// Declare hotkey state before closures that reference it
-	var scriptHotkeyIDs []int
+	// Hotkey bookkeeping is serialized in scriptHotkeys. It exists before any
+	// callback is wired and registers nothing until scripts are set below.
+	scriptHotkeys := newScriptHotkeySet(
+		appController.IsGlobalActive,
+		func(scripts []model.Script) []int {
+			return registerScriptHotkeys(appController, hotkeyManager, scripts)
+		},
+		hotkeyManager.Unregister,
+	)
 
-	unregisterScriptHotkeys := func() {
-		for _, id := range scriptHotkeyIDs {
-			hotkeyManager.Unregister(id)
-		}
-		scriptHotkeyIDs = nil
-	}
-
-	// Track previous active state to only re-register hotkeys on global toggle, not script start/stop
-	prevActive := true // initial state is active
 	appController.OnStatusChange = func() {
-		isActive := appController.IsGlobalActive()
-		if isActive != prevActive {
-			prevActive = isActive
-			if isActive {
-				scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, mainWindowController.Scripts())
-			} else {
-				unregisterScriptHotkeys()
+		scriptHotkeys.Reconcile()
+		mainWindow.Synchronize(func() {
+			if overlayWindow != nil {
+				overlayWindow.Refresh()
 			}
-		}
-		if overlayWindow != nil {
-			overlayWindow.Refresh()
-		}
-		trayIcon.UpdateTooltip()
-		mainWindowController.RefreshActiveState()
+			trayIcon.UpdateTooltip()
+			mainWindowController.RefreshActiveState()
+		})
 	}
 
 	// Start hotkey listener first (Register sends to its channel)
@@ -187,19 +180,20 @@ func main() {
 	}
 
 	// Register script hotkeys (only when global is active)
-	scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, mainWindowController.Scripts())
+	scriptHotkeys.SetScripts(mainWindowController.Scripts())
 
 	// Re-register script hotkeys whenever scripts change (uses in-memory list, no disk read)
 	mainWindowController.OnScriptsChanged = func(scripts []model.Script) {
-		unregisterScriptHotkeys()
 		_ = globalHotkeyID // keep global hotkey alive
-		if appController.IsGlobalActive() {
-			scriptHotkeyIDs = registerScriptHotkeys(appController, hotkeyManager, scripts)
-		}
+		scriptHotkeys.SetScripts(scripts)
 	}
 
 	// Run the Walk message loop (blocks until window closed)
 	mainWindow.Run()
+
+	if !scriptStore.FlushSaves(2 * time.Second) {
+		log.Println("warning: pending script saves not flushed before exit")
+	}
 
 	// Save overlay position before destroying
 	if overlayWindow != nil {

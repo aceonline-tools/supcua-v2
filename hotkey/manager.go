@@ -235,15 +235,13 @@ func (m *Manager) ListenForHotkeys() {
 					req.reply <- nil
 					continue
 				}
-				ret, _, err := procUnregisterHotKey.Call(0, uintptr(req.id))
-				if ret == 0 {
-					req.reply <- fmt.Errorf("UnregisterHotKey failed for ID %d: %v", req.id, err)
-				} else {
-					m.mu.Lock()
-					delete(m.callbacks, req.id)
-					m.mu.Unlock()
-					req.reply <- nil
-				}
+				req.reply <- removeRegistration(&m.mu, m.callbacks, req.id, func(id int) error {
+					ret, _, err := procUnregisterHotKey.Call(0, uintptr(id))
+					if ret == 0 {
+						return err
+					}
+					return nil
+				})
 			default:
 				goto doneChannels
 			}

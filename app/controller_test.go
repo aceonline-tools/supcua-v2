@@ -9,26 +9,25 @@ import (
 func TestGlobalStatusToggle(t *testing.T) {
 	appController := NewController(nil, nil, nil, nil)
 
+	if !appController.IsGlobalActive() {
+		t.Error("expected active by default")
+	}
+
+	appController.ToggleGlobalStatus()
+
 	if appController.IsGlobalActive() {
-		t.Error("expected inactive by default")
+		t.Error("expected inactive after toggle")
 	}
 
 	appController.ToggleGlobalStatus()
 
 	if !appController.IsGlobalActive() {
-		t.Error("expected active after toggle")
-	}
-
-	appController.ToggleGlobalStatus()
-
-	if appController.IsGlobalActive() {
-		t.Error("expected inactive after second toggle")
+		t.Error("expected active after second toggle")
 	}
 }
 
 func TestCanStartScript(t *testing.T) {
 	appController := NewController(nil, nil, nil, nil)
-	appController.ToggleGlobalStatus() // set active
 
 	enabledScript := model.Script{ID: "s1", Enabled: true}
 	disabledScript := model.Script{ID: "s2", Enabled: false}
@@ -50,7 +49,6 @@ func TestCanStartScript(t *testing.T) {
 
 func TestOnlyOneScriptRunsAtATime(t *testing.T) {
 	appController := NewController(nil, nil, nil, nil)
-	appController.ToggleGlobalStatus()
 
 	appController.SetRunningScriptID("script-1")
 
@@ -63,5 +61,39 @@ func TestOnlyOneScriptRunsAtATime(t *testing.T) {
 
 	if !appController.CanStartScript(scriptTwo) {
 		t.Error("expected script-2 to be startable after clearing")
+	}
+}
+
+func TestEnqueueDedupsByID(t *testing.T) {
+	c := NewController(nil, nil, nil, nil)
+	c.enqueueLocked(model.Script{ID: "a"})
+	c.enqueueLocked(model.Script{ID: "b"})
+	c.enqueueLocked(model.Script{ID: "a"})
+	if got := c.GetQueueLength(); got != 2 {
+		t.Fatalf("queue len = %d, want 2", got)
+	}
+}
+
+func TestDequeueZeroesConsumedAndResets(t *testing.T) {
+	c := NewController(nil, nil, nil, nil)
+	c.enqueueLocked(model.Script{ID: "a", Name: "A"})
+	c.enqueueLocked(model.Script{ID: "b", Name: "B"})
+	backing := c.scriptQueue
+
+	first, ok := c.popQueueLocked()
+	if !ok || first.ID != "a" {
+		t.Fatalf("pop = %v %v", first, ok)
+	}
+	if backing[0].ID != "" || backing[0].Name != "" {
+		t.Fatal("consumed entry not zeroed")
+	}
+	if _, ok := c.popQueueLocked(); !ok {
+		t.Fatal("expected second pop")
+	}
+	if c.scriptQueue != nil {
+		t.Fatal("queue not reset when empty")
+	}
+	if _, ok := c.popQueueLocked(); ok {
+		t.Fatal("pop on empty returned ok")
 	}
 }
