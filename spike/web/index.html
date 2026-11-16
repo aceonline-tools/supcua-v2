@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>spike</title>
+<meta name="color-scheme" content="light dark">
+<style>
+ :root{--bg:#fff;--fg:#1b1b1f;--card:#f2f3f7;--ac:#3b6cf6}
+ @media (prefers-color-scheme:dark){:root{--bg:#16181d;--fg:#e8e9ee;--card:#22252c;--ac:#6f93ff}}
+ body{font:14px "Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:20px}
+ .card{background:var(--card);border-radius:10px;padding:14px;margin:0 0 12px}
+ button{font:inherit;padding:6px 12px;margin:2px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg)}
+ button:focus-visible,input:focus-visible{outline:2px solid var(--ac)}
+ #modal{position:fixed;inset:0;background:#0007;display:flex;align-items:center;justify-content:center}
+ #modal div{background:var(--bg);padding:20px;border-radius:12px;min-width:260px}
+ code{font-family:Consolas,monospace}
+</style></head><body>
+<h2>supcua WebView2 spike</h2>
+<div class="card"><b>JS→Go call</b><br>
+ <input id="txt" value="hello"> <button id="ping">Ping</button> <code id="pingOut">-</code></div>
+<div class="card"><b>Go→JS event</b> (1 s ticker): <code id="evt">waiting…</code> · received <code id="evtN">0</code></div>
+<div class="card"><b>Overlay</b>
+ <button id="ovVis">Toggle visible</button> <button id="ovDrag">Toggle drag</button> <code id="ovOut">-</code></div>
+<div class="card"><b>Window</b>
+ <button id="hide">Hide to tray</button> <button id="quit">Exit</button> <button id="dlg">Open dialog</button></div>
+<div class="card"><b>Keyboard check</b> (Tab / Enter / Esc / typing must reach the page)<br>
+ <input id="kb" placeholder="type here"> <code id="kbOut">-</code></div>
+<div class="card"><b>Theme</b> <code id="theme"></code> (follows OS; toggle Windows dark mode)</div>
+<script>
+"use strict";
+const pending = new Map(); let seq = 0, evtN = 0, lastPing = "";
+const listeners = {};
+function call(method, params){
+  return new Promise((resolve, reject) => {
+    const id = ++seq; pending.set(id, {resolve, reject});
+    window.chrome.webview.postMessage(JSON.stringify({id, method, params}));
+  });
+}
+window.__resolve = r => { const p = pending.get(r.id); if(!p) return; pending.delete(r.id);
+  r.ok ? p.resolve(r.result) : p.reject(Object.assign(new Error(r.error.message), {code: r.error.code})); };
+window.__emit = (name, payload) => (listeners[name]||[]).forEach(f => f(payload));
+const on = (n, f) => (listeners[n] = listeners[n]||[]).push(f);
+const $ = id => document.getElementById(id);
+
+on("status", s => { evtN++; $("evt").textContent = JSON.stringify(s); $("evtN").textContent = evtN; });
+$("ping").onclick = async () => { try { const r = await call("app.ping", {text: $("txt").value}); lastPing = r.upper; $("pingOut").textContent = JSON.stringify(r);} catch(e){ $("pingOut").textContent = e.code+": "+e.message; } };
+let vis = true, drag = false;
+$("ovVis").onclick = async () => { vis = !vis; $("ovOut").textContent = JSON.stringify(await call("overlay.setVisible", {visible: vis})); };
+$("ovDrag").onclick = async () => { drag = !drag; $("ovOut").textContent = JSON.stringify(await call("overlay.setDraggable", {draggable: drag})); };
+$("hide").onclick = () => call("window.hide");
+$("quit").onclick = () => call("app.exit");
+$("kb").onkeydown = e => { $("kbOut").textContent = "keydown " + e.key; };
+const mq = matchMedia("(prefers-color-scheme: dark)");
+const showTheme = () => $("theme").textContent = mq.matches ? "dark" : "light";
+mq.addEventListener("change", showTheme); showTheme();
+
+async function openDialog(i){
+  const m = document.createElement("div"); m.id = "modal";
+  m.innerHTML = '<div><b>Dialog</b><p>cycle ' + i + '</p><button id="dlgClose">Close</button></div>';
+  document.body.appendChild(m);
+  await call("dialog.open", {cycle: i});
+  return async () => { m.remove(); await call("dialog.close", {cycle: i}); };
+}
+$("dlg").onclick = async () => { const close = await openDialog(0); $("dlgClose").onclick = close; };
+
+window.__selftest = {
+  async ping(){ const r = await call("app.ping", {text: "selftest"}); lastPing = r.upper; return r; },
+  async cycles(n){
+    for (let i = 1; i <= n; i++){
+      const close = await openDialog(i);
+      await new Promise(r => requestAnimationFrame(() => r()));
+      await close();
+    }
+    await call("selftest.report", {ping: lastPing, events: evtN, cycles: n});
+  }
+};
+call("app.ready");
+</script></body></html>
