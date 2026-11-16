@@ -54,6 +54,16 @@ func (scriptStore *ScriptStore) NameExists(name string, excludeID string) bool {
 	return false
 }
 
+// NameOrFileTaken returns true if the name is used by an existing script or if saving
+// under this name would write to a file that already exists (e.g. "A (copy)" vs "A copy").
+func (scriptStore *ScriptStore) NameOrFileTaken(name string) bool {
+	if scriptStore.NameExists(name, "") {
+		return true
+	}
+	_, err := os.Stat(scriptStore.scriptFilePath(name))
+	return err == nil
+}
+
 // Save writes a script using its name as the filename.
 // If the script was previously saved with a different name, the old file is removed.
 func (scriptStore *ScriptStore) Save(script model.Script) error {

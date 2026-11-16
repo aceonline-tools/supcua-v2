@@ -533,9 +533,7 @@ func (wc *MainWindowController) onCloneScript() {
 		return // header row or nothing selected
 	}
 
-	clonedScript := model.CloneScript(wc.allScripts[scriptIdx], func(name string) bool {
-		return wc.scriptStore.NameExists(name, "")
-	})
+	clonedScript := model.CloneScript(wc.allScripts[scriptIdx], wc.scriptStore.NameOrFileTaken)
 	if err := wc.scriptStore.Save(clonedScript); err != nil {
 		walk.MsgBox(wc.mainWindow, "Clone Script", fmt.Sprintf("Failed to clone script: %v", err), walk.MsgBoxIconError)
 		return
