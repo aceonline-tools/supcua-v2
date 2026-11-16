@@ -24,24 +24,15 @@ PR titles should follow the same format (squash merges use the title as the comm
 3. Merging that PR creates tag `vX.Y.Z` and the GitHub Release.
 4. The `build-and-attach` job in `.github/workflows/release-please.yml` builds the tag with `version.Version=X.Y.Z` (via ldflags; no file needs bumping) and attaches `supcua-v2.exe` and `supcua-v2.exe.sha256` to the release.
 
-`release.sh` / `/release` is the legacy manual path. Do not use it for a version release-please also manages: both create the same tag and release.
+`release.sh` only builds locally; it does not tag or publish. GitHub Releases is the only update channel.
 
 ### Recovery
 
 If the build or upload failed for an existing tag: Actions → release-please → Run workflow on `main`, set `tag` to e.g. `v1.0.29`. It rebuilds that tag and uploads with `--clobber`. No new release is created.
 
-### Updater migration (MinIO → GitHub Releases)
+### Updating from v1.0.28 or older
 
-The in-app updater now reads the latest GitHub Release (asset `supcua-v2.exe`); see the README section of the same name. Clients ≤ v1.0.28 still read MinIO `latest.txt`, so **only the first ("bridge") release containing the new updater must also be uploaded to MinIO, manually, once**; do not upload later releases. Keep the bridge exe and `latest.txt` hosted until support for ≤ v1.0.28 clients is intentionally ended. MinIO is not published by CI. After the release asset exists, run with the same credentials `release.sh` uses (`VERSION` has no `v`). Upload the exe **before** `latest.txt`:
-
-```bash
-ENDPOINT="https://dev.hrm.vangtatmining.com.vn/minio"; BUCKET="bucket-supcua-v2"; VERSION=1.0.29
-gh release download "v$VERSION" --pattern supcua-v2.exe
-aws --endpoint-url "$ENDPOINT" --region us-east-1 configure set default.s3.multipart_threshold 200MB
-aws --endpoint-url "$ENDPOINT" --region us-east-1 s3 cp supcua-v2.exe "s3://$BUCKET/supcua-v2.exe"
-echo "$VERSION" > latest.txt
-aws --endpoint-url "$ENDPOINT" --region us-east-1 s3 cp latest.txt "s3://$BUCKET/latest.txt"
-```
+Clients on v1.0.28 or older do not auto-update to the new version. Users download `supcua-v2.exe` once from https://github.com/aceonline-tools/supcua-v2/releases/latest; from then on the in-app updater reads GitHub Releases.
 
 ## Repository prerequisites
 
