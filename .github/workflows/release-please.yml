@@ -1,0 +1,67 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag (vX.Y.Z) to rebuild and re-upload supcua-v2.exe to, with --clobber. Leave empty to just run release-please.
+        required: false
+        type: string
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    if: inputs.tag == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+      sha: ${{ steps.rp.outputs.sha }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-and-attach:
+    needs: release-please
+    if: ${{ always() && (needs.release-please.outputs.release_created == 'true' || inputs.tag != '') }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
+      IS_RECOVERY: ${{ inputs.tag != '' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate tag
+        shell: bash
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid tag: $TAG"; exit 1; }
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
+          submodules: false
+      - id: build
+        uses: ./.github/actions/release-build
+        with:
+          version: ${{ env.VERSION }}
+      - name: Attach to release
+        shell: bash
+        run: |
+          args=()
+          [ "$IS_RECOVERY" = "true" ] && args+=(--clobber)
+          gh release upload "$TAG" supcua-v2.exe supcua-v2.exe.sha256 "${args[@]}"
