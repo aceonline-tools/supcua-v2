@@ -108,3 +108,7 @@ bash release.sh 1.2.3   # explicit version
 The script will build, tag, push to GitHub, upload to MinIO, and open the release page.
 
 > **Note:** garble is scoped to `github.com/yanmad27/supcua-v2` only. The `walk` UI library is excluded from obfuscation because it uses reflection internally.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, CI, and the release process.
