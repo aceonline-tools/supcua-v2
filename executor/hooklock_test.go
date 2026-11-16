@@ -71,7 +71,7 @@ func TestStopEndsEmptyInfiniteScripts(t *testing.T) {
 	for name, script := range cases {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
-			ex := NewExecutor(&mockInputSimulator{}, nil, 10)
+			ex := NewExecutor(&fakeSim{}, nil, 10)
 			done := make(chan error, 1)
 			go func() { done <- ex.Execute(ctx, script) }()
 			time.Sleep(30 * time.Millisecond)
