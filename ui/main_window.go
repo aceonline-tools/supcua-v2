@@ -142,15 +142,16 @@ func (m *scriptTableModel) SetChecked(index int, checked bool) error {
 	}
 	item := m.items[index]
 	if item.isHeader {
-		// Update in-memory state and save each script async
+		// Update in-memory state and queue the group's saves on the store's single worker
+		var changed []model.Script
 		for i, script := range m.wc.allScripts {
 			if script.Group == item.group {
 				script.Enabled = checked
 				m.wc.allScripts[i] = script
-				s := script
-				go m.wc.scriptStore.Save(s)
+				changed = append(changed, script)
 			}
 		}
+		m.wc.scriptStore.QueueSave(changed...)
 		// Update UI immediately
 		for row, scriptIdx := range m.wc.rowToScript {
 			if m.wc.allScripts[scriptIdx].Group == item.group {
@@ -170,7 +171,7 @@ func (m *scriptTableModel) SetChecked(index int, checked bool) error {
 		script := m.wc.allScripts[scriptIdx]
 		script.Enabled = checked
 		m.wc.allScripts[scriptIdx] = script
-		go m.wc.scriptStore.Save(script)
+		m.wc.scriptStore.QueueSave(script)
 		m.wc.notifyScriptsChanged()
 	}
 	return nil
