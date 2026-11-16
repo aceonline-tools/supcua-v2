@@ -129,3 +129,7 @@ rm latest.txt
 ```
 
 Upload the exe first, then `latest.txt`, so old clients never see a version whose binary is missing. Do not upload to MinIO for any later release. Keep the bridge exe and `latest.txt` hosted until support for clients ≤ v1.0.28 is intentionally ended.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, CI, and the release process.
