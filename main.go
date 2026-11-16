@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/yanmad27/supcua-v2/app"
+	"github.com/yanmad27/supcua-v2/autoactive"
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	imagedetector "github.com/yanmad27/supcua-v2/image"
@@ -198,8 +199,62 @@ func main() {
 		}
 	}
 
+	// Auto Active: global active follows the game window's focus
+	autoActiveWatcher := autoactive.NewWatcher(autoactive.Options{
+		ProcessName:           autoactive.ResolveProcessName(appConfig.AutoActiveProcessName),
+		ForegroundProcessName: autoactive.ForegroundProcessName,
+		IsActive:              appController.IsGlobalActive,
+		SetActive: func(active bool) {
+			mainWindow.Synchronize(func() {
+				if appController.IsGlobalActive() != active {
+					appController.ToggleGlobalStatus()
+				}
+			})
+		},
+	})
+	if appConfig.AutoActiveEnabled {
+		autoActiveWatcher.Start()
+	}
+	trayIcon.AddAutoActiveToggle(appConfig.AutoActiveEnabled, func(enabled bool) {
+		if enabled {
+			autoActiveWatcher.Start()
+		} else {
+			autoActiveWatcher.Stop()
+		}
+		cfg, err := configStore.Load()
+		if err != nil {
+			log.Printf("warning: failed to load config for auto active: %v", err)
+			return
+		}
+		cfg.AutoActiveEnabled = enabled
+		if err := configStore.Save(cfg); err != nil {
+			log.Printf("warning: failed to save auto active setting: %v", err)
+		}
+	})
+
+	currentAutoActiveProcessName := autoactive.ResolveProcessName(appConfig.AutoActiveProcessName)
+	trayIcon.AddAutoActiveProcessItem(
+		func() string { return currentAutoActiveProcessName },
+		func(processName string) {
+			resolvedName := autoactive.ResolveProcessName(processName)
+			cfg, err := configStore.Load()
+			if err != nil {
+				log.Printf("warning: failed to load config for auto active process: %v", err)
+				return
+			}
+			cfg.AutoActiveProcessName = resolvedName
+			if err := configStore.Save(cfg); err != nil {
+				log.Printf("warning: failed to save auto active process: %v", err)
+				return
+			}
+			currentAutoActiveProcessName = resolvedName
+			autoActiveWatcher.SetProcessName(resolvedName)
+		},
+	)
+
 	// Run the Walk message loop (blocks until window closed)
 	mainWindow.Run()
+	autoActiveWatcher.Stop()
 
 	// Save overlay position before destroying
 	if overlayWindow != nil {
