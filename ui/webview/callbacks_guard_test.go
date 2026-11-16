@@ -74,6 +74,7 @@ func TestHostCallbacksAreTheKnownOnceGuardedSites(t *testing.T) {
 	}
 	want := map[string]int{
 		"callbacks_windows.go:newCallback":   1, // the counting wrapper itself
+		"callbacks_windows.go:NewCallback":   1, // exported counted wrapper for ui/overlay.go
 		"ui_windows.go:createHostWindow":     1, // inside hostClassOnce.Do
 		"capture_windows.go:StartKeyCapture": 1, // inside keyHookOnce.Do
 	}
@@ -84,5 +85,17 @@ func TestHostCallbacksAreTheKnownOnceGuardedSites(t *testing.T) {
 		if got[k] != n {
 			t.Fatalf("callback sites changed: got %v want %v", got, want)
 		}
+	}
+}
+
+// ui/overlay.go is the only other package creating a callback: once, for the shared overlay
+// window procedure (class registration inside overlayClassOnce.Do).
+func TestUIPackageCallbackSites(t *testing.T) {
+	got := map[string]int{}
+	for _, s := range callSites(t, "..", "NewCallback", "newCallback") {
+		got[s.file+":"+s.fn]++
+	}
+	if len(got) != 1 || got["overlay.go:NewOverlayWindow"] != 1 {
+		t.Fatalf("ui callback sites changed: %v", got)
 	}
 }

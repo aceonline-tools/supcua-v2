@@ -3,15 +3,22 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 
 	"github.com/yanmad27/supcua-v2/app"
+	"github.com/yanmad27/supcua-v2/app/status"
 	"github.com/yanmad27/supcua-v2/autoactive"
+	"github.com/yanmad27/supcua-v2/bridge"
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	imagedetector "github.com/yanmad27/supcua-v2/image"
@@ -19,21 +26,161 @@ import (
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
 	"github.com/yanmad27/supcua-v2/ui"
+	"github.com/yanmad27/supcua-v2/ui/webview"
+	"github.com/yanmad27/supcua-v2/ui/webview/assets"
 	"github.com/yanmad27/supcua-v2/updater"
 	"github.com/yanmad27/supcua-v2/version"
 )
 
-func main() {
-	// Single instance check via named mutex
-	mutexName, _ := windows.UTF16PtrFromString("Local\\supcua-v2-instance")
-	mutex, err := windows.CreateMutex(nil, true, mutexName)
-	if err == windows.ERROR_ALREADY_EXISTS {
-		msg, _ := windows.UTF16PtrFromString("supcua-v2 is already running.")
-		title, _ := windows.UTF16PtrFromString("Already Running")
-		windows.MessageBox(0, msg, title, windows.MB_OK|windows.MB_ICONINFORMATION)
-		os.Exit(0)
+// lateUI lets the bridge be built before the WebView2 host exists (the host needs the
+// bridge's method table). Calls before the host is set are dropped.
+type lateUI struct {
+	p       atomic.Pointer[webview.UI]
+	onTheme func(theme string) // theme changes -> native title bar
+}
+
+func (l *lateUI) Post(f func()) {
+	if u := l.p.Load(); u != nil {
+		u.Post(f)
 	}
-	defer windows.CloseHandle(mutex)
+}
+
+func (l *lateUI) Emit(event string, payload any) {
+	if st, ok := payload.(bridge.StateDTO); ok && l.onTheme != nil {
+		l.onTheme(st.Theme)
+	}
+	if u := l.p.Load(); u != nil {
+		u.Emit(event, payload)
+	}
+}
+
+func (l *lateUI) hwnd() uintptr {
+	if u := l.p.Load(); u != nil {
+		return u.HWND()
+	}
+	return 0
+}
+
+func systemPrefersDark() bool {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+	v, _, err := k.GetIntegerValue("AppsUseLightTheme")
+	return err == nil && v == 0
+}
+
+func wantDark(theme string) bool {
+	switch theme {
+	case "dark":
+		return true
+	case "light":
+		return false
+	}
+	return systemPrefersDark()
+}
+
+// fixedHotkeys owns the global and overlay hotkey registrations and re-binds them with
+// restore-on-failure (bridge.Host.RebindHotkey).
+type fixedHotkeys struct {
+	mu  sync.Mutex
+	mgr *hotkey.Manager
+	on  bool
+	ids map[string]int
+	cur map[string]model.Hotkey
+	cb  map[string]hotkey.HotkeyCallback
+}
+
+func (f *fixedHotkeys) add(kind string, hk model.Hotkey, cb hotkey.HotkeyCallback) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cur[kind], f.cb[kind] = hk, cb
+	if !f.on || hk.Key == "" {
+		return
+	}
+	id, err := f.mgr.Register(hk, cb)
+	if err != nil {
+		log.Printf("warning: failed to register %s hotkey: %v", kind, err)
+		return
+	}
+	f.ids[kind] = id
+}
+
+func (f *fixedHotkeys) rebind(kind string, hk model.Hotkey) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	old, cb := f.cur[kind], f.cb[kind]
+	if kind == bridge.HotkeyCapture || !f.on || cb == nil {
+		f.cur[kind] = hk
+		return nil
+	}
+	if id := f.ids[kind]; id != 0 {
+		_ = f.mgr.Unregister(id)
+		f.ids[kind] = 0
+	}
+	if hk.Key != "" {
+		id, err := f.mgr.Register(hk, cb)
+		if err != nil {
+			if old.Key != "" {
+				if rid, rerr := f.mgr.Register(old, cb); rerr == nil {
+					f.ids[kind] = rid
+				} else {
+					log.Printf("warning: could not restore %s hotkey: %v", kind, rerr)
+				}
+			}
+			return err
+		}
+		f.ids[kind] = id
+	}
+	f.cur[kind] = hk
+	return nil
+}
+
+// autoActiveProxy is the bridge's AutoActive: it forwards to the watcher and keeps the tray
+// checkbox in sync when the setting changes from the Settings page.
+type autoActiveProxy struct {
+	w       *autoactive.Watcher
+	setTray func(enabled bool)
+}
+
+func (a *autoActiveProxy) Start() { a.w.Start(); a.setTray(true) }
+func (a *autoActiveProxy) Stop()  { a.w.Stop(); a.setTray(false) }
+func (a *autoActiveProxy) SetProcessName(n string) {
+	a.w.SetProcessName(autoactive.ResolveProcessName(n))
+}
+
+func main() {
+	selftestFlag := flag.Bool("selftest", false, "run the headless UI self-test and exit (0 = pass)")
+	noRuntimeFlag := flag.Bool("selftest-noruntime", false, "self-test the missing-WebView2-runtime path and exit")
+	label := flag.String("label", "plain", "build label echoed in the self-test result")
+	timeout := flag.Duration("timeout", 90*time.Second, "hard self-test timeout")
+	flag.Parse()
+
+	if *selftestFlag || *noRuntimeFlag {
+		webview.AttachParentConsole()
+	}
+	if *noRuntimeFlag {
+		os.Exit(webview.RunNoRuntimeSelftest(webview.NewResult(*label, "selftest-noruntime"), *timeout))
+	}
+	policy := ui.NewPolicy(*selftestFlag)
+	var res *webview.Result
+	if *selftestFlag {
+		res = webview.NewResult(*label, "selftest")
+		res.ArmWatchdog(*timeout)
+	}
+
+	if policy.UseUserData { // single instance (the self-test never competes with a running app)
+		mutexName, _ := windows.UTF16PtrFromString("Local\\supcua-v2-instance")
+		mutex, err := windows.CreateMutex(nil, true, mutexName)
+		if err == windows.ERROR_ALREADY_EXISTS {
+			msg, _ := windows.UTF16PtrFromString("supcua-v2 is already running.")
+			title, _ := windows.UTF16PtrFromString("Already Running")
+			windows.MessageBox(0, msg, title, windows.MB_OK|windows.MB_ICONINFORMATION)
+			os.Exit(0)
+		}
+		defer windows.CloseHandle(mutex)
+	}
 
 	executablePath, err := os.Executable()
 	if err != nil {
@@ -49,154 +196,130 @@ func main() {
 	}
 	log.Println("supcua-v2 starting...")
 
-	// License check
-	allowed, err := license.CheckLicense()
+	// WebView2 runtime: required for every screen (also the not-licensed one).
+	runtimeVersion, err := webview.CheckRuntime()
 	if err != nil {
-		log.Printf("license check error: %v", err)
+		log.Printf("webview2 runtime: %v", err)
+		if res != nil {
+			res.Step("runtime present", false, err.Error())
+			os.Exit(res.Finish(1))
+		}
+		webview.ShowRuntimeMissing()
+		os.Exit(3)
 	}
-	if !allowed {
-		log.Println("not licensed, showing MAC dialog")
-		ui.ShowNotLicensedDialog(license.GetMacAddresses())
+
+	// License check: production only. The self-test policy has no licence capability.
+	licensed, macs := true, []string(nil)
+	if policy.CheckLicense {
+		allowed, lerr := license.CheckLicense()
+		if lerr != nil {
+			log.Printf("license check error: %v", lerr)
+		}
+		if !allowed {
+			log.Println("not licensed, showing license screen")
+			licensed, macs = false, license.GetMacAddresses()
+		}
+	}
+
+	title := "supcua-v2 v" + version.Version
+	late := &lateUI{}
+	host := &ui.Host{Mode: "main", Macs: macs, Version: version.Version, RuntimeVersion: runtimeVersion, ExePath: executablePath}
+
+	if !licensed {
+		host.Mode = "notLicensed"
+		var u *webview.UI
+		host.OnExit = func() { u.Quit() }
+		u, err = webview.New(webview.Config{
+			Title: title, Methods: ui.NotLicensedMethods(host), Assets: assets.FS(),
+			DarkTitleBar: systemPrefersDark(), MinW: 480, MinH: 360,
+			OnClose: func() { u.Quit() },
+		})
+		if err != nil {
+			log.Printf("webview startup failed: %v", err)
+			webview.ShowStartupFailure()
+			os.Exit(4)
+		}
+		host.UI = u
+		u.Run()
 		return
 	}
 
-
-	// Storage
-	configStore := storage.NewConfigStore(filepath.Join(applicationDirectory, "config.json"))
-	appConfig, err := configStore.Load()
+	// Storage: the self-test uses a throw-away directory, never the user's config or scripts.
+	dataDirectory := applicationDirectory
+	if !policy.UseUserData {
+		if dataDirectory, err = os.MkdirTemp("", "supcua-selftest-"); err != nil {
+			res.Step("temp data dir", false, err.Error())
+			os.Exit(res.Finish(1))
+		}
+		defer os.RemoveAll(dataDirectory)
+	}
+	configStore := storage.NewConfigStore(filepath.Join(dataDirectory, "config.json"))
+	configService, err := bridge.NewConfigService(configStore)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+	appConfig := configService.Get()
 
 	scriptsDirectory := appConfig.ScriptsDir
 	if !filepath.IsAbs(scriptsDirectory) {
-		scriptsDirectory = filepath.Join(applicationDirectory, scriptsDirectory)
+		scriptsDirectory = filepath.Join(dataDirectory, scriptsDirectory)
 	}
 	scriptStore := storage.NewScriptStore(scriptsDirectory)
 
-	// Core components
-	inputSimulator := executor.NewInputSimulator()
+	// Core components. The executor gets the tracking wrapper so the bridge can report locks.
+	var br *bridge.Bridge
+	lockTracker := ui.NewLockTracker(executor.NewInputSimulator(), func() {
+		if br != nil {
+			br.NotifyStateChanged()
+		}
+	})
 	imageDetectorInstance := imagedetector.NewDetector(10)
-	scriptExecutor := executor.NewExecutor(inputSimulator, imageDetectorInstance, appConfig.KeyPressDurationMs)
+	scriptExecutor := executor.NewExecutor(lockTracker, imageDetectorInstance, appConfig.KeyPressDurationMs)
 	hotkeyManager := hotkey.NewManager()
-
-	// Application controller
 	appController := app.NewController(scriptExecutor, hotkeyManager, scriptStore, configStore)
-
-	// UI
-	captureVK := hotkey.KeyNameToVirtualKeyCode(appConfig.CaptureHotkey.Key)
-	mainWindow, mainWindowController, err := ui.CreateMainWindow(scriptStore, configStore, appConfig.MainWindowPos, captureVK)
-	if err != nil {
-		log.Fatalf("failed to create main window: %v", err)
-	}
-
-	// Auto-update check (runs in background, shows dialog on UI thread)
-	go func() {
-		latestTag, dlURL, err := updater.CheckUpdate(version.Version)
-		if err != nil {
-			log.Printf("update check error: %v", err)
-			return
-		}
-		if latestTag == "" {
-			return
-		}
-		log.Printf("update available: %s", latestTag)
-		mainWindow.Synchronize(func() {
-			if ui.ShowUpdateDialog(mainWindow, latestTag) && dlURL != "" {
-				if err := updater.DownloadAndReplace(dlURL, executablePath); err != nil {
-					log.Printf("update failed: %v", err)
-				}
-			}
-		})
-	}()
-
-	// Overlay
-	var overlayWindow *ui.OverlayWindow
-	if appConfig.OverlayEnabled {
-		overlayWindow, err = ui.NewOverlayWindow(
-			appController,
-			appConfig.OverlayPosition.X,
-			appConfig.OverlayPosition.Y,
-			true,
-		)
-		if err != nil {
-			log.Printf("warning: failed to create overlay: %v", err)
-		}
-	}
-
-	// System tray
-	trayIcon, err := ui.NewTrayIcon(mainWindow, mainWindowController, appController, overlayWindow)
-	if err != nil {
-		log.Fatalf("failed to create tray icon: %v", err)
-	}
-	defer trayIcon.Dispose()
-
-	// Wire up global toggler
-	mainWindowController.SetScriptRunner(appController)
 
 	// Allow rctrl to toggle global active even during keyboard lock
 	executor.SetEmergencyToggle(appController.ToggleGlobalStatus)
 
-	// Hotkey bookkeeping is serialized in scriptHotkeys. It exists before any
-	// callback is wired and registers nothing until scripts are set below.
-	scriptHotkeys := newScriptHotkeySet(
-		appController.IsGlobalActive,
-		func(scripts []model.Script) []int {
-			return registerScriptHotkeys(appController, hotkeyManager, scripts)
-		},
-		hotkeyManager.Unregister,
-	)
-
-	appController.OnStatusChange = func() {
-		scriptHotkeys.Reconcile()
-		mainWindow.Synchronize(func() {
-			if overlayWindow != nil {
-				overlayWindow.Refresh()
-			}
-			trayIcon.UpdateTooltip()
-			mainWindowController.RefreshActiveState()
-		})
+	// Hotkeys. Script hotkeys are the only way scripts start, so the self-test never builds them.
+	var scriptHotkeys *scriptHotkeySet
+	var hotkeySet bridge.HotkeySet
+	if policy.RegisterHotkeys {
+		scriptHotkeys = newScriptHotkeySet(
+			appController.IsGlobalActive,
+			func(scripts []model.Script) []int {
+				return registerScriptHotkeys(appController, hotkeyManager, scripts)
+			},
+			hotkeyManager.Unregister,
+		)
+		hotkeySet = scriptHotkeys
 	}
+	fixed := &fixedHotkeys{mgr: hotkeyManager, on: policy.RegisterHotkeys, ids: map[string]int{}, cur: map[string]model.Hotkey{}, cb: map[string]hotkey.HotkeyCallback{}}
 
-	// Start hotkey listener first (Register sends to its channel)
-	go hotkeyManager.ListenForHotkeys()
-
-	// Register global hotkey
-	globalHotkeyID, err := hotkeyManager.Register(appConfig.GlobalHotkey, func(hotkeyID int) {
-		appController.ToggleGlobalStatus()
-	})
-	if err != nil {
-		log.Printf("warning: failed to register global hotkey: %v", err)
-		globalHotkeyID = 0
+	var tray *ui.TrayIcon
+	overlayCtl := &ui.OverlayController{Controller: appController, Config: configService}
+	overlayCtl.OnExternalChange = func() { // UI thread: hotkey, tray, drag end
+		if br != nil {
+			br.RefreshOverlay()
+		}
+		if tray != nil {
+			tray.SyncOverlayLabel()
+		}
 	}
-
-	// Register overlay toggle hotkey
-	if overlayWindow != nil && appConfig.OverlayHotkey.Key != "" {
-		_, err := hotkeyManager.Register(appConfig.OverlayHotkey, func(hotkeyID int) {
-			overlayWindow.ToggleVisibility()
-		})
-		if err != nil {
-			log.Printf("warning: failed to register overlay hotkey: %v", err)
+	if appConfig.OverlayEnabled {
+		if err := overlayCtl.SetEnabled(true); err != nil {
+			log.Printf("warning: failed to create overlay: %v", err)
 		}
 	}
 
-	// Register script hotkeys (only when global is active)
-	scriptHotkeys.SetScripts(mainWindowController.Scripts())
-
-	// Re-register script hotkeys whenever scripts change (uses in-memory list, no disk read)
-	mainWindowController.OnScriptsChanged = func(scripts []model.Script) {
-		_ = globalHotkeyID // keep global hotkey alive
-		scriptHotkeys.SetScripts(scripts)
-	}
-
 	// Auto Active: global active follows the game window's focus
-	var autoActiveWatcher *autoactive.Watcher
-	autoActiveWatcher = autoactive.NewWatcher(autoactive.Options{
+	var watcher *autoactive.Watcher
+	watcher = autoactive.NewWatcher(autoactive.Options{
 		ProcessName:           autoactive.ResolveProcessName(appConfig.AutoActiveProcessName),
 		ForegroundProcessName: autoactive.ForegroundProcessName,
 		SetActive: func(active bool, generation uint64) {
-			mainWindow.Synchronize(func() {
-				if generation != autoActiveWatcher.Generation() {
+			late.Post(func() {
+				if generation != watcher.Generation() {
 					return
 				}
 				if appController.IsGlobalActive() != active {
@@ -205,63 +328,201 @@ func main() {
 			})
 		},
 	})
-	if appConfig.AutoActiveEnabled {
-		autoActiveWatcher.Start()
+	proxy := &autoActiveProxy{w: watcher, setTray: func(enabled bool) {
+		late.Post(func() {
+			if tray != nil {
+				tray.SetAutoActiveChecked(enabled)
+			}
+		})
+	}}
+
+	var quitOnce sync.Once
+	quitApp := func() { // UI thread; contract §4 rule 7 order
+		quitOnce.Do(func() {
+			if br != nil {
+				if err := br.Shutdown(2 * time.Second); err != nil {
+					log.Printf("warning: %v", err)
+				}
+			}
+			unregistered := make(chan struct{}) // bounded: the hotkey thread answers each Unregister
+			go func() { hotkeyManager.UnregisterAll(); close(unregistered) }()
+			select {
+			case <-unregistered:
+			case <-time.After(time.Second):
+				log.Println("warning: hotkeys not unregistered before exit")
+			}
+			if tray != nil {
+				tray.Dispose()
+			}
+			overlayCtl.Destroy()
+			if u := late.p.Load(); u != nil {
+				u.Quit()
+			}
+		})
 	}
-	updateAutoActiveConfig := func(update func(*model.AppConfig)) error {
-		cfg, err := configStore.Load()
-		if err != nil {
-			return err
+	host.OnExit = quitApp
+	host.Rebind = fixed.rebind
+
+	br = bridge.New(bridge.Deps{
+		Controller: appController,
+		Store:      scriptStore,
+		Config:     configService,
+		Hotkeys:    hotkeySet,
+		AutoActive: proxy,
+		Locks:      lockTracker,
+		Overlay:    overlayCtl,
+		UI:         late,
+		Capture:    &ui.CaptureBackend{HWND: late.hwnd},
+		Host:       host,
+	}, late)
+
+	methods := br.Methods()
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	baseReady := methods["app.ready"]
+	methods["app.ready"] = func(p json.RawMessage) (any, error) {
+		out, err := baseReady(p)
+		readyOnce.Do(func() { close(ready) })
+		return out, err
+	}
+	var selftest *ui.SelfTest
+	if policy.SelfTestMethods {
+		selftest = &ui.SelfTest{Res: res, Overlay: overlayCtl, Ready: ready, Exit: quitApp}
+		selftest.Install(methods)
+	}
+
+	var lastDark atomic.Int32 // 0 unknown, 1 light, 2 dark: apply the title bar only on change
+	late.onTheme = func(theme string) {
+		dark := int32(1)
+		if wantDark(theme) {
+			dark = 2
 		}
-		update(&cfg)
-		return configStore.Save(cfg)
+		if lastDark.Swap(dark) == dark {
+			return
+		}
+		if u := late.p.Load(); u != nil {
+			u.SetDarkTitleBar(dark == 2)
+		}
 	}
-	trayIcon.AddAutoActiveToggle(appConfig.AutoActiveEnabled, func(enabled bool) error {
-		if err := updateAutoActiveConfig(func(cfg *model.AppConfig) { cfg.AutoActiveEnabled = enabled }); err != nil {
+	pos := appConfig.MainWindowPos
+	webUI, err := webview.New(webview.Config{
+		Title:        title,
+		Methods:      methods,
+		Assets:       assets.FS(),
+		DarkTitleBar: wantDark(appConfig.Theme),
+		Initial:      webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
+		MinW:         640,
+		MinH:         420,
+		OnClose:      quitApp, // X exits for real (as before); minimize hides to the tray
+		OnBounds: func(b webview.Bounds) {
+			want := model.WindowPos{X: b.X, Y: b.Y, Width: b.W, Height: b.H}
+			if configService.Get().MainWindowPos == want {
+				return
+			}
+			if err := configService.Update(func(c *model.AppConfig) { c.MainWindowPos = want }); err != nil {
+				log.Printf("warning: failed to save window position: %v", err)
+			}
+		},
+		OnActivate: func(active bool) {
+			if !active {
+				br.NotifyBlur() // ends an active capture (contract §9.5)
+			}
+		},
+	})
+	if err != nil {
+		log.Printf("webview startup failed: %v", err)
+		if res != nil {
+			res.Step("startup", false, err.Error())
+			os.Exit(res.Finish(1))
+		}
+		webview.ShowStartupFailure()
+		os.Exit(4)
+	}
+	late.p.Store(webUI)
+	host.UI = webUI
+
+	tray, err = ui.NewTrayIcon(webUI.MainWindow(), webUI, appController, overlayCtl, quitApp)
+	if err != nil {
+		log.Printf("failed to create tray icon: %v", err)
+		if res != nil {
+			res.Step("tray", false, err.Error())
+			os.Exit(res.Finish(1))
+		}
+		os.Exit(1)
+	}
+	defer tray.Dispose()
+	tray.AddAutoActiveToggle(appConfig.AutoActiveEnabled, func(enabled bool) error {
+		if err := configService.Update(func(c *model.AppConfig) { c.AutoActiveEnabled = enabled }); err != nil {
 			log.Printf("warning: failed to save auto active setting: %v", err)
 			return err
 		}
 		if enabled {
-			autoActiveWatcher.Start()
+			watcher.Start()
 		} else {
-			autoActiveWatcher.Stop()
+			watcher.Stop()
 		}
+		br.NotifyStateChanged()
 		return nil
 	})
-
-	currentAutoActiveProcessName := autoactive.ResolveProcessName(appConfig.AutoActiveProcessName)
-	trayIcon.AddAutoActiveProcessItem(
-		func() string { return currentAutoActiveProcessName },
-		func(processName string) error {
-			resolvedName := autoactive.ResolveProcessName(processName)
-			if err := updateAutoActiveConfig(func(cfg *model.AppConfig) { cfg.AutoActiveProcessName = resolvedName }); err != nil {
-				log.Printf("warning: failed to save auto active process: %v", err)
-				return err
-			}
-			currentAutoActiveProcessName = resolvedName
-			autoActiveWatcher.SetProcessName(resolvedName)
-			return nil
-		},
-	)
-
-	// Run the Walk message loop (blocks until window closed)
-	mainWindow.Run()
-	autoActiveWatcher.Stop()
-
-	if !scriptStore.FlushSaves(2 * time.Second) {
-		log.Println("warning: pending script saves not flushed before exit")
-	}
-
-	// Save overlay position before destroying
-	if overlayWindow != nil {
-		cfg, err := configStore.Load()
-		if err == nil {
-			ox, oy := overlayWindow.GetPosition()
-			cfg.OverlayPosition.X = ox
-			cfg.OverlayPosition.Y = oy
-			configStore.Save(cfg)
+	tray.AddAutoActiveProcessItem(func() { br.NavGoto("settings") })
+	appController.Subscribe(func(status.Snapshot) {
+		if scriptHotkeys != nil {
+			scriptHotkeys.Reconcile()
 		}
-		overlayWindow.Destroy()
+		late.Post(func() {
+			overlayCtl.Refresh()
+			tray.UpdateTooltip()
+		})
+	})
+	tray.UpdateTooltip()
+
+	if policy.RegisterHotkeys {
+		go hotkeyManager.ListenForHotkeys() // before any Register: it services the channel
+		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalStatus() })
+		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(int) {
+			late.Post(overlayCtl.ToggleVisibility)
+		})
+		if scripts, err := scriptStore.List(); err == nil {
+			scriptHotkeys.SetScripts(scripts)
+		}
 	}
+	if policy.StartAutoActive && appConfig.AutoActiveEnabled {
+		watcher.Start()
+	}
+
+	if policy.CheckForUpdates {
+		go func() {
+			latestTag, dlURL, err := updater.CheckUpdate(version.Version)
+			if err != nil {
+				log.Printf("update check error: %v", err)
+				return
+			}
+			if latestTag == "" {
+				return
+			}
+			if dlURL == "" {
+				log.Printf("update %s available but no download URL; not offering it", latestTag)
+				return
+			}
+			log.Printf("update available: %s", latestTag)
+			host.SetUpdate(dlURL)
+			<-webUI.Loaded()
+			time.Sleep(2 * time.Second) // let the page subscribe before the event
+			br.NotifyUpdateAvailable(latestTag)
+		}()
+	}
+
+	if selftest != nil {
+		selftest.UI, selftest.Tray = webUI, tray
+		go selftest.Run()
+	}
+
+	webUI.Run() // walk message loop: tray, Synchronize, WebView2
+	watcher.Stop()
+
 	log.Println("supcua-v2 exiting")
+	if res != nil {
+		os.RemoveAll(dataDirectory)
+		os.Exit(res.Finish(0))
+	}
 }

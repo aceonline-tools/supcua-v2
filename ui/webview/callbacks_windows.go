@@ -16,6 +16,10 @@ func newCallback(fn any) uintptr {
 	return syscall.NewCallback(fn)
 }
 
+// NewCallback is the counted wrapper other UI packages must use for every syscall.NewCallback
+// (each call site must be once-guarded); the self-test asserts the count stays constant.
+func NewCallback(fn any) uintptr { return newCallback(fn) }
+
 // CallbackCount returns how many NewCallback calls this package made (self-test input).
 func CallbackCount() int32 { return callbackCount.Load() }
 

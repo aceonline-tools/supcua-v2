@@ -4,12 +4,15 @@ package ui
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
 	"github.com/lxn/win"
 
 	"github.com/yanmad27/supcua-v2/app"
+	"github.com/yanmad27/supcua-v2/ui/webview"
 )
 
 var (
@@ -30,9 +33,11 @@ const (
 	colorGrayIdle    = 0x00808080 // gray text (BGR)
 
 	layeredWindowAttributeAlpha = 0x02
+	wmExitSizeMove              = 0x0232
 )
 
-// OverlayWindow is the always-on-top HUD showing global status.
+// OverlayWindow is the always-on-top HUD showing global status. It has no message loop of
+// its own: it lives on the UI thread and depends on the pump (walk's MainWindow.Run).
 type OverlayWindow struct {
 	windowHandle  win.HWND
 	appController *app.Controller
@@ -40,46 +45,90 @@ type OverlayWindow struct {
 	positionY     int
 	isVisible     bool
 	isDraggable   bool
+	paints        atomic.Int64
+	threadID      uint32
+
+	// OnMoved is called on the UI thread when a drag ends.
+	OnMoved func(x, y int)
+}
+
+var (
+	overlayClassOnce sync.Once
+	overlayClassErr  error
+	overlayClassName *uint16
+	overlayCurrent   atomic.Pointer[OverlayWindow]
+)
+
+// overlayWindowProc is the single, process-wide window procedure (NewCallback slots are never
+// freed, so it is created once, not per overlay instance).
+func overlayWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) uintptr {
+	if ow := overlayCurrent.Load(); ow != nil {
+		switch message {
+		case win.WM_PAINT:
+			ow.paint()
+			return 0
+		case win.WM_RBUTTONUP:
+			return 0 // context menu is handled via the tray
+		case win.WM_NCHITTEST:
+			return win.HTCAPTION // dragging by treating the whole window as title bar
+		case win.WM_MOVE:
+			ow.positionX = int(int16(lParam & 0xFFFF))
+			ow.positionY = int(int16((lParam >> 16) & 0xFFFF))
+		case wmExitSizeMove:
+			if ow.OnMoved != nil {
+				ow.OnMoved(ow.positionX, ow.positionY)
+			}
+		}
+	}
+	return win.DefWindowProc(hwnd, message, wParam, lParam)
 }
 
 // NewOverlayWindow creates the HUD overlay as a layered, topmost, toolwindow.
 func NewOverlayWindow(appController *app.Controller, initialX, initialY int, startVisible bool) (*OverlayWindow, error) {
+	if overlayCurrent.Load() != nil {
+		return nil, fmt.Errorf("overlay already exists")
+	}
 	overlayWindow := &OverlayWindow{
 		appController: appController,
 		positionX:     initialX,
 		positionY:     initialY,
 		isVisible:     startVisible,
+		threadID:      win.GetCurrentThreadId(),
 	}
 
-	className, err := syscall.UTF16PtrFromString("supcua_overlay")
-	if err != nil {
-		return nil, err
+	hInstance := win.GetModuleHandle(nil)
+	overlayClassOnce.Do(func() {
+		overlayClassName, _ = syscall.UTF16PtrFromString("supcua_overlay")
+		windowClass := win.WNDCLASSEX{
+			CbSize:        uint32(unsafe.Sizeof(win.WNDCLASSEX{})),
+			LpfnWndProc:   webview.NewCallback(overlayWindowProc),
+			HInstance:     hInstance,
+			LpszClassName: overlayClassName,
+			HbrBackground: win.HBRUSH(win.GetStockObject(win.BLACK_BRUSH)),
+		}
+		if win.RegisterClassEx(&windowClass) == 0 {
+			overlayClassErr = fmt.Errorf("failed to register overlay class")
+		}
+	})
+	if overlayClassErr != nil {
+		return nil, overlayClassErr
 	}
-
-	windowClass := win.WNDCLASSEX{
-		CbSize:        uint32(unsafe.Sizeof(win.WNDCLASSEX{})),
-		LpfnWndProc:   syscall.NewCallback(overlayWindow.windowProcedure),
-		HInstance:      win.GetModuleHandle(nil),
-		LpszClassName: className,
-		HbrBackground: win.HBRUSH(win.GetStockObject(win.BLACK_BRUSH)),
-	}
-	win.RegisterClassEx(&windowClass)
 
 	windowTitle, _ := syscall.UTF16PtrFromString("supcua-v2 Overlay")
-
 	extendedStyle := uint32(win.WS_EX_TOPMOST | win.WS_EX_TOOLWINDOW | win.WS_EX_LAYERED | win.WS_EX_TRANSPARENT)
 
+	overlayCurrent.Store(overlayWindow)
 	overlayWindow.windowHandle = win.CreateWindowEx(
 		extendedStyle,
-		className,
+		overlayClassName,
 		windowTitle,
 		win.WS_POPUP,
 		int32(initialX), int32(initialY),
 		overlayWidth, overlayHeight,
-		0, 0, windowClass.HInstance, nil,
+		0, 0, hInstance, nil,
 	)
-
 	if overlayWindow.windowHandle == 0 {
+		overlayCurrent.Store(nil)
 		return nil, fmt.Errorf("failed to create overlay window")
 	}
 
@@ -95,28 +144,11 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 	return overlayWindow, nil
 }
 
-func (overlayWindow *OverlayWindow) windowProcedure(hwnd win.HWND, message uint32, wParam, lParam uintptr) uintptr {
-	switch message {
-	case win.WM_PAINT:
-		overlayWindow.paint()
-		return 0
-	case win.WM_RBUTTONUP:
-		// Right-click could show context menu — handled via tray for now
-		return 0
-	case win.WM_NCHITTEST:
-		// Allow dragging by treating entire window as title bar
-		return win.HTCAPTION
-	case win.WM_MOVE:
-		overlayWindow.positionX = int(int16(lParam & 0xFFFF))
-		overlayWindow.positionY = int(int16((lParam >> 16) & 0xFFFF))
-	}
-	return win.DefWindowProc(hwnd, message, wParam, lParam)
-}
-
 func (overlayWindow *OverlayWindow) paint() {
 	var paintStruct win.PAINTSTRUCT
 	deviceContext := win.BeginPaint(overlayWindow.windowHandle, &paintStruct)
 	defer win.EndPaint(overlayWindow.windowHandle, &paintStruct)
+	overlayWindow.paints.Add(1)
 
 	var textColor uint32
 	var statusText string
@@ -154,8 +186,13 @@ func (overlayWindow *OverlayWindow) Refresh() {
 
 // ToggleVisibility shows or hides the overlay.
 func (overlayWindow *OverlayWindow) ToggleVisibility() {
-	overlayWindow.isVisible = !overlayWindow.isVisible
-	if overlayWindow.isVisible {
+	overlayWindow.SetVisible(!overlayWindow.isVisible)
+}
+
+// SetVisible shows or hides the overlay.
+func (overlayWindow *OverlayWindow) SetVisible(visible bool) {
+	overlayWindow.isVisible = visible
+	if visible {
 		win.ShowWindow(overlayWindow.windowHandle, win.SW_SHOWNOACTIVATE)
 	} else {
 		win.ShowWindow(overlayWindow.windowHandle, win.SW_HIDE)
@@ -174,9 +211,14 @@ func (overlayWindow *OverlayWindow) GetPosition() (int, int) {
 
 // ToggleDraggable switches the overlay between click-through and draggable mode.
 func (overlayWindow *OverlayWindow) ToggleDraggable() {
-	overlayWindow.isDraggable = !overlayWindow.isDraggable
+	overlayWindow.SetDraggable(!overlayWindow.isDraggable)
+}
+
+// SetDraggable sets click-through (false) or draggable (true) mode.
+func (overlayWindow *OverlayWindow) SetDraggable(draggable bool) {
+	overlayWindow.isDraggable = draggable
 	exStyle := win.GetWindowLong(overlayWindow.windowHandle, win.GWL_EXSTYLE)
-	if overlayWindow.isDraggable {
+	if draggable {
 		exStyle &^= win.WS_EX_TRANSPARENT
 	} else {
 		exStyle |= win.WS_EX_TRANSPARENT
@@ -189,7 +231,16 @@ func (overlayWindow *OverlayWindow) IsDraggable() bool {
 	return overlayWindow.isDraggable
 }
 
+// Paints counts WM_PAINT handled (self-test).
+func (overlayWindow *OverlayWindow) Paints() int64 { return overlayWindow.paints.Load() }
+
+// Handle returns the window handle and its thread (self-test: must be the UI thread).
+func (overlayWindow *OverlayWindow) Handle() (hwnd uintptr, threadID uint32) {
+	return uintptr(overlayWindow.windowHandle), overlayWindow.threadID
+}
+
 // Destroy cleans up the overlay window.
 func (overlayWindow *OverlayWindow) Destroy() {
+	overlayCurrent.CompareAndSwap(overlayWindow, nil)
 	win.DestroyWindow(overlayWindow.windowHandle)
 }

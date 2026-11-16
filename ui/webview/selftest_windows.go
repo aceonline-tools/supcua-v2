@@ -105,7 +105,7 @@ func (r *Result) Finish(code int) int {
 	b, _ := json.Marshal(r)
 	fmt.Fprintln(os.Stdout, string(b))
 	if exe, err := os.Executable(); err == nil {
-		name := strings.TrimSuffix(filepath.Base(exe), ".exe") + "." + r.Mode + ".json"
+		name := filepath.Base(exe) + "." + r.Mode + ".json" // e.g. supcua-v2.exe.selftest.json
 		_ = os.WriteFile(filepath.Join(filepath.Dir(exe), name), append(b, '\n'), 0o644)
 	}
 	if !r.Pass && code == 0 {
