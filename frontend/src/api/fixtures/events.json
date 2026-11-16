@@ -1,0 +1,6 @@
+{"state":{"global_active":false,"running_id":"","running_name":"","editor_open":false,"overlay":{"enabled":true,"visible":true,"draggable":false,"x":40,"y":40},"theme":"light","mouse_locked":true,"keyboard_locked":false,"auto_active":{"enabled":false,"process_name":""}},
+"scripts.changed":{"rev":4},
+"settings.changed":{"fields":["theme","global_hotkey"]},
+"save.failed":{"scriptId":"s1","name":"Defense buff","message":"Could not write script file"},
+"nav.goto":{"route":"settings"},
+"app.closing":{}}
