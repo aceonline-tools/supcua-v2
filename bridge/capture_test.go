@@ -18,7 +18,7 @@ func TestCaptureManagerLifecycle(t *testing.T) {
 	em := &recEmitter{}
 	m := newCaptureManager(be, em.Emit, time.Hour)
 
-	if err := m.Start("s1", CaptureHotkey, "toggle", model.Hotkey{Key: "p"}); err != nil {
+	if _, err := m.Start("s1", CaptureHotkey, "toggle", model.Hotkey{Key: "p"}); err != nil {
 		t.Fatal(err)
 	}
 	if mode, sid := m.Active(); mode != CaptureHotkey || sid != "s1" {
@@ -27,7 +27,7 @@ func TestCaptureManagerLifecycle(t *testing.T) {
 	old := be.sink
 	be.sink.Hotkey(model.Hotkey{Modifiers: []string{"ctrl"}, Key: "f5"})
 	ev := em.named(EvCaptureHotkey)
-	if len(ev) != 1 || ev[0].payload.(map[string]any)["display"] != "Ctrl + F5" || ev[0].payload.(map[string]any)["field"] != "toggle" {
+	if len(ev) != 1 || ev[0].payload.(hotkeyEvent).Display != "Ctrl + F5" || ev[0].payload.(hotkeyEvent).Field != "toggle" {
 		t.Fatalf("capture.hotkey = %v", ev)
 	}
 	be.sink.Key("a")
@@ -36,10 +36,10 @@ func TestCaptureManagerLifecycle(t *testing.T) {
 		t.Error("events of another mode must be dropped")
 	}
 
-	if err := m.Start("s1", CaptureMouse, "", model.Hotkey{Key: "p"}); err != nil {
+	if _, err := m.Start("s1", CaptureMouse, "", model.Hotkey{Key: "p"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := em.named(EvCaptureEnded); len(got) != 1 || got[0].payload.(map[string]string)["reason"] != EndStopped {
+	if got := em.named(EvCaptureEnded); len(got) != 1 || got[0].payload.(endedEvent).Reason != EndStopped {
 		t.Errorf("replacing a capture must end the old one as stopped: %v", got)
 	}
 	old.Hotkey(model.Hotkey{Key: "z"})
@@ -52,7 +52,7 @@ func TestCaptureManagerLifecycle(t *testing.T) {
 	}
 	m.End(EndBlur)
 	m.End(EndBlur)
-	if got := em.named(EvCaptureEnded); len(got) != 2 || got[1].payload.(map[string]string)["reason"] != EndBlur {
+	if got := em.named(EvCaptureEnded); len(got) != 2 || got[1].payload.(endedEvent).Reason != EndBlur {
 		t.Errorf("End must be idempotent and emit once: %v", got)
 	}
 	be.sink.Mouse(5, 6)
@@ -65,7 +65,7 @@ func TestCaptureIdleTimeoutAndStartFailure(t *testing.T) {
 	be := &fakeBackend{}
 	em := &recEmitter{}
 	m := newCaptureManager(be, em.Emit, 30*time.Millisecond)
-	if err := m.Start("s", CaptureKey, "", model.Hotkey{}); err != nil {
+	if _, err := m.Start("s", CaptureKey, "", model.Hotkey{}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -73,7 +73,7 @@ func TestCaptureIdleTimeoutAndStartFailure(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	got := em.named(EvCaptureEnded)
-	if len(got) != 1 || got[0].payload.(map[string]string)["reason"] != EndTimeout {
+	if len(got) != 1 || got[0].payload.(endedEvent).Reason != EndTimeout {
 		t.Fatalf("want timeout, got %v", got)
 	}
 	if mode, _ := m.Active(); mode != CaptureNone {
@@ -81,7 +81,7 @@ func TestCaptureIdleTimeoutAndStartFailure(t *testing.T) {
 	}
 
 	be.err = errors.New("hook failed")
-	if err := m.Start("s", CaptureKey, "", model.Hotkey{}); err == nil {
+	if _, err := m.Start("s", CaptureKey, "", model.Hotkey{}); err == nil {
 		t.Fatal("backend failure must surface")
 	}
 	if mode, _ := m.Active(); mode != CaptureNone {
@@ -107,13 +107,13 @@ func TestBridgeCaptureFlowAndBlur(t *testing.T) {
 		t.Error("capture.mouse not emitted")
 	}
 	r.b.NotifyBlur()
-	if got := r.em.named(EvCaptureEnded); len(got) != 1 || got[0].payload.(map[string]string)["reason"] != EndBlur {
+	if got := r.em.named(EvCaptureEnded); len(got) != 1 || got[0].payload.(endedEvent).Reason != EndBlur {
 		t.Errorf("blur: %v", got)
 	}
 	r.mustCall(t, "capture.key.start", `{"sessionId":"`+sid+`"}`)
 	r.mustCall(t, "capture.stop", `{"sessionId":"`+sid+`"}`)
 	r.mustCall(t, "capture.mouse.stop", `{"sessionId":"`+sid+`"}`)
-	if got := r.em.named(EvCaptureEnded); len(got) != 2 || got[1].payload.(map[string]string)["reason"] != EndStopped {
+	if got := r.em.named(EvCaptureEnded); len(got) != 2 || got[1].payload.(endedEvent).Reason != EndStopped {
 		t.Errorf("stop: %v", got)
 	}
 }

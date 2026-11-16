@@ -53,6 +53,8 @@ type CaptureManager struct {
 	opMu     sync.Mutex
 	mu       sync.Mutex
 	gen      uint64
+	ids      uint64 // monotonically increasing capture_id source
+	id       uint64 // capture_id of the active capture
 	mode     CaptureMode
 	session  string
 	field    string
@@ -67,6 +69,30 @@ func newCaptureManager(backend CaptureBackend, emit func(string, any), idle time
 	return &CaptureManager{backend: backend, emit: emit, idle: idle}
 }
 
+// Event payloads (every capture event carries the capture_id it belongs to).
+type endedEvent struct {
+	CaptureID uint64 `json:"capture_id"`
+	Reason    string `json:"reason"`
+}
+
+type hotkeyEvent struct {
+	CaptureID uint64       `json:"capture_id"`
+	Field     string       `json:"field"`
+	Hotkey    model.Hotkey `json:"hotkey"`
+	Display   string       `json:"display"`
+}
+
+type keyEvent struct {
+	CaptureID uint64 `json:"capture_id"`
+	Key       string `json:"key"`
+}
+
+type mouseEvent struct {
+	CaptureID uint64 `json:"capture_id"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+}
+
 // Active reports the current mode and session.
 func (m *CaptureManager) Active() (CaptureMode, string) {
 	m.mu.Lock()
@@ -75,24 +101,37 @@ func (m *CaptureManager) Active() (CaptureMode, string) {
 }
 
 // Start begins a capture, ending any previous one with reason "stopped".
-func (m *CaptureManager) Start(session string, mode CaptureMode, field string, pickKey model.Hotkey) error {
+func (m *CaptureManager) Start(session string, mode CaptureMode, field string, pickKey model.Hotkey) (uint64, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	m.endLocked(0, EndStopped, true, false)
 	if m.backend == nil {
-		return newErr(CodeInternal)
+		return 0, newErr(CodeInternal)
 	}
 	m.mu.Lock()
 	m.gen++
 	gen := m.gen
+	m.ids++
+	id := m.ids
+	m.id = id
 	m.mode, m.session, m.field = mode, session, field
 	m.armLocked(gen)
 	m.mu.Unlock()
-	if err := m.backend.Start(mode, pickKey, &sink{m: m, gen: gen}); err != nil {
+	if err := m.backend.Start(mode, pickKey, &sink{m: m, gen: gen, id: id}); err != nil {
 		m.endLocked(gen, "", false, false)
-		return newErr(CodeInternal)
+		return 0, newErr(CodeInternal)
 	}
-	return nil
+	return id, nil
+}
+
+// CurrentID returns the active capture_id, or 0 when idle.
+func (m *CaptureManager) CurrentID() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mode == CaptureNone {
+		return 0
+	}
+	return m.id
 }
 
 // End stops the active capture (if any), removes the hook and emits capture.ended{reason}.
@@ -117,6 +156,7 @@ func (m *CaptureManager) endLocked(gen uint64, reason string, notify, needExpire
 		return
 	}
 	m.gen++
+	endedID := m.id
 	m.mode, m.session, m.field = CaptureNone, "", ""
 	if m.timer != nil {
 		m.timer.Stop()
@@ -127,7 +167,7 @@ func (m *CaptureManager) endLocked(gen uint64, reason string, notify, needExpire
 		m.backend.Stop()
 	}
 	if notify {
-		m.emit(EvCaptureEnded, map[string]string{"reason": reason})
+		m.emit(EvCaptureEnded, endedEvent{CaptureID: endedID, Reason: reason})
 	}
 }
 
@@ -154,6 +194,7 @@ func (m *CaptureManager) touch(gen uint64, want CaptureMode) (field string, ok b
 type sink struct {
 	m   *CaptureManager
 	gen uint64
+	id  uint64
 }
 
 func (s *sink) Hotkey(hk model.Hotkey) {
@@ -161,17 +202,17 @@ func (s *sink) Hotkey(hk model.Hotkey) {
 	if !ok {
 		return
 	}
-	s.m.emit(EvCaptureHotkey, map[string]any{"field": field, "hotkey": hk, "display": DisplayHotkey(hk)})
+	s.m.emit(EvCaptureHotkey, hotkeyEvent{CaptureID: s.id, Field: field, Hotkey: hk, Display: DisplayHotkey(hk)})
 }
 
 func (s *sink) Key(key string) {
 	if _, ok := s.m.touch(s.gen, CaptureKey); ok {
-		s.m.emit(EvCaptureKey, map[string]string{"key": key})
+		s.m.emit(EvCaptureKey, keyEvent{CaptureID: s.id, Key: key})
 	}
 }
 
 func (s *sink) Mouse(x, y int) {
 	if _, ok := s.m.touch(s.gen, CaptureMouse); ok {
-		s.m.emit(EvCaptureMouse, map[string]int{"x": x, "y": y})
+		s.m.emit(EvCaptureMouse, mouseEvent{CaptureID: s.id, X: x, Y: y})
 	}
 }

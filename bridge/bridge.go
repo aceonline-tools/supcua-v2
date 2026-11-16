@@ -408,20 +408,26 @@ func (b *Bridge) closingReadyHandler() (any, error) {
 // ResetSession ends any capture, drops the editor session and draft and re-enables script
 // execution (host: ProcessFailed, navigation away). Safe from any goroutine; idempotent.
 func (b *Bridge) ResetSession(reason string) {
+	endReason := reason
 	switch reason {
 	case EndStopped, EndBlur, EndTimeout, EndEditorClosed:
 	default:
-		reason = EndEditorClosed
+		endReason = EndEditorClosed
 	}
 	b.sessMu.Lock()
 	b.mu.Lock()
+	sessionID := ""
+	if b.session != nil {
+		sessionID = b.session.id
+	}
 	b.session = nil // in-flight saves/captures hold the old *editorSession and fail their commit check
 	b.mu.Unlock()
-	b.capture.End(reason)
+	b.capture.End(endReason)
 	if b.d.Controller != nil {
 		b.d.Controller.SetEditDialogOpen(false)
 	}
 	b.sessMu.Unlock()
+	b.emit(EvEditorReset, map[string]string{"reason": reason, "session_id": sessionID})
 }
 
 // Shutdown runs the §4 rule 7 steps the bridge owns, on the UI thread: stop captures, fence out

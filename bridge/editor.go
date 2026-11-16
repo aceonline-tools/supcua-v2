@@ -77,12 +77,13 @@ func (b *Bridge) editorSave(p struct {
 	SessionID         string       `json:"sessionId"`
 	Script            model.Script `json:"script"`
 	OverrideConflicts bool         `json:"overrideConflicts"`
+	IgnoreConflicts   bool         `json:"ignore_conflicts"`
 }) (any, error) {
 	sess, err := b.requireSession(p.SessionID)
 	if err != nil {
 		return nil, err
 	}
-	res, err := b.saveScript(sess, p.Script, p.OverrideConflicts)
+	res, err := b.saveScript(sess, p.Script, p.OverrideConflicts, p.IgnoreConflicts)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func (b *Bridge) editorSave(p struct {
 
 // saveScript validates and persists script as the session's script (one QueueSave for everything
 // changed, including hotkeys cleared on other scripts). The draft is remembered only on failure.
-func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool) (saveResult, error) {
+func (b *Bridge) saveScript(sess *editorSession, in model.Script, override, ignore bool) (saveResult, error) {
 	script := in
 	script.ID = sess.scriptID
 	fail := func(e error) (saveResult, error) {
@@ -121,7 +122,10 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 		return fail(newErr(CodeNameTaken))
 	}
 
-	conflicts := b.findConflicts(script, others)
+	var conflicts []HotkeyConflict
+	if !ignore { // close-time flush: keep duplicate hotkeys as is and touch no other script
+		conflicts = b.findConflicts(script, others)
+	}
 	if len(conflicts) > 0 && !override {
 		e := newErr(CodeHotkeyConflict)
 		e.Conflicts = conflicts
@@ -242,7 +246,7 @@ func (b *Bridge) editorClose(p struct {
 			b.mu.Unlock()
 		}
 		if draft != nil {
-			saved, serr := b.saveScript(sess, *draft, false)
+			saved, serr := b.saveScript(sess, *draft, false, false)
 			if serr != nil {
 				var e *Error
 				if errAs(serr, &e) {
@@ -329,10 +333,15 @@ func (b *Bridge) captureStart(sessionID string, mode CaptureMode, field string) 
 	if _, err := b.requireSession(sessionID); err != nil {
 		return nil, err
 	}
-	if err := b.capture.Start(sessionID, mode, field, b.d.Config.Get().CaptureHotkey); err != nil {
+	id, err := b.capture.Start(sessionID, mode, field, b.d.Config.Get().CaptureHotkey)
+	if err != nil {
 		return nil, err
 	}
-	return empty{}, nil
+	return captureStarted{CaptureID: id}, nil
+}
+
+type captureStarted struct {
+	CaptureID uint64 `json:"capture_id"`
 }
 
 func (b *Bridge) captureHotkeyStart(p struct {
@@ -359,9 +368,19 @@ func (b *Bridge) captureMouseStart(p sessionParam) (any, error) {
 	return b.captureStart(p.SessionID, CaptureMouse, "")
 }
 
-func (b *Bridge) captureStop(p sessionParam) (any, error) {
+type stopParam struct {
+	SessionID string  `json:"sessionId"`
+	CaptureID *uint64 `json:"capture_id"`
+}
+
+// captureStop ends the active capture. With capture_id present it only acts on that capture;
+// a stale or unknown id is a no-op, so the page never ends a newer capture by accident.
+func (b *Bridge) captureStop(p stopParam) (any, error) {
 	if _, err := b.requireSession(p.SessionID); err != nil {
 		return nil, err
+	}
+	if p.CaptureID != nil && *p.CaptureID != b.capture.CurrentID() {
+		return empty{}, nil
 	}
 	b.capture.End(EndStopped)
 	return empty{}, nil

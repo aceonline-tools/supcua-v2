@@ -133,6 +133,7 @@ const (
 	EvUpdateFailed    = "update.failed"
 	EvNavGoto         = "nav.goto"
 	EvAppClosing      = "app.closing"
+	EvEditorReset     = "editor.reset"
 )
 
 type empty struct{}

@@ -135,6 +135,8 @@ Transport (`spike/rpc/rpc.go`): JS → `chrome.webview.postMessage(JSON.stringif
 
 **Shutdown and session additions.** `BeginShutdown(deadline, then)` (UI thread, non-blocking) rejects new mutating RPCs except `editor.save`, `editor.close` and the new `app.closingReady` (no params), emits `app.closing {deadline_ms}`, waits off the UI thread for `app.closingReady` or the deadline, then posts `then` to the UI thread; `then` calls the synchronous `Shutdown(timeout)`, which fences in-flight RPC work (later mutations get `BUSY`), clears editor-open, stops auto-active, persists the overlay position and flushes saves. `ResetSession(reason)` (any goroutine, idempotent; host on ProcessFailed/navigation) ends captures, drops the editor session and draft and re-enables execution. Params are strict: objects only, unknown fields/null rejected, required keys must be present; `editor.close.autosave` defaults to true. Script hotkeys must use the `hotkey.Manager` key vocabulary (modifiers de-duplicated and ordered). A save that does not flush in time is `SAVE_FAILED`.
 
+**Capture identity, editor reset, close-time save.** Every `capture.*.start` returns `{capture_id}` (uint64, monotonically increasing); `capture.hotkey|key|mouse` events carry `capture_id` and `capture.ended` is `{capture_id, reason}`; `capture.stop` takes an optional `capture_id` and is a no-op when it is not the current capture. `ResetSession(reason)` always emits `editor.reset {reason, session_id}` after the session is cleared (`session_id` is `""` when none was open), in addition to a `capture.ended` with its real reason when a capture was active. `editor.save` accepts `ignore_conflicts: true`: the draft is saved as is, duplicate hotkeys are kept and no other script is modified (the page uses it only for the `app.closing` flush, matching the old autosave-on-close).
+
 ### 9.1 Methods
 
 | Method | Params → Result | Replaces / source |
@@ -173,7 +175,7 @@ Transport (`spike/rpc/rpc.go`): JS → `chrome.webview.postMessage(JSON.stringif
 
 ### 9.2 Events (Go → JS)
 
-`state` (the Hub snapshot, §5) · `scripts.changed {rev}` (any external/bulk change; frontend refetches `scripts.list`) · `settings.changed {fields[]}` · `capture.hotkey {field, hotkey:Hotkey\|null, display}` · `capture.key {key}` · `capture.mouse {x,y}` · `capture.ended {reason: stopped\|blur\|timeout\|editorClosed}` · `update.available {tag}` · `update.progress {pct}` · `update.failed {message}` · `save.failed {scriptId, name, message}` (from `ScriptStore.SetOnSaveError`) · `nav.goto {route}` (tray "Auto Active Process…" → Settings) · `app.closing`.
+`state` (the Hub snapshot, §5) · `scripts.changed {rev}` (any external/bulk change; frontend refetches `scripts.list`) · `settings.changed {fields[]}` · `capture.hotkey {field, hotkey:Hotkey\|null, display}` · `capture.key {key}` · `capture.mouse {x,y}` · `capture.ended {reason: stopped\|blur\|timeout\|editorClosed}` · `update.available {tag}` · `update.progress {pct}` · `update.failed {message}` · `save.failed {scriptId, name, message}` (from `ScriptStore.SetOnSaveError`) · `nav.goto {route}` (tray "Auto Active Process…" → Settings) · `app.closing` · `editor.reset {reason, session_id}`.
 
 ### 9.3 DTOs (every field tagged; sketch — the table below is authoritative for the types `frontend/src/api/types.ts` defines)
 

@@ -90,7 +90,7 @@ func TestEveryContractMethodHasHandler(t *testing.T) {
 func TestEveryContractEventHasEmitterName(t *testing.T) {
 	have := map[string]bool{}
 	for _, n := range []string{EvState, EvScriptsChanged, EvSettingsChanged, EvSaveFailed, EvCaptureHotkey, EvCaptureKey,
-		EvCaptureMouse, EvCaptureEnded, EvUpdateAvailable, EvUpdateProgress, EvUpdateFailed, EvNavGoto, EvAppClosing} {
+		EvCaptureMouse, EvCaptureEnded, EvEditorReset, EvUpdateAvailable, EvUpdateProgress, EvUpdateFailed, EvNavGoto, EvAppClosing} {
 		have[n] = true
 	}
 	for _, name := range typesBlock(t, "Events") {
@@ -309,7 +309,7 @@ func TestEditorOpenCloseTogglesSuppressionAndStopsCapture(t *testing.T) {
 		t.Error("editor.close must clear edit-dialog-open")
 	}
 	ended := r.em.named(EvCaptureEnded)
-	if len(ended) != 1 || ended[0].payload.(map[string]string)["reason"] != EndEditorClosed {
+	if len(ended) != 1 || ended[0].payload.(endedEvent).Reason != EndEditorClosed {
 		t.Errorf("capture.ended = %v", ended)
 	}
 	r.cap.mu.Lock()

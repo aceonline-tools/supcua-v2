@@ -19,12 +19,17 @@ type event struct {
 type recEmitter struct {
 	mu     sync.Mutex
 	events []event
+	onEmit func(name string)
 }
 
 func (r *recEmitter) Emit(name string, payload any) {
 	r.mu.Lock()
 	r.events = append(r.events, event{name, payload})
+	hook := r.onEmit
 	r.mu.Unlock()
+	if hook != nil {
+		hook(name)
+	}
 }
 
 func (r *recEmitter) named(name string) []event {

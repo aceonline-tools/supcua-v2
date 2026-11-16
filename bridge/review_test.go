@@ -135,7 +135,7 @@ func TestCaptureLateTimerAndSerializedBackend(t *testing.T) {
 	be := &fakeBackend{}
 	em := &recEmitter{}
 	m := newCaptureManager(be, em.Emit, 40*time.Millisecond)
-	if err := m.Start("s", CaptureKey, "", model.Hotkey{}); err != nil {
+	if _, err := m.Start("s", CaptureKey, "", model.Hotkey{}); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 6; i++ { // activity keeps pushing the deadline past the original timer
@@ -156,7 +156,7 @@ func TestCaptureLateTimerAndSerializedBackend(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			if i%2 == 0 {
-				_ = m.Start("s", CaptureMouse, "", model.Hotkey{})
+				_, _ = m.Start("s", CaptureMouse, "", model.Hotkey{})
 			} else {
 				m.End(EndStopped)
 			}
@@ -265,7 +265,7 @@ func TestResetSessionEndsCaptureEditorAndIsIdempotent(t *testing.T) {
 		t.Error("edit-dialog-open must be cleared")
 	}
 	ended := r.em.named(EvCaptureEnded)
-	if len(ended) != 1 || ended[0].payload.(map[string]string)["reason"] != "editorClosed" {
+	if len(ended) != 1 || ended[0].payload.(endedEvent).Reason != "editorClosed" {
 		t.Errorf("capture.ended = %v", ended)
 	}
 	_, err := r.call(t, "editor.save", `{"sessionId":"`+sid+`","script":{}}`)
@@ -543,5 +543,108 @@ func TestNoParamMethodsAcceptAnyWhitespaceEmptyObject(t *testing.T) {
 		if _, err := r.call(t, "state.get", p); err == nil {
 			t.Errorf("state.get(%q) should be rejected", p)
 		}
+	}
+}
+
+// Contract addition: capture identity, editor.reset, ignore_conflicts.
+func TestCaptureIDsAreMonotonicCarriedByEventsAndGateStop(t *testing.T) {
+	r := newRig(t, script("s1", "A", "", true))
+	sid, _ := openEditor(t, r, "s1")
+	first := r.mustCall(t, "capture.key.start", `{"sessionId":"`+sid+`"}`)["capture_id"].(float64)
+	r.cap.sink.Key("a")
+	if ev := r.em.named(EvCaptureKey); len(ev) != 1 || ev[0].payload.(keyEvent).CaptureID != uint64(first) {
+		t.Fatalf("capture.key must carry capture_id %v: %v", first, ev)
+	}
+	second := r.mustCall(t, "capture.mouse.start", `{"sessionId":"`+sid+`"}`)["capture_id"].(float64)
+	if second <= first {
+		t.Fatalf("capture_id must increase: %v then %v", first, second)
+	}
+	ended := r.em.named(EvCaptureEnded)
+	if len(ended) != 1 || ended[0].payload.(endedEvent).CaptureID != uint64(first) || ended[0].payload.(endedEvent).Reason != EndStopped {
+		t.Fatalf("replacing must end the first capture by id: %v", ended)
+	}
+	r.cap.sink.Mouse(1, 2)
+	if ev := r.em.named(EvCaptureMouse); len(ev) != 1 || ev[0].payload.(mouseEvent).CaptureID != uint64(second) {
+		t.Errorf("capture.mouse id: %v", ev)
+	}
+	r.mustCall(t, "capture.stop", `{"sessionId":"`+sid+`","capture_id":`+mustJSON(first)+`}`) // stale: no-op
+	if mode, _ := r.b.capture.Active(); mode != CaptureMouse {
+		t.Fatal("a stale capture_id must not stop the current capture")
+	}
+	r.mustCall(t, "capture.stop", `{"sessionId":"`+sid+`","capture_id":`+mustJSON(second)+`}`)
+	if mode, _ := r.b.capture.Active(); mode != CaptureNone {
+		t.Fatal("the current capture_id must stop it")
+	}
+	if got := r.em.named(EvCaptureEnded); len(got) != 2 || got[1].payload.(endedEvent).CaptureID != uint64(second) {
+		t.Errorf("ended = %v", got)
+	}
+	third := r.mustCall(t, "capture.hotkey.start", `{"sessionId":"`+sid+`","field":"start"}`)["capture_id"].(float64)
+	r.cap.sink.Hotkey(model.Hotkey{Key: "f5"})
+	if ev := r.em.named(EvCaptureHotkey); len(ev) != 1 || ev[0].payload.(hotkeyEvent).CaptureID != uint64(third) {
+		t.Errorf("capture.hotkey id: %v", ev)
+	}
+	r.mustCall(t, "capture.stop", `{"sessionId":"`+sid+`"}`) // no id: stops the current one
+	if mode, _ := r.b.capture.Active(); mode != CaptureNone {
+		t.Error("stop without capture_id must stop")
+	}
+}
+
+func TestResetSessionAlwaysEmitsEditorResetAfterClearing(t *testing.T) {
+	r := newRig(t, script("s1", "A", "", true))
+	var sessionAtEmit = "unset"
+	r.em.onEmit = func(name string) {
+		if name == EvEditorReset {
+			r.b.mu.Lock()
+			if r.b.session == nil {
+				sessionAtEmit = "cleared"
+			} else {
+				sessionAtEmit = "open"
+			}
+			r.b.mu.Unlock()
+		}
+	}
+	r.b.ResetSession("navigation") // nothing open, nothing capturing
+	ev := r.em.named(EvEditorReset)
+	if len(ev) != 1 || ev[0].payload.(map[string]string)["reason"] != "navigation" || ev[0].payload.(map[string]string)["session_id"] != "" {
+		t.Fatalf("editor.reset without session: %v", ev)
+	}
+	if len(r.em.named(EvCaptureEnded)) != 0 {
+		t.Error("no capture.ended without a capture")
+	}
+
+	sid, _ := openEditor(t, r, "s1")
+	r.mustCall(t, "capture.key.start", `{"sessionId":"`+sid+`"}`)
+	r.b.ResetSession("processFailed")
+	ev = r.em.named(EvEditorReset)
+	if len(ev) != 2 || ev[1].payload.(map[string]string)["reason"] != "processFailed" || ev[1].payload.(map[string]string)["session_id"] != sid {
+		t.Fatalf("editor.reset with session: %v", ev)
+	}
+	if got := r.em.named(EvCaptureEnded); len(got) != 1 || got[0].payload.(endedEvent).Reason != EndEditorClosed {
+		t.Errorf("capture.ended keeps its real reason: %v", got)
+	}
+	if sessionAtEmit != "cleared" {
+		t.Errorf("editor.reset must be emitted after the session is cleared, saw %s", sessionAtEmit)
+	}
+}
+
+func TestSaveIgnoreConflictsKeepsDuplicateHotkeysAndTouchesNoOtherScript(t *testing.T) {
+	s1 := script("s1", "Alpha", "", true)
+	s1.ToggleHotkey = &model.Hotkey{Modifiers: []string{"ctrl"}, Key: "f5"}
+	r := newRig(t, s1, script("s2", "Beta", "", true))
+	sid, edit := openEditor(t, r, "s2")
+	edit["toggle_hotkey"] = map[string]any{"modifiers": []string{"ctrl"}, "key": "f5"}
+	body := func(extra string) string {
+		b, _ := json.Marshal(map[string]any{"sessionId": sid, "script": edit})
+		return string(b[:len(b)-1]) + extra + "}"
+	}
+	_, err := r.call(t, "editor.save", body(""))
+	wantCode(t, err, CodeHotkeyConflict)
+	r.mustCall(t, "editor.save", body(`,"ignore_conflicts":true`))
+	calls := r.store.calls()
+	if len(calls) != 1 || len(calls[0]) != 1 || calls[0][0].ID != "s2" || calls[0][0].ToggleHotkey == nil {
+		t.Fatalf("only the draft may be saved, hotkey kept: %+v", calls)
+	}
+	if got := r.mustCall(t, "scripts.get", `{"id":"s1"}`); got["toggle_hotkey"] == nil {
+		t.Error("the other script's hotkey must not be cleared")
 	}
 }
