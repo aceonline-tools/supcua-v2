@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"os"
@@ -340,14 +341,20 @@ func main() {
 	// failure). UI thread. BeginShutdown tells the page and waits off-thread (the pump keeps
 	// running so the page can answer), then runs `then` on the UI thread: final flush,
 	// teardown, and only afterwards finalize (the update replacement). A second request while
-	// one is pending is a no-op.
+	// one is pending is a no-op (returns false).
+	//
+	// Bounded UI-thread cost: `then` runs Shutdown synchronously (FlushSaves <= 2 s) and the
+	// hotkey unregister (<= 1 s) on the UI thread at exit, as the pre-WebView2 app did when it
+	// flushed after mainWindow.Run; the page is already told and nothing else needs the pump.
 	var shutting atomic.Bool
-	exitFlow := func(finalize func() error) {
+	var flushFailed atomic.Bool
+	exitFlow := func(finalize func() error) bool {
 		if !shutting.CompareAndSwap(false, true) {
-			return
+			return false
 		}
 		br.BeginShutdown(1500*time.Millisecond, func() {
 			if err := br.Shutdown(2 * time.Second); err != nil {
+				flushFailed.Store(true)
 				log.Printf("warning: %v", err)
 			}
 			unregistered := make(chan struct{}) // bounded: the hotkey thread answers each Unregister
@@ -366,45 +373,71 @@ func main() {
 			}
 			if finalize != nil {
 				if err := finalize(); err != nil {
-					log.Printf("update replacement failed: %v", err)
-					return // original executable restored; normal exit
+					log.Printf("update not installed: %v", err)
+					return // original executable kept; normal exit, the update is offered again next launch
 				}
 				os.Exit(0) // the replacement script restarts the new executable
 			}
 		})
+		return true
 	}
 	quitApp := func() { exitFlow(nil) }
-	host.OnUpdateReady = func(tmp string) {
-		exitFlow(func() error { return updater.Replace(tmp, executablePath) })
+	host.OnUpdateReady = func(d updater.Downloaded) {
+		started := exitFlow(func() error {
+			if flushFailed.Load() { // never replace the executable over unsaved scripts
+				updater.Discard(d)
+				return errors.New("pending saves were not flushed")
+			}
+			return updater.Replace(d, executablePath)
+		})
+		if !started { // another exit is already running: nothing will install this file
+			updater.Discard(d)
+		}
 	}
 
-	// Page failure: end the editor session/capture (the page that owned them is gone), then
-	// reload; a dead browser process or repeated failures take the startup-failure path.
+	// Page failure: end the editor session/capture (the page that owned them is gone) to
+	// completion FIRST, then reload; a dead browser process or repeated failures take the
+	// startup-failure path. RPCs stay held (BUSY) until the reload has been issued.
 	var failMu sync.Mutex
 	var failTimes []time.Time
 	var fatalPage atomic.Bool
+	leaveWithFailure := func(why string) {
+		log.Printf("webview failure: %s: leaving the app", why)
+		fatalPage.Store(true)
+		quitApp()
+	}
 	pageFailed := func(kind int32) { // UI thread, inside a WebView2 event: only post work
-		go br.ResetSession("processFailed")
-		late.Post(func() {
-			failMu.Lock()
-			now := time.Now()
-			keep := failTimes[:0]
-			for _, t := range failTimes {
-				if now.Sub(t) < time.Minute {
-					keep = append(keep, t)
+		u := late.p.Load()
+		if u == nil || shutting.Load() {
+			return
+		}
+		u.HoldRPC()
+		go func() {
+			br.ResetSession("processFailed") // completes before the reload is posted
+			late.Post(func() {
+				defer u.ReleaseRPC()
+				if shutting.Load() { // exit already began: never reload
+					return
 				}
-			}
-			failTimes = append(keep, now)
-			tooMany := len(failTimes) > 3
-			failMu.Unlock()
-			u := late.p.Load()
-			const browserExited = 0 // COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
-			if kind == browserExited || tooMany || u == nil || u.Reload() != nil {
-				log.Printf("webview failure kind=%d: leaving the app", kind)
-				fatalPage.Store(true)
-				quitApp()
-			}
-		})
+				failMu.Lock()
+				now := time.Now()
+				keep := failTimes[:0]
+				for _, t := range failTimes {
+					if now.Sub(t) < time.Minute {
+						keep = append(keep, t)
+					}
+				}
+				failTimes = append(keep, now)
+				tooMany := len(failTimes) > 3
+				failMu.Unlock()
+				const browserExited = 0 // COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+				if kind == browserExited || tooMany {
+					leaveWithFailure("process failed")
+				} else if err := u.Reload(); err != nil {
+					leaveWithFailure("reload: " + err.Error())
+				}
+			})
+		}()
 	}
 	host.OnExit = quitApp
 	host.Rebind = fixed.rebind
@@ -462,7 +495,15 @@ func main() {
 		OnClose:         quitApp, // X exits for real (as before); minimize hides to the tray
 		OnProcessFailed: pageFailed,
 		OnNavigate: func(string) { // reload/navigation: the editor session and capture belong to the old page
-			go br.ResetSession("navigation")
+			go func() {
+				br.ResetSession("navigation")
+				if u := late.p.Load(); u != nil {
+					u.ReleaseRPC() // the new document's calls are answered BUSY until now
+				}
+			}()
+		},
+		OnFatal: func(err error) { // a security handler failed: ordered exit + startup-failure box
+			late.Post(func() { leaveWithFailure(err.Error()) })
 		},
 		OnBounds: func(b webview.Bounds) {
 			want := model.WindowPos{X: b.X, Y: b.Y, Width: b.W, Height: b.H}

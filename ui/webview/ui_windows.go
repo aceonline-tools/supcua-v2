@@ -57,8 +57,12 @@ type Config struct {
 	OnProcessFailed func(kind int32)
 	// OnNavigate runs on the UI thread for every allowed top-level navigation AFTER the first page
 	// load (reload or in-app navigation): page state held by the backend (editor session, capture)
-	// is stale from then on.
+	// is stale from then on. RPCs are held (BUSY) from the moment the navigation starts; the callee
+	// MUST call ReleaseRPC once the reset has completed.
 	OnNavigate func(uri string)
+	// OnFatal runs on the UI thread when a security handler failed (navigation not cancelled,
+	// popup not denied): the host must take the ordered exit and show the startup-failure box.
+	OnFatal func(err error)
 }
 
 // UI is the single WebView2 host of the process. All methods are UI-thread only unless noted.
@@ -123,8 +127,14 @@ func New(cfg Config) (*UI, error) {
 		if serve.AllowNavigation(uri) {
 			select {
 			case <-u.loaded: // not the initial navigation
+				// A new document is starting: hold its RPCs NOW (synchronously, before it can send
+				// anything) until OnNavigate's owner has reset the old page's backend state and
+				// called ReleaseRPC.
+				u.HoldRPC()
 				if cfg.OnNavigate != nil {
 					cfg.OnNavigate(uri)
+				} else {
+					u.ReleaseRPC()
 				}
 			default:
 			}
@@ -132,6 +142,12 @@ func New(cfg Config) (*UI, error) {
 		}
 		u.blockedNav.Add(1)
 		return false
+	}
+	b.FatalCallback = func(err error) {
+		log.Printf("webview: security handler failed: %v", err)
+		if cfg.OnFatal != nil {
+			cfg.OnFatal(err)
+		}
 	}
 	b.NewWindowDeniedCallback = func(string) { u.deniedWin.Add(1) }
 	b.ProcessFailedCallback = func(kind int32) {
@@ -191,6 +207,20 @@ func (u *UI) serveRequest(req *edge.ICoreWebView2WebResourceRequest, args *edge.
 	r := u.server.Handle(method, uri)
 	if err := u.browser.Respond(args, r.Status, r.Reason, r.Header, r.Body); err != nil {
 		log.Printf("webview: respond %q: %v", uri, err)
+	}
+}
+
+// HoldRPC makes the dispatcher answer BUSY until ReleaseRPC (calls nest). Safe from any goroutine.
+func (u *UI) HoldRPC() {
+	if u.disp != nil {
+		u.disp.Hold()
+	}
+}
+
+// ReleaseRPC undoes one HoldRPC.
+func (u *UI) ReleaseRPC() {
+	if u.disp != nil {
+		u.disp.Release()
 	}
 }
 

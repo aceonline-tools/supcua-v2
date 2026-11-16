@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -44,6 +45,7 @@ type Dispatcher struct {
 	done     chan struct{}
 	stopped  chan struct{}
 	once     sync.Once
+	held     atomic.Int32
 }
 
 // New copies methods; queueSize <= 0 selects DefaultQueue.
@@ -88,6 +90,10 @@ func (d *Dispatcher) Submit(raw string) {
 		d.reply(encode(response{Error: errObj(CodeBadRequest, "invalid request")}))
 		return
 	}
+	if d.held.Load() > 0 { // a new document must not talk to the backend before the old page state is reset
+		d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
+		return
+	}
 	select {
 	case <-d.done:
 	case d.queue <- req:
@@ -95,6 +101,14 @@ func (d *Dispatcher) Submit(raw string) {
 		d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
 	}
 }
+
+// Hold makes Submit answer BUSY until the matching Release (calls nest). The host holds across
+// a page navigation/crash so requests of the NEW document cannot race the reset of the old
+// document's backend state (editor session, capture).
+func (d *Dispatcher) Hold() { d.held.Add(1) }
+
+// Release undoes one Hold.
+func (d *Dispatcher) Release() { d.held.Add(-1) }
 
 // Close signals the worker to stop after the call in flight. It never blocks, so it is
 // safe on the UI thread while a handler waits for the UI thread.

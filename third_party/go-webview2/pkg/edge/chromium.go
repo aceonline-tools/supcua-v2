@@ -53,6 +53,9 @@ type Chromium struct {
 
 	// PATCH: return false to cancel the navigation. Runs on the UI thread, must not block.
 	NavigationStartingCallback func(uri string) bool
+	// PATCH: a security handler failed (e.g. a navigation could not be cancelled). Runs on the
+	// UI thread inside a WebView2 event: post the exit, do not block.
+	FatalCallback func(err error)
 	// PATCH: browser/renderer process failure (kind = COREWEBVIEW2_PROCESS_FAILED_KIND).
 	ProcessFailedCallback func(kind int32)
 	// PATCH: popups are always denied; this only observes.
@@ -222,11 +225,15 @@ func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environme
 	_, _, _ = env.vtbl.AddRef.Call(uintptr(unsafe.Pointer(env)))
 	e.environment = env
 
-	_, _, _ = env.vtbl.CreateCoreWebView2Controller.Call(
+	r, _, _ := env.vtbl.CreateCoreWebView2Controller.Call( // PATCH: fail fast on the creation HRESULT
 		uintptr(unsafe.Pointer(env)),
 		e.hwnd,
 		uintptr(unsafe.Pointer(e.controllerCompleted)),
 	)
+	if int32(r) < 0 {
+		e.initErr = fmt.Errorf("CreateCoreWebView2Controller: HRESULT 0x%08X", uint32(r))
+		atomic.StoreUintptr(&e.inited, 1)
+	}
 	return 0
 }
 

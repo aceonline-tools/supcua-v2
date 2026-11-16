@@ -27,7 +27,7 @@ type Host struct {
 	OnExit func()
 	// OnUpdateReady runs on the UI thread with the verified download: shut down in order, then
 	// updater.Replace and exit.
-	OnUpdateReady func(tmpExe string)
+	OnUpdateReady func(d updater.Downloaded)
 	// Rebind re-registers a fixed hotkey (global/overlay) and restores the previous one on failure.
 	Rebind func(kind string, hk model.Hotkey) error
 

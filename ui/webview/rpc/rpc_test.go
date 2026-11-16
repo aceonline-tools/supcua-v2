@@ -163,3 +163,23 @@ func TestWireFrames(t *testing.T) {
 }
 
 func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
+
+func TestHoldAnswersBusyUntilReleased(t *testing.T) {
+	d, out := newStarted(t, map[string]Handler{"x": func(json.RawMessage) (any, error) { return 1, nil }}, 4)
+	d.Hold()
+	d.Hold() // nests
+	d.Submit(`{"id":1,"method":"x"}`)
+	if s := next(t, out); !strings.Contains(s, `"id":1`) || !strings.Contains(s, `"code":"BUSY"`) {
+		t.Fatalf("held call must be BUSY: %s", s)
+	}
+	d.Release()
+	d.Submit(`{"id":2,"method":"x"}`)
+	if s := next(t, out); !strings.Contains(s, `"code":"BUSY"`) {
+		t.Fatalf("still held once: %s", s)
+	}
+	d.Release()
+	d.Submit(`{"id":3,"method":"x"}`)
+	if s := next(t, out); s != `{"id":3,"ok":true,"result":1}` {
+		t.Fatalf("released: %s", s)
+	}
+}

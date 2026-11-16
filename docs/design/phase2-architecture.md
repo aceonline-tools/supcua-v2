@@ -80,6 +80,7 @@ Rules (each is a review item):
 5. **Hooks never run on T_UI.** `WH_KEYBOARD_LL` must answer within `LowLevelHooksTimeout`; T_UI can stall inside WebView2/GC. Capture uses T_CAPTURE.
 6. `Embed` is called once, after `walk.NewMainWindow()` (STA init) and before `mw.Run()`; its nested pump dispatches walk messages harmlessly (the synchronize queue only drains in walk's `mainLoop`).
 7. **Shutdown (UI-thread, ordered)**: emit `app.closing` → stop captures → `SetEditDialogOpen(false)` → `autoActive.Stop()` (main.go:259) → persist window/overlay pos via ConfigService → `scriptStore.FlushSaves(2s)` (main.go flush @3007ac4) → `hotkeyManager.UnregisterAll` (`hotkey/manager.go:166`) → dispose tray → destroy overlay → destroy host → `mw.Close()` (ends walk loop). Window **X exits**, **minimize hides to tray** — identical to `ui/main_window.go:299,308`; the spike's `hostProc` implements both (`host_windows.go:42-51`).
+   - Bounded UI-thread cost (accepted): after the page is told (`BeginShutdown`, ≤1.5 s, pump running) the final `Shutdown` runs synchronously on the UI thread — `FlushSaves` ≤ 2 s plus hotkey unregister ≤ 1 s — as the pre-WebView2 app did after `mainWindow.Run`. An update replacement launches only after this flush succeeded and the downloaded file re-verified; otherwise the file is deleted and the app exits normally (update offered again next launch).
 8. Hidden window memory: optional `TrySuspend` on hide **[A]**, measure in Phase 2.
 
 ## 5. One status dispatcher

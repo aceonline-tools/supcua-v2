@@ -491,24 +491,47 @@ func TestCheckUpdate_StoresAssetMetadata(t *testing.T) {
 	}
 }
 
-func TestDownload_VerifiesAndNeverTouchesExe(t *testing.T) {
+func TestDownload_UnpredictableExclusiveNameAndRecordedHash(t *testing.T) {
 	payload := mz(4096)
 	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, payload) })
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "supcua-v2.exe")
 	os.WriteFile(exe, []byte("MZcurrent"), 0o755)
-	tmp, err := Download(srv.URL, exe)
+	d1, err := Download(srv.URL, exe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Dir(tmp) != dir || filepath.Base(tmp) != UpdateTempName {
-		t.Fatalf("temp path %q", tmp)
+	d2, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(tmp); string(b) != payload {
+	if d1.Path == d2.Path || filepath.Dir(d1.Path) != dir || !strings.HasPrefix(filepath.Base(d1.Path), UpdateTempPrefix) {
+		t.Fatalf("names must be random and next to the exe: %q %q", d1.Path, d2.Path)
+	}
+	if _, serr := os.Stat(d1.Path); serr == nil {
+		t.Fatal("a second Download must clean up the stale file of the first")
+	}
+	sum := sha256.Sum256([]byte(payload))
+	if d2.Size != int64(len(payload)) || d2.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("recorded size/hash wrong: %+v", d2)
+	}
+	if b, _ := os.ReadFile(d2.Path); string(b) != payload {
 		t.Fatal("content mismatch")
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
 		t.Fatal("Download must not modify the running executable")
+	}
+}
+
+func TestDownloadTo_RefusesExistingFile(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(512)) })
+	dst := filepath.Join(t.TempDir(), "planted.exe")
+	os.WriteFile(dst, []byte("attacker"), 0o600)
+	if err := downloadTo(srv.URL, dst); err == nil {
+		t.Fatal("O_EXCL: an existing (pre-planted) file must not be reused")
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "attacker" {
+		t.Fatal("planted file must be left alone")
 	}
 }
 
@@ -522,21 +545,68 @@ func TestDownload_RejectsUntrustedAndNonPE(t *testing.T) {
 	if _, err := Download(srv.URL, exe); err == nil {
 		t.Fatal("non-PE download must fail")
 	}
-	if _, err := os.Stat(filepath.Join(dir, UpdateTempName)); !os.IsNotExist(err) {
-		t.Fatal("failed download must leave no temp file")
+	if m, _ := filepath.Glob(filepath.Join(dir, UpdateTempPrefix+"*")); len(m) != 0 {
+		t.Fatalf("failed download must leave no temp file: %v", m)
 	}
 }
 
-func TestReplace_FailureRestoresExecutable(t *testing.T) {
+func downloaded(t *testing.T) (Downloaded, string) {
+	t.Helper()
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(2048)) })
+	exe := filepath.Join(t.TempDir(), "supcua-v2.exe")
+	os.WriteFile(exe, []byte("MZcurrent"), 0o755)
+	d, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, exe
+}
+
+func TestReplace_RefusesTamperedDownloadBeforeTouchingExe(t *testing.T) {
+	for name, mutate := range map[string]func(string){
+		"same size, other bytes": func(p string) { os.WriteFile(p, []byte(mz(2048)[:2]+strings.Repeat("y", 2046)), 0o600) },
+		"truncated":              func(p string) { os.WriteFile(p, []byte("MZ"), 0o600) },
+		"not PE":                 func(p string) { os.WriteFile(p, []byte(strings.Repeat("z", 2048)), 0o600) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, exe := downloaded(t)
+			mutate(d.Path)
+			if err := Replace(d, exe); !errors.Is(err, ErrUpdateChanged) {
+				t.Fatalf("want ErrUpdateChanged, got %v", err)
+			}
+			if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+				t.Fatal("running executable must be untouched")
+			}
+			if _, err := os.Stat(exe + ".old"); !os.IsNotExist(err) {
+				t.Fatal("no rename may happen before verification")
+			}
+			if _, err := os.Stat(d.Path); !os.IsNotExist(err) {
+				t.Fatal("tampered file must be deleted")
+			}
+		})
+	}
+}
+
+func TestReplace_RefusesFileOutsideExeDirOrWrongName(t *testing.T) {
+	d, exe := downloaded(t)
+	other := filepath.Join(t.TempDir(), filepath.Base(d.Path))
+	os.WriteFile(other, []byte(mz(2048)), 0o600)
+	if err := Replace(Downloaded{Path: other, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdateChanged) {
+		t.Fatalf("outside dir: %v", err)
+	}
+	renamed := filepath.Join(filepath.Dir(exe), "evil.exe")
+	os.Rename(d.Path, renamed)
+	if err := Replace(Downloaded{Path: renamed, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdateChanged) {
+		t.Fatalf("wrong name: %v", err)
+	}
+}
+
+func TestReplace_LaunchFailureRestoresExecutable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("would launch the real batch script")
 	}
-	dir := t.TempDir()
-	exe := filepath.Join(dir, "supcua-v2.exe")
-	tmp := filepath.Join(dir, UpdateTempName)
-	os.WriteFile(exe, []byte("MZcurrent"), 0o755)
-	os.WriteFile(tmp, []byte("MZnew"), 0o755)
-	if err := Replace(tmp, exe); err == nil { // no cmd.exe off Windows: launch fails
+	d, exe := downloaded(t)
+	if err := Replace(d, exe); err == nil { // no cmd.exe off Windows: launch fails after verification
 		t.Fatal("expected launch failure")
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
@@ -545,13 +615,15 @@ func TestReplace_FailureRestoresExecutable(t *testing.T) {
 	if _, err := os.Stat(exe + ".old"); !os.IsNotExist(err) {
 		t.Fatal(".old must not remain after a restore")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "update.bat")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), "update.bat")); !os.IsNotExist(err) {
 		t.Fatal("update.bat must be removed after a failed launch")
 	}
 }
 
-func TestReplace_MissingExecutable(t *testing.T) {
-	if err := Replace(filepath.Join(t.TempDir(), "x"), filepath.Join(t.TempDir(), "missing.exe")); err == nil {
-		t.Fatal("expected rename error")
+func TestDiscardRemovesFile(t *testing.T) {
+	d, _ := downloaded(t)
+	Discard(d)
+	if _, err := os.Stat(d.Path); !os.IsNotExist(err) {
+		t.Fatal("Discard must delete the download")
 	}
 }

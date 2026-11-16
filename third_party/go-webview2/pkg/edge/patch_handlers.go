@@ -196,7 +196,9 @@ func (e *Chromium) NavigationStarting(_ *ICoreWebView2, args *ICoreWebView2Navig
 	}
 	uri, err := args.URI()
 	if err != nil || !e.NavigationStartingCallback(uri) {
-		_ = args.Cancel() // fail closed
+		if cerr := args.Cancel(); cerr != nil { // fail closed: an uncancellable navigation is fatal
+			e.fatal(cerr)
+		}
 	}
 	return 0
 }
@@ -206,7 +208,9 @@ func (e *Chromium) NewWindowRequested(_ *ICoreWebView2, args *ICoreWebView2NewWi
 	if uri, err := args.URI(); err == nil && e.NewWindowDeniedCallback != nil {
 		e.NewWindowDeniedCallback(uri)
 	}
-	_ = args.Deny()
+	if err := args.Deny(); err != nil { // fail closed: a popup that could not be denied is fatal
+		e.fatal(err)
+	}
 	return 0
 }
 
@@ -476,6 +480,13 @@ func (e *Chromium) AddResourceFilter(filter string) error {
 	const contextAll = 0
 	r, _, _ := e.webview.vtbl.AddWebResourceRequestedFilter.Call(uintptr(unsafe.Pointer(e.webview)), uintptr(unsafe.Pointer(p)), contextAll)
 	return hrErr("AddWebResourceRequestedFilter", r)
+}
+
+// fatal reports a security-handler failure (the host must leave, not run half-protected).
+func (e *Chromium) fatal(err error) {
+	if e.FatalCallback != nil {
+		e.FatalCallback(err)
+	}
 }
 
 // ErrEmbedTimeout is returned by EmbedTimeout when the runtime never answered.
