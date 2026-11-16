@@ -1,0 +1,1 @@
+{"sessionId":"e1","script":{"id":"","name":"","enabled":true,"run_mode":"once","hotkey_mode":"toggle","toggle_hotkey":null,"actions":[]},"catalog":[{"type":"delay","group":"wait","params":[{"name":"ms","kind":"int","min":1,"max":600000,"default":100}]}]}

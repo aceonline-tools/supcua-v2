@@ -1,5 +1,5 @@
 import type { ApiErrorBody, EventName, Events, MethodName, Methods } from './types';
-import { MockBackend } from './mock';
+import { MockBackend, seedFromQuery } from './mock';
 
 export class ApiError extends Error {
   readonly code: ApiErrorBody['code'];
@@ -105,5 +105,8 @@ function createWebViewTransport(host: WebViewHost): Transport {
 
 export function createDefaultClient(): Client {
   const host = typeof window !== 'undefined' ? window.chrome?.webview : undefined;
-  return createClient(host ? createWebViewTransport(host) : new MockBackend());
+  if (host) return createClient(createWebViewTransport(host));
+  const mock = new MockBackend(seedFromQuery(typeof location !== 'undefined' ? location.search : ''));
+  if (typeof window !== 'undefined') (window as unknown as { __mock: MockBackend }).__mock = mock; // browser-only dev/screenshot hook
+  return createClient(mock);
 }

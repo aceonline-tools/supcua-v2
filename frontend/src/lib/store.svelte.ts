@@ -1,9 +1,17 @@
 import { ApiError, type Client } from '../api/client';
+import { EditorStore } from './editor.svelte';
 import type {
   BootState, GroupDTO, ScriptSummary, SettingsDTO, SettingsPatch, StateDTO, ThemeSetting,
 } from '../api/types';
 
 export type Route = { name: 'scripts' } | { name: 'settings' } | { name: 'editor'; id: string | null };
+
+export interface UpdateState {
+  tag: string;
+  applying: boolean;
+  pct: number;
+  failed: string;
+}
 
 export type Row =
   | { kind: 'script'; script: ScriptSummary; grouped: boolean }
@@ -33,9 +41,13 @@ export class AppStore {
   loaded = $state(false);
   error = $state('');
   systemDark = $state(true);
+  update = $state<UpdateState | null>(null);
+  readonly editor: EditorStore;
   private disposers: (() => void)[] = [];
 
-  constructor(private api: Client) {}
+  constructor(private api: Client) {
+    this.editor = new EditorStore(api, this);
+  }
 
   get themeSetting(): ThemeSetting {
     return this.state?.theme ?? 'dark';
@@ -90,6 +102,9 @@ export class AppStore {
       this.api.on('state', (s) => { this.state = s; this.applyTheme(); }),
       this.api.on('scripts.changed', () => void this.loadScripts()),
       this.api.on('settings.changed', () => void this.loadSettings()),
+      this.api.on('update.available', (e) => { this.update = { tag: e.tag, applying: false, pct: 0, failed: '' }; }),
+      this.api.on('update.progress', (e) => { if (this.update) this.update.pct = e.pct; }),
+      this.api.on('update.failed', (e) => { if (this.update) { this.update.applying = false; this.update.failed = e.message; } }),
       this.api.on('save.failed', (e) => { this.unsaved[e.scriptId] = e.message; }),
       this.api.on('nav.goto', (e) => {
         if (e.route === 'settings') this.route = { name: 'settings' };
@@ -134,12 +149,27 @@ export class AppStore {
     this.selectedId = id;
   }
 
-  openEditor(id: string | null = this.selectedId): void {
-    if (id) this.route = { name: 'editor', id };
+  openEditor(id: string | null = this.selectedId): Promise<void> {
+    return id ? this.editor.open(id) : Promise.resolve();
   }
 
-  openNew(): void {
-    this.route = { name: 'editor', id: null };
+  openNew(): Promise<void> {
+    return this.editor.open(null);
+  }
+
+  async applyUpdate(): Promise<void> {
+    if (!this.update) return;
+    this.update = { ...this.update, applying: true, pct: 0, failed: '' };
+    try {
+      await this.api.call('update.apply');
+    } catch {
+      this.update = { ...this.update, applying: false, failed: 'Update failed.' };
+    }
+  }
+
+  async skipUpdate(): Promise<void> {
+    this.update = null;
+    await this.api.call('update.skip').catch(() => {});
   }
 
   async setGlobalActive(active: boolean): Promise<void> {
