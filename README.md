@@ -108,3 +108,24 @@ bash release.sh 1.2.3   # explicit version
 The script will build, tag, push to GitHub, upload to MinIO, and open the release page.
 
 > **Note:** garble is scoped to `github.com/yanmad27/supcua-v2` only. The `walk` UI library is excluded from obfuscation because it uses reflection internally.
+
+## Updater migration (MinIO → GitHub Releases)
+
+From the first release containing this change, the in-app updater reads the latest GitHub Release of `aceonline-tools/supcua-v2` (`GET /repos/aceonline-tools/supcua-v2/releases/latest`, unauthenticated) and downloads its `supcua-v2.exe` asset. Drafts, pre-releases and tags that are not plain `vX.Y.Z` are never offered. A dev build (`0.0.0`, `dev`) is offered any release; a suffix on the running version (`1.0.29-rc.1`) is ignored for comparison.
+
+Clients **≤ v1.0.28** still read MinIO `latest.txt`. So the **first release containing this change must also be uploaded to MinIO once, manually**, by a maintainer outside CI (needs the `aws` CLI with MinIO credentials). From the repo root, with the release's `supcua-v2.exe` in the current directory and `VERSION` set to the version without `v` (e.g. `1.0.29`):
+
+```bash
+MINIO_ENDPOINT="https://dev.hrm.vangtatmining.com.vn/minio"
+MINIO_BUCKET="bucket-supcua-v2"
+EXE="supcua-v2.exe"
+VERSION="1.0.29"
+
+aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 configure set default.s3.multipart_threshold 200MB
+echo "$VERSION" > latest.txt
+aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp "$EXE" "s3://$MINIO_BUCKET/$EXE"
+aws --endpoint-url "$MINIO_ENDPOINT" --region us-east-1 s3 cp latest.txt "s3://$MINIO_BUCKET/latest.txt"
+rm latest.txt
+```
+
+Upload the exe first, then `latest.txt`, so old clients never see a version whose binary is missing. After that, MinIO can be retired.
