@@ -88,7 +88,7 @@ export class AppStore {
   applyTheme(): void {
     if (typeof document === 'undefined') return;
     document.documentElement.dataset.theme = this.effectiveTheme;
-    try { localStorage.setItem('supcua.theme', this.effectiveTheme); } catch { /* storage unavailable */ }
+    try { localStorage.setItem('supcua.theme', this.themeSetting); } catch { /* storage unavailable */ }
   }
 
   async init(): Promise<void> {

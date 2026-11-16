@@ -160,7 +160,11 @@ export interface HotkeyConflict {
   hotkey: Hotkey;
 }
 
-export type CaptureEndReason = 'stopped' | 'blur' | 'timeout' | 'editorClosed' | 'sessionReset';
+export type CaptureEndReason = 'stopped' | 'blur' | 'timeout' | 'editorClosed';
+
+export interface CaptureStarted {
+  capture_id: number;
+}
 
 export type ErrorCode =
   | 'BAD_REQUEST' | 'UNKNOWN_METHOD' | 'BUSY' | 'INTERNAL' | 'NOT_FOUND' | 'NAME_EMPTY'
@@ -189,15 +193,15 @@ export interface Methods {
   'scripts.clone': { params: { id: string }; result: ScriptSummary };
   'scripts.delete': { params: { id: string }; result: { rev: number } };
   'editor.open': { params: { id: string | null }; result: EditorSession };
-  'editor.save': { params: { sessionId: string; script: Script; overrideConflicts?: boolean }; result: { script: Script; rev: number } };
+  'editor.save': { params: { sessionId: string; script: Script; overrideConflicts?: boolean; ignore_conflicts?: boolean }; result: { script: Script; rev: number } };
   'editor.close': { params: { sessionId: string; autosave: boolean }; result: { saved: boolean; rev: number } };
   'editor.describeActions': { params: { actions: Action[] }; result: string[] };
   'editor.toJSON': { params: { script: Script }; result: { text: string } };
   'editor.fromJSON': { params: { text: string }; result: { script: Script } };
-  'capture.hotkey.start': { params: { sessionId: string; field: HotkeyField }; result: Record<string, never> };
-  'capture.key.start': { params: { sessionId: string }; result: Record<string, never> };
-  'capture.stop': { params: { sessionId: string }; result: Record<string, never> };
-  'capture.mouse.start': { params: { sessionId: string }; result: Record<string, never> };
+  'capture.hotkey.start': { params: { sessionId: string; field: HotkeyField }; result: CaptureStarted };
+  'capture.key.start': { params: { sessionId: string }; result: CaptureStarted };
+  'capture.stop': { params: { sessionId: string; capture_id?: number }; result: Record<string, never> };
+  'capture.mouse.start': { params: { sessionId: string }; result: CaptureStarted };
   'capture.mouse.stop': { params: { sessionId: string }; result: Record<string, never> };
   'clipboard.write': { params: { text: string }; result: Record<string, never> };
   'update.apply': { params: undefined; result: Record<string, never> };
@@ -216,10 +220,11 @@ export interface Events {
   'scripts.changed': { rev: number };
   'settings.changed': { fields: string[] };
   'save.failed': { scriptId: string; name: string; message: string };
-  'capture.hotkey': { field: HotkeyField; hotkey: Hotkey | null; display: string };
-  'capture.key': { key: string };
-  'capture.mouse': { x: number; y: number };
-  'capture.ended': { reason: CaptureEndReason };
+  'capture.hotkey': { capture_id: number; field: HotkeyField; hotkey: Hotkey | null; display: string };
+  'capture.key': { capture_id: number; key: string };
+  'capture.mouse': { capture_id: number; x: number; y: number };
+  'capture.ended': { capture_id: number; reason: CaptureEndReason };
+  'editor.reset': { reason: string; session_id: string };
   'update.available': { tag: string };
   'update.progress': { pct: number };
   'update.failed': { message: string };

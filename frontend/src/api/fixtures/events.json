@@ -36,7 +36,9 @@
  "nav.goto": {
   "route": "settings"
  },
- "app.closing": {"deadline_ms": 2000},
+ "app.closing": {
+  "deadline_ms": 2000
+ },
  "capture.hotkey": {
   "field": "toggle",
   "hotkey": {
@@ -45,17 +47,21 @@
    ],
    "key": "k"
   },
-  "display": "Ctrl + K"
+  "display": "Ctrl + K",
+  "capture_id": 2
  },
  "capture.key": {
-  "key": "1"
+  "key": "1",
+  "capture_id": 3
  },
  "capture.mouse": {
   "x": 640,
-  "y": 360
+  "y": 360,
+  "capture_id": 1
  },
  "capture.ended": {
-  "reason": "stopped"
+  "reason": "stopped",
+  "capture_id": 3
  },
  "update.available": {
   "tag": "v1.0.29"
@@ -65,5 +71,9 @@
  },
  "update.failed": {
   "message": "Download failed"
+ },
+ "editor.reset": {
+  "reason": "navigation",
+  "session_id": "e1"
  }
 }

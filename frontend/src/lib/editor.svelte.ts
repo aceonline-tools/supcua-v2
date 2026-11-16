@@ -4,6 +4,7 @@ import type { AppStore } from './store.svelte';
 
 export type CloseResult = 'closed' | 'conflict' | 'failed' | 'noop';
 type SaveResult = 'ok' | 'conflict' | 'name' | 'failed';
+type CaptureEventName = 'hotkey' | 'key' | 'mouse' | 'ended';
 export type Capturing = HotkeyField | 'key' | null;
 
 export interface ActionDialogState {
@@ -31,18 +32,24 @@ export class EditorStore {
   private closing = false;
   private closePromise: Promise<CloseResult> | null = null;
   private warned = false;
-  // Host-side capture is single-mode (bridge/capture.go): Start ends the previous capture and emits
-  // capture.ended{stopped}. We track what the host has active so those transition events are not
-  // mistaken for a cancellation of the capture we just started.
-  private activeKind: 'mouse' | 'hotkey' | 'key' | null = null;
-  private expectedEnds = 0;
+  // Host-side capture is single-mode (bridge/capture.go). Every start returns a monotonic capture_id and
+  // every capture event carries one; only events for the current capture are acted on. Transitions are
+  // serialized on `chain`, and events that arrive while a start is in flight are buffered until its
+  // capture_id is known.
+  private curId: number | null = null;
+  private curKind: 'mouse' | 'hotkey' | 'key' | null = null;
+  private lastId = 0;
+  private starting = false;
+  private buffered: { name: CaptureEventName; e: any }[] = [];
+  private chain: Promise<unknown> = Promise.resolve();
   private needResume = false;
 
   constructor(private api: Client, private app: AppStore) {
-    api.on('capture.hotkey', (e) => this.onCaptureHotkey(e.field, e.hotkey));
-    api.on('capture.key', (e) => this.onCaptureKey(e.key));
-    api.on('capture.mouse', (e) => this.onCaptureMouse(e.x, e.y));
-    api.on('capture.ended', (e) => this.onCaptureEnded(e.reason));
+    api.on('capture.hotkey', (e) => this.onCaptureEvent('hotkey', e));
+    api.on('capture.key', (e) => this.onCaptureEvent('key', e));
+    api.on('capture.mouse', (e) => this.onCaptureEvent('mouse', e));
+    api.on('capture.ended', (e) => this.onCaptureEvent('ended', e));
+    api.on('editor.reset', (e) => this.onReset(e.session_id));
     if (typeof window !== 'undefined') window.addEventListener('focus', () => this.onActivated());
   }
 
@@ -67,9 +74,6 @@ export class EditorStore {
       this.sessionId = r.sessionId;
       this.script = r.script;
       this.catalog = r.catalog;
-      this.activeKind = null;
-      this.expectedEnds = 0;
-      this.needResume = false;
       // A new script has never been saved: closing must persist it (autosave-on-close parity).
       this.dirty = id === null;
     } catch (e) {
@@ -78,7 +82,7 @@ export class EditorStore {
     }
     this.app.route = { name: 'editor', id };
     await this.refreshLabels();
-    await this.resumeMouse();
+    await this.enqueue(() => this.doResume());
   }
 
   markDirty(): void {
@@ -154,77 +158,128 @@ export class EditorStore {
     await this.changed();
   }
 
-  private async begin(kind: 'hotkey' | 'key', start: () => Promise<unknown>): Promise<void> {
-    if (this.activeKind) this.expectedEnds++;
-    this.activeKind = kind;
+  private enqueue(fn: () => Promise<void>): Promise<void> {
+    const run = this.chain.then(fn);
+    this.chain = run.catch(() => {});
+    return run.catch(() => {});
+  }
+
+  private async doStart(kind: 'mouse' | 'hotkey' | 'key', call: () => Promise<{ capture_id: number }>): Promise<boolean> {
+    const sid = this.sessionId;
+    this.lastId = Math.max(this.lastId, this.curId ?? 0);
+    this.curId = null;
+    this.curKind = null;
+    this.starting = true;
+    this.buffered = [];
     try {
-      await start();
+      const r = await call();
+      if (this.sessionId !== sid) { this.starting = false; this.buffered = []; return false; }
+      this.curId = r.capture_id;
+      this.curKind = kind;
+      this.lastId = Math.max(this.lastId, r.capture_id);
     } catch {
-      this.expectedEnds = 0;
-      this.activeKind = null;
-      this.capturing = null;
-      await this.resumeMouse();
+      this.starting = false;
+      this.buffered = [];
+      if (kind !== 'mouse') this.capturing = null;
+      return false;
     }
+    this.starting = false;
+    const pending = this.buffered;
+    this.buffered = [];
+    for (const b of pending) if (b.e.capture_id === this.curId) this.apply(b.name, b.e);
+    return true;
+  }
+
+  private async doStop(): Promise<void> {
+    const sid = this.sessionId;
+    const id = this.curId;
+    if (!sid || id === null) return;
+    await this.api.call('capture.stop', { sessionId: sid, capture_id: id }).catch(() => {});
+    if (this.curId === id) { this.curId = null; this.curKind = null; }
+  }
+
+  private async doResume(): Promise<void> {
+    const sessionId = this.sessionId;
+    if (!sessionId || this.closing || this.curId !== null || this.starting) return;
+    this.needResume = false;
+    await this.doStart('mouse', () => this.api.call('capture.mouse.start', { sessionId }));
+  }
+
+  private stopAndResume(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.doStop();
+      await this.doResume();
+    });
   }
 
   async startCapture(field: HotkeyField): Promise<void> {
     const sessionId = this.sessionId;
     if (!sessionId) return;
     this.capturing = field;
-    await this.begin('hotkey', () => this.api.call('capture.hotkey.start', { sessionId, field }));
+    await this.enqueue(async () => {
+      if (!(await this.doStart('hotkey', () => this.api.call('capture.hotkey.start', { sessionId, field })))) await this.doResume();
+    });
   }
 
   async startKeyCapture(): Promise<void> {
     const sessionId = this.sessionId;
     if (!sessionId) return;
     this.capturing = 'key';
-    await this.begin('key', () => this.api.call('capture.key.start', { sessionId }));
-  }
-
-  // Ends the current host capture (accepted, cancelled) and returns to mouse picking.
-  private async stopCapture(): Promise<void> {
-    if (!this.sessionId) return;
-    await this.api.call('capture.stop', { sessionId: this.sessionId }).catch(() => {});
-    await this.resumeMouse();
+    await this.enqueue(async () => {
+      if (!(await this.doStart('key', () => this.api.call('capture.key.start', { sessionId })))) await this.doResume();
+    });
   }
 
   async cancelCapture(): Promise<void> {
     if (!this.capturing) return;
     this.capturing = null;
-    await this.stopCapture();
-  }
-
-  private async resumeMouse(): Promise<void> {
-    if (!this.sessionId || this.closing || this.activeKind) return;
-    this.needResume = false;
-    this.activeKind = 'mouse';
-    try {
-      await this.api.call('capture.mouse.start', { sessionId: this.sessionId });
-    } catch {
-      this.activeKind = null;
-    }
+    await this.stopAndResume();
   }
 
   onActivated(): void {
-    if (this.needResume) void this.resumeMouse();
+    if (this.needResume) void this.enqueue(() => this.doResume());
+  }
+
+  // After a close attempt leaves the editor open the host-side capture may have ended unnoticed.
+  private reconcile(): void {
+    if (!this.sessionId) return;
+    if (this.capturing && this.curId === null && !this.starting) this.capturing = null;
+    void this.enqueue(() => this.doResume());
+  }
+
+  private onCaptureEvent(name: CaptureEventName, e: { capture_id: number }): void {
+    if (this.starting) {
+      if (e.capture_id > this.lastId) this.buffered.push({ name, e });
+      return;
+    }
+    if (e.capture_id !== this.curId) return;
+    this.apply(name, e);
+  }
+
+  private apply(name: CaptureEventName, e: any): void {
+    switch (name) {
+      case 'hotkey': return this.onCaptureHotkey(e.field, e.hotkey);
+      case 'key': return this.onCaptureKey(e.key);
+      case 'mouse': return this.onCaptureMouse(e.x, e.y);
+      case 'ended': return this.onCaptureEnded(e.reason);
+    }
   }
 
   private onCaptureEnded(reason: CaptureEndReason): void {
-    if (reason === 'stopped' && this.expectedEnds > 0) { this.expectedEnds--; return; }
-    this.activeKind = null;
-    this.expectedEnds = 0;
+    this.curId = null;
+    this.curKind = null;
     this.capturing = null;
     if (!this.sessionId || reason === 'editorClosed') return;
-    if (reason === 'sessionReset') { void this.onSessionReset(); return; }
     if (reason === 'blur') { this.needResume = true; return; }
-    void this.resumeMouse();
+    void this.enqueue(() => this.doResume());
   }
 
-  private async onSessionReset(): Promise<void> {
+  private onReset(sessionId: string): void {
+    if (!this.sessionId || sessionId !== this.sessionId) return;
     this.reset();
     this.app.route = { name: 'scripts' };
     this.app.error = 'The editor session was reset; unsaved changes were lost.';
-    await this.app.loadScripts().catch(() => {});
+    void this.app.loadScripts().catch(() => {});
   }
 
   clearHotkey(field: HotkeyField): void {
@@ -234,34 +289,35 @@ export class EditorStore {
   }
 
   private onCaptureHotkey(field: HotkeyField, hotkey: { modifiers: string[]; key: string } | null): void {
-    if (!this.script || this.capturing !== field) return;
+    if (!this.script || this.curKind !== 'hotkey' || this.capturing !== field) return;
     if (!hotkey || hotkey.key.toLowerCase() === 'esc' || hotkey.key.toLowerCase() === 'escape') { void this.cancelCapture(); return; }
     this.script[`${field}_hotkey` as const] = hotkey;
     this.capturing = null;
     this.markDirty();
-    void this.stopCapture();
+    void this.stopAndResume();
   }
 
   private onCaptureKey(key: string): void {
-    if (this.capturing !== 'key') return;
+    if (this.curKind !== 'key' || this.capturing !== 'key') return;
     if (this.actionDialog) this.actionDialog.action.key = key;
     else this.builder.key = key;
     this.capturing = null;
-    void this.stopCapture();
+    void this.stopAndResume();
   }
 
   private onCaptureMouse(x: number, y: number): void {
-    if (!this.sessionId) return;
+    if (!this.sessionId || this.curKind !== 'mouse') return;
     const el = typeof document !== 'undefined' ? document.activeElement : null;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
     this.mouse = { x, y };
   }
 
-  private async save(override = false): Promise<SaveResult> {
+  private async save(opts: { override?: boolean; ignore?: boolean } = {}): Promise<SaveResult> {
     if (!this.script || !this.sessionId) return 'failed';
     try {
       const r = await this.api.call('editor.save', {
-        sessionId: this.sessionId, script: $state.snapshot(this.script), ...(override ? { overrideConflicts: true } : {}),
+        sessionId: this.sessionId, script: $state.snapshot(this.script),
+        ...(opts.override ? { overrideConflicts: true } : {}), ...(opts.ignore ? { ignore_conflicts: true } : {}),
       });
       this.script = r.script;
       this.dirty = false;
@@ -282,7 +338,7 @@ export class EditorStore {
   close(): Promise<CloseResult> {
     if (this.closePromise) return this.closePromise;
     if (!this.sessionId) return Promise.resolve('noop');
-    const p = this.doClose().finally(() => { this.closePromise = null; });
+    const p = this.doClose().then((r) => { if (r === 'conflict' || r === 'failed') this.reconcile(); return r; }).finally(() => { this.closePromise = null; });
     this.closePromise = p;
     return p;
   }
@@ -305,12 +361,14 @@ export class EditorStore {
 
   async resolveConflict(override: boolean): Promise<CloseResult> {
     this.conflicts = null;
-    if (!override) this.app.pendingRoute = null;
+    if (!override) { this.app.pendingRoute = null; this.reconcile(); }
     if (!override || !this.sessionId) return 'noop';
     this.closing = true;
     try {
-      const r = await this.save(true);
+      const r = await this.save({ override: true });
       if (r === 'ok') { await this.finish(); return 'closed'; }
+      this.closing = false;
+      this.reconcile();
       return r === 'conflict' ? 'conflict' : 'failed';
     } finally {
       this.closing = false;
@@ -319,14 +377,14 @@ export class EditorStore {
 
   // Native window close: autosave then release the session; conflicts cannot be prompted here.
   async flushForClose(): Promise<void> {
-    if (this.closePromise) { await this.closePromise.catch(() => {}); return; }
+    if (this.closePromise) await this.closePromise.catch(() => {});
     if (!this.sessionId) return;
     this.closing = true;
+    this.conflicts = null;
     try {
-      if (this.dirty) await this.save();
-      this.conflicts = null;
-      await this.finish();
+      if (this.dirty) await this.save({ ignore: true }); // parity with the old dialog's autosave on close
     } finally {
+      await this.finish();
       this.closing = false;
     }
   }
@@ -355,6 +413,11 @@ export class EditorStore {
     this.saveFailed = false;
     this.builder = { key: '', delay: 100, loop: 1 };
     this.capturing = null;
+    this.curId = null;
+    this.curKind = null;
+    this.starting = false;
+    this.buffered = [];
+    this.needResume = false;
     this.conflicts = null;
     this.actionDialog = null;
     this.raw = null;

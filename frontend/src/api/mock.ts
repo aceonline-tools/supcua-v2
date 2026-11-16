@@ -107,7 +107,8 @@ export class MockBackend implements Transport {
   private seed: MockSeed;
   private bodies = new Map<string, Script>();
   private session: string | null = null;
-  private activeCap: string | null = null;
+  private activeCap: { id: number; method: string } | null = null;
+  private capId = 0;
   private rev = 1;
   private nextId = 100;
   private emit: (name: string, payload: unknown) => void = () => {};
@@ -116,12 +117,16 @@ export class MockBackend implements Transport {
     this.seed = structuredClone(seed);
   }
 
+  get currentCaptureId(): number {
+    return this.activeCap?.id ?? 0;
+  }
+
   subscribe(handler: (name: string, payload: unknown) => void): void {
     this.emit = handler;
   }
 
   push(name: string, payload: unknown): void {
-    if (name === 'capture.ended') this.activeCap = null; // host semantics: ended means nothing is active
+    if (name === 'capture.ended' && (payload as { capture_id?: number }).capture_id === this.activeCap?.id) this.activeCap = null; // host semantics
     this.emit(name, payload);
   }
 
@@ -254,8 +259,8 @@ export class MockBackend implements Transport {
         if (!name) throw new ApiError({ code: 'NAME_EMPTY', message: 'Name required' });
         if (st.scripts.some((x) => x.id !== sc.id && x.name.toLowerCase() === name.toLowerCase())) throw new ApiError({ code: 'NAME_TAKEN', message: 'Name taken' });
         const conflicts = this.conflicts(sc);
-        if (conflicts.length && !p.overrideConflicts) throw new ApiError({ code: 'HOTKEY_CONFLICT', message: 'Hotkey conflict', conflicts });
-        for (const c of conflicts) {
+        if (conflicts.length && !p.overrideConflicts && !p.ignore_conflicts) throw new ApiError({ code: 'HOTKEY_CONFLICT', message: 'Hotkey conflict', conflicts });
+        for (const c of p.overrideConflicts ? conflicts : []) {
           const ob = this.body(c.scriptId);
           ob[c.field] = null;
           this.find(c.scriptId).hotkey_label = labelOf(ob);
@@ -273,7 +278,7 @@ export class MockBackend implements Transport {
         this.requireSession(p.sessionId);
         this.session = null;
         st.state.editor_open = false;
-        if (this.activeCap) { this.activeCap = null; this.emit('capture.ended', { reason: 'editorClosed' }); }
+        if (this.activeCap) { const id = this.activeCap.id; this.activeCap = null; this.emit('capture.ended', { reason: 'editorClosed', capture_id: id }); }
         return { saved: false, rev: this.rev };
       }
       case 'editor.describeActions': return (p.actions as Action[]).map(describe);
@@ -281,16 +286,19 @@ export class MockBackend implements Transport {
       case 'editor.fromJSON': {
         try { return { script: JSON.parse(p.text) }; } catch { throw new ApiError({ code: 'BAD_REQUEST', message: 'Invalid JSON' }); }
       }
-      case 'capture.hotkey.start': case 'capture.key.start': case 'capture.mouse.start':
+      case 'capture.hotkey.start': case 'capture.key.start': case 'capture.mouse.start': {
         this.requireSession(p.sessionId);
         // bridge/capture.go Start: ends the previous capture first and emits capture.ended{stopped}
-        if (this.activeCap) this.emit('capture.ended', { reason: 'stopped' });
-        this.activeCap = method;
-        return {};
-      case 'capture.stop': case 'capture.mouse.stop':
+        if (this.activeCap) this.emit('capture.ended', { reason: 'stopped', capture_id: this.activeCap.id });
+        this.activeCap = { id: ++this.capId, method };
+        return { capture_id: this.activeCap.id };
+      }
+      case 'capture.stop': case 'capture.mouse.stop': {
         this.requireSession(p.sessionId);
-        if (this.activeCap) { this.activeCap = null; this.emit('capture.ended', { reason: 'stopped' }); }
+        const cur = this.activeCap;
+        if (cur && (p.capture_id === undefined || p.capture_id === cur.id)) { this.activeCap = null; this.emit('capture.ended', { reason: 'stopped', capture_id: cur.id }); }
         return {};
+      }
       case 'clipboard.write': case 'update.apply': case 'update.skip': return {};
       case 'settings.get': return { ...st.settings, collapsed_groups: st.collapsed };
       case 'settings.update': {

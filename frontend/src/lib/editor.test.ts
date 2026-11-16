@@ -12,12 +12,33 @@ class FlakyBackend extends MockBackend {
   }
 }
 
-let mock: FlakyBackend;
+// Holds the reply of chosen methods after the host has already handled them (events can overtake replies).
+class GatedBackend extends FlakyBackend {
+  holds = new Map<string, Promise<void>>();
+  failStart = false;
+  override async call(method: string, params: unknown): Promise<unknown> {
+    if (this.failStart && method === 'capture.key.start') {
+      this.push('capture.ended', { reason: 'stopped', capture_id: this.currentCaptureId }); // Start ends the old capture, then fails
+      throw new ApiError({ code: 'INTERNAL', message: 'Internal error' });
+    }
+    let r: unknown;
+    try {
+      r = await super.call(method, params);
+    } catch (e) {
+      await this.holds.get(method);
+      throw e;
+    }
+    await this.holds.get(method);
+    return r;
+  }
+}
+
+let mock: GatedBackend;
 let store: AppStore;
 const count = (m: string) => mock.calls.filter((c) => c.method === m).length;
 
 beforeEach(async () => {
-  mock = new FlakyBackend();
+  mock = new GatedBackend();
   store = new AppStore(createClient(mock));
   await store.init();
 });
@@ -108,48 +129,153 @@ describe('autosave conflicts', () => {
   });
 });
 
+const cid = () => mock.currentCaptureId;
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 describe('hotkey capture', () => {
-  it('assigns a captured hotkey', async () => {
+  it('assigns a captured hotkey, then stops the capture and resumes mouse', async () => {
     await store.openEditor('s3');
     await store.editor.startCapture('toggle');
     expect(store.editor.capturing).toBe('toggle');
-    mock.push('capture.hotkey', { field: 'toggle', hotkey: { modifiers: ['ctrl'], key: 'k' }, display: 'Ctrl + K' });
+    mock.push('capture.hotkey', { capture_id: cid(), field: 'toggle', hotkey: { modifiers: ['ctrl'], key: 'k' }, display: 'Ctrl + K' });
     expect(store.editor.script?.toggle_hotkey).toEqual({ modifiers: ['ctrl'], key: 'k' });
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
     expect(store.editor.capturing).toBeNull();
-    expect(store.editor.dirty).toBe(true);
+    expect(mock.calls.find((c) => c.method === 'capture.stop')?.params).toMatchObject({ capture_id: 2 });
   });
 
   it('cancels on Esc without changing the hotkey and stops the capture', async () => {
     await store.openEditor('s3');
     await store.editor.startCapture('toggle');
-    mock.push('capture.hotkey', { field: 'toggle', hotkey: { modifiers: [], key: 'esc' }, display: 'Esc' });
-    await Promise.resolve();
+    mock.push('capture.hotkey', { capture_id: cid(), field: 'toggle', hotkey: { modifiers: [], key: 'esc' }, display: 'Esc' });
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
     expect(store.editor.capturing).toBeNull();
     expect(store.editor.script?.toggle_hotkey).toEqual({ modifiers: [], key: 'f1' });
     expect(count('capture.stop')).toBe(1);
     expect(store.editor.dirty).toBe(false);
   });
 
-  it('explicit cancel stops the capture; capture.ended clears state', async () => {
+  it('explicit cancel stops the capture and resumes mouse once', async () => {
     await store.openEditor('s3');
     await store.editor.startKeyCapture();
     await store.editor.cancelCapture();
+    await flush();
     expect(count('capture.stop')).toBe(1);
-    await store.editor.startCapture('start');
-    mock.push('capture.ended', { reason: 'blur' });
-    expect(store.editor.capturing).toBeNull();
+    expect(count('capture.mouse.start')).toBe(2);
   });
 
   it('ignores mouse captures while an input has focus, otherwise updates X/Y', async () => {
     await store.openEditor('s3');
-    mock.push('capture.mouse', { x: 640, y: 360 });
+    mock.push('capture.mouse', { capture_id: cid(), x: 640, y: 360 });
     expect(store.editor.mouse).toEqual({ x: 640, y: 360 });
     const input = document.createElement('input');
     document.body.append(input);
     input.focus();
-    mock.push('capture.mouse', { x: 1, y: 2 });
+    mock.push('capture.mouse', { capture_id: cid(), x: 1, y: 2 });
     expect(store.editor.mouse).toEqual({ x: 640, y: 360 });
     input.remove();
+  });
+});
+
+describe('capture ids and delayed transport', () => {
+  it('a late timeout for the previous capture does not cancel a new keyboard capture', async () => {
+    await store.openEditor('s3');
+    const oldId = cid();
+    await store.editor.startKeyCapture();
+    expect(cid()).toBe(oldId + 1);
+    mock.push('capture.ended', { capture_id: oldId, reason: 'timeout' }); // stale
+    mock.push('capture.mouse', { capture_id: oldId, x: 9, y: 9 }); // stale
+    await flush();
+    expect(store.editor.capturing).toBe('key');
+    expect(count('capture.mouse.start')).toBe(1);
+    expect(store.editor.mouse).toEqual({ x: 0, y: 0 });
+    mock.push('capture.key', { capture_id: cid(), key: 'q' });
+    expect(store.editor.builder.key).toBe('q');
+  });
+
+  it('a failed start clears the capture state and resumes mouse picking', async () => {
+    await store.openEditor('s3');
+    mock.failStart = true;
+    await store.editor.startKeyCapture();
+    expect(store.editor.capturing).toBeNull();
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+    mock.failStart = false;
+  });
+
+  it('a timeout that overtakes the start reply is applied after the reply', async () => {
+    await store.openEditor('s3');
+    let release!: () => void;
+    mock.holds.set('capture.key.start', new Promise<void>((r) => (release = r)));
+    const started = store.editor.startKeyCapture();
+    await vi.waitFor(() => expect(count('capture.key.start')).toBe(1));
+    mock.push('capture.ended', { capture_id: cid(), reason: 'timeout' }); // arrives before the reply
+    expect(store.editor.capturing).toBe('key'); // not acted on yet
+    release();
+    await started;
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+    expect(store.editor.capturing).toBeNull();
+  });
+
+  it('a key event that overtakes the start reply is buffered and applied', async () => {
+    await store.openEditor('s3');
+    let release!: () => void;
+    mock.holds.set('capture.key.start', new Promise<void>((r) => (release = r)));
+    const started = store.editor.startKeyCapture();
+    await vi.waitFor(() => expect(count('capture.key.start')).toBe(1));
+    mock.push('capture.key', { capture_id: cid(), key: 'z' });
+    release();
+    await started;
+    expect(store.editor.builder.key).toBe('z');
+  });
+
+  it('timeout resumes mouse; blur waits for re-activation', async () => {
+    await store.openEditor('s3');
+    mock.push('capture.ended', { capture_id: cid(), reason: 'timeout' });
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+    mock.push('capture.ended', { capture_id: cid(), reason: 'blur' });
+    await flush();
+    expect(count('capture.mouse.start')).toBe(2);
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(3));
+  });
+
+  it('drops malformed capture events before dispatch', async () => {
+    await store.openEditor('s3');
+    mock.push('capture.mouse', { x: 5, y: 5 }); // no capture_id
+    mock.push('capture.mouse', { capture_id: cid(), x: 'a', y: 1 });
+    expect(store.editor.mouse).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('editor.reset', () => {
+  it('drops the draft and returns to the list; stale resets are ignored', async () => {
+    await store.openEditor('s3');
+    mock.push('editor.reset', { reason: 'navigation', session_id: 'old-session' });
+    expect(store.route.name).toBe('editor');
+    mock.push('editor.reset', { reason: 'navigation', session_id: store.editor.sessionId });
+    expect(store.route.name).toBe('scripts');
+    expect(store.editor.sessionId).toBeNull();
+    expect(store.editor.script).toBeNull();
+    expect(store.error).toContain('reset');
+  });
+});
+
+describe('close attempts that leave the editor open', () => {
+  it('reconciles and resumes mouse picking after a conflict', async () => {
+    await store.openEditor('s3');
+    store.editor.script!.toggle_hotkey = { modifiers: [], key: 'f5' };
+    store.editor.markDirty();
+    let release!: () => void;
+    mock.holds.set('editor.save', new Promise<void>((r) => (release = r)));
+    const closing = store.editor.close();
+    await vi.waitFor(() => expect(count('editor.save')).toBe(1));
+    mock.push('capture.ended', { capture_id: cid(), reason: 'timeout' }); // resume is blocked while closing
+    await flush();
+    expect(count('capture.mouse.start')).toBe(1);
+    release();
+    expect(await closing).toBe('conflict');
+    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
+    mock.holds.delete('editor.save');
   });
 });
 
@@ -201,58 +327,6 @@ describe('license and update', () => {
 });
 
 const seq = () => mock.calls.map((c) => c.method);
-
-describe('capture transitions (bridge order)', () => {
-  it('starting a hotkey capture over mouse picking keeps the new capture; accepting stops it and resumes mouse', async () => {
-    await store.openEditor('s3');
-    expect(count('capture.mouse.start')).toBe(1);
-    await store.editor.startCapture('toggle');
-    expect(store.editor.capturing).toBe('toggle'); // the host's ended{stopped} for the mouse capture was ignored
-    mock.push('capture.hotkey', { field: 'toggle', hotkey: { modifiers: [], key: 'f9' }, display: 'F9' });
-    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
-    expect(count('capture.stop')).toBe(1);
-    expect(store.editor.script?.toggle_hotkey?.key).toBe('f9');
-    expect(store.editor.capturing).toBeNull();
-  });
-
-  it('key capture: accepted key stops the capture and resumes mouse', async () => {
-    await store.openEditor('s3');
-    await store.editor.startKeyCapture();
-    expect(store.editor.capturing).toBe('key');
-    mock.push('capture.key', { key: 'q' });
-    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
-    expect(store.editor.builder.key).toBe('q');
-    expect(count('capture.stop')).toBe(1);
-  });
-
-  it('cancel resumes mouse exactly once', async () => {
-    await store.openEditor('s3');
-    await store.editor.startCapture('toggle');
-    await store.editor.cancelCapture();
-    await Promise.resolve();
-    expect(count('capture.mouse.start')).toBe(2);
-    expect(store.editor.capturing).toBeNull();
-  });
-
-  it('timeout resumes mouse; blur waits for re-activation', async () => {
-    await store.openEditor('s3');
-    mock.push('capture.ended', { reason: 'timeout' });
-    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(2));
-    mock.push('capture.ended', { reason: 'blur' });
-    await Promise.resolve();
-    expect(count('capture.mouse.start')).toBe(2);
-    window.dispatchEvent(new Event('focus'));
-    await vi.waitFor(() => expect(count('capture.mouse.start')).toBe(3));
-  });
-
-  it('sessionReset drops the editor and reports it', async () => {
-    await store.openEditor('s3');
-    mock.push('capture.ended', { reason: 'sessionReset' });
-    await vi.waitFor(() => expect(store.route.name).toBe('scripts'));
-    expect(store.editor.sessionId).toBeNull();
-    expect(store.error).toContain('reset');
-  });
-});
 
 describe('leaving the editor', () => {
   it('nav.goto saves and closes before navigating', async () => {
@@ -328,5 +402,30 @@ describe('native close', () => {
     m2.push('app.closing', { deadline_ms: 2000 });
     await vi.waitFor(() => expect(m2.calls.some((c) => c.method === 'app.closingReady')).toBe(true));
     expect(m2.calls.some((c) => c.method === 'editor.close')).toBe(true);
+  });
+});
+
+describe('native close with a close already running', () => {
+  it('ignores conflicts, always releases the session, then reports ready', async () => {
+    await store.openEditor('s3');
+    store.editor.script!.toggle_hotkey = { modifiers: [], key: 'f5' };
+    store.editor.markDirty();
+    let release!: () => void;
+    mock.holds.set('editor.save', new Promise<void>((r) => (release = r)));
+    const closing = store.editor.close();
+    await vi.waitFor(() => expect(count('editor.save')).toBe(1));
+    mock.push('app.closing', { deadline_ms: 2000 });
+    release();
+    expect(await closing).toBe('conflict');
+    mock.holds.delete('editor.save');
+    await vi.waitFor(() => expect(count('app.closingReady')).toBe(1));
+    const saves = mock.calls.filter((c) => c.method === 'editor.save');
+    expect(saves.at(-1)?.params).toMatchObject({ ignore_conflicts: true });
+    const s = seq();
+    expect(s.indexOf('editor.close')).toBeGreaterThan(-1);
+    expect(s.lastIndexOf('editor.save')).toBeLessThan(s.indexOf('editor.close'));
+    expect(s.indexOf('editor.close')).toBeLessThan(s.indexOf('app.closingReady'));
+    expect(store.scripts.find((x) => x.id === 's1')?.hotkey_label).toBe('F5'); // other script untouched
+    expect(store.scripts.find((x) => x.id === 's3')?.hotkey_label).toBe('F5'); // duplicate kept
   });
 });

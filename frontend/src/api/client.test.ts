@@ -42,9 +42,9 @@ describe('webview transport', () => {
     const seen = vi.fn();
     c.on('capture.key', () => { throw new Error('boom'); });
     c.on('capture.key', seen);
-    expect(() => window.__emit!('capture.key', { key: 'a' })).not.toThrow();
+    expect(() => window.__emit!('capture.key', { capture_id: 1, key: 'a' })).not.toThrow();
     expect(() => window.__emit!(undefined as any, 1)).not.toThrow();
-    expect(seen).toHaveBeenCalledWith({ key: 'a' });
+    expect(seen).toHaveBeenCalledWith({ capture_id: 1, key: 'a' });
     err.mockRestore();
   });
 });

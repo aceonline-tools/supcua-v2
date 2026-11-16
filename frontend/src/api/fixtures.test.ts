@@ -1,3 +1,4 @@
+import { validEventPayload } from './validate';
 import { describe, expect, it } from 'vitest';
 import type { ActionSpec, BootState, EditorSession, HotkeyConflict, Script, Events, GroupDTO, OverlayDTO, ScriptList, ScriptSummary, SettingsDTO, StateDTO } from './types';
 import state from './fixtures/state.json';
@@ -27,10 +28,19 @@ describe('fixtures', () => {
     expect(Object.keys(typed.summary).sort()).toEqual(['enabled', 'group', 'hotkey_label', 'hotkey_mode', 'id', 'name', 'run_mode', 'running']);
     expect(Object.keys(typed.group).sort()).toEqual(['all_enabled', 'collapsed', 'count', 'name']);
     expect(Object.keys(typed.settings)).toHaveLength(10);
-    expect(Object.keys(typed.events).sort()).toEqual(['app.closing', 'capture.ended', 'capture.hotkey', 'capture.key', 'capture.mouse', 'nav.goto', 'save.failed', 'scripts.changed', 'settings.changed', 'state', 'update.available', 'update.failed', 'update.progress']);
+    expect(Object.keys(typed.events).sort()).toEqual(['app.closing', 'capture.ended', 'capture.hotkey', 'capture.key', 'capture.mouse', 'editor.reset', 'nav.goto', 'save.failed', 'scripts.changed', 'settings.changed', 'state', 'update.available', 'update.failed', 'update.progress']);
     expect(Object.keys(typed.script).sort()).toEqual(['actions', 'enabled', 'group', 'hotkey_mode', 'id', 'name', 'run_mode', 'start_hotkey', 'stop_hotkey', 'toggle_hotkey']);
     expect(Object.keys(typed.conflict).sort()).toEqual(['field', 'hotkey', 'name', 'scriptId']);
     expect(Object.keys(typed.spec).sort()).toEqual(['group', 'params', 'type']);
     expect(Object.keys(typed.session).sort()).toEqual(['catalog', 'script', 'sessionId']);
+  });
+
+  it('every event fixture passes the payload validator; broken variants fail', () => {
+    for (const [name, payload] of Object.entries(events)) expect(validEventPayload(name, payload), name).toBe(true);
+    expect(validEventPayload('capture.key', { key: 'a' })).toBe(false);
+    expect(validEventPayload('capture.ended', { capture_id: 1, reason: 'sessionReset' })).toBe(false);
+    expect(validEventPayload('state', { ...events.state, theme: 'blue' })).toBe(false);
+    expect(validEventPayload('app.closing', {})).toBe(false);
+    expect(validEventPayload('unknown.event', {})).toBe(false);
   });
 });

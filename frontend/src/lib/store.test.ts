@@ -99,11 +99,10 @@ describe('settings', () => {
 });
 
 describe('theme persistence for first paint', () => {
-  it('stores the effective theme for the pre-paint script', async () => {
+  it('stores the selected theme (including system) for the pre-paint script', async () => {
     await store.setTheme('light');
     expect(localStorage.getItem('supcua.theme')).toBe('light');
-    store.systemDark = true;
     await store.setTheme('system');
-    expect(localStorage.getItem('supcua.theme')).toBe('dark');
+    expect(localStorage.getItem('supcua.theme')).toBe('system');
   });
 });

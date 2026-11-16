@@ -1,5 +1,6 @@
 import type { ApiErrorBody, EventName, Events, MethodName, Methods } from './types';
 import { MockBackend, seedFromQuery } from './mock';
+import { validEventPayload } from './validate';
 
 export class ApiError extends Error {
   readonly code: ApiErrorBody['code'];
@@ -27,6 +28,7 @@ export interface Client {
 export function createClient(transport: Transport): Client {
   const listeners = new Map<string, Set<(payload: never) => void>>();
   transport.subscribe((name, payload) => {
+    if (!validEventPayload(name, payload)) return;
     listeners.get(name)?.forEach((h) => {
       try { h(payload as never); } catch (e) { console.error('event handler failed', name, e); }
     });
