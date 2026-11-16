@@ -16,6 +16,14 @@ import (
 // readFile is a seam so tests can count file reads.
 var readFile = os.ReadFile
 
+type queuedSave struct {
+	script model.Script
+	token  uint64
+}
+
+// beforeQueuedWrite is a test seam called by the worker after it pops a save, before it locks the store.
+var beforeQueuedWrite func(id string)
+
 // ScriptStore handles CRUD operations for script JSON files in a directory.
 type ScriptStore struct {
 	scriptsDirectory string
@@ -24,7 +32,9 @@ type ScriptStore struct {
 	files map[string]string // script ID -> file path; nil until first scan
 
 	queueMu    sync.Mutex
-	pending    map[string]model.Script
+	pending    map[string]queuedSave
+	gen        map[string]uint64 // latest write token per ID; absent after Delete
+	genCounter uint64
 	pendingOrd []string
 	draining   bool
 	idle       chan struct{} // closed when the worker drains
@@ -99,8 +109,43 @@ func (scriptStore *ScriptStore) indexLocked() map[string]string {
 // Only the target file (and a renamed-away predecessor) is touched; the directory is
 // scanned at most once per store, not per call.
 func (scriptStore *ScriptStore) Save(script model.Script) error {
+	scriptStore.queueMu.Lock()
+	token := scriptStore.supersedeLocked(script.ID)
+	scriptStore.queueMu.Unlock()
+
 	scriptStore.mu.Lock()
 	defer scriptStore.mu.Unlock()
+	scriptStore.queueMu.Lock()
+	current := scriptStore.gen[script.ID] == token
+	scriptStore.queueMu.Unlock()
+	if !current {
+		return nil
+	}
+	return scriptStore.writeLocked(script)
+}
+
+// supersedeLocked drops any pending snapshot of id and issues a new write token,
+// invalidating in-flight older snapshots. Caller holds queueMu.
+func (scriptStore *ScriptStore) supersedeLocked(id string) uint64 {
+	if _, ok := scriptStore.pending[id]; ok {
+		delete(scriptStore.pending, id)
+		for i, pid := range scriptStore.pendingOrd {
+			if pid == id {
+				scriptStore.pendingOrd = append(scriptStore.pendingOrd[:i:i], scriptStore.pendingOrd[i+1:]...)
+				break
+			}
+		}
+	}
+	if scriptStore.gen == nil {
+		scriptStore.gen = map[string]uint64{}
+	}
+	scriptStore.genCounter++
+	scriptStore.gen[id] = scriptStore.genCounter
+	return scriptStore.genCounter
+}
+
+// writeLocked writes one script file. Caller holds mu.
+func (scriptStore *ScriptStore) writeLocked(script model.Script) error {
 
 	if err := os.MkdirAll(scriptStore.scriptsDirectory, 0755); err != nil {
 		return fmt.Errorf("create scripts directory: %w", err)
@@ -133,13 +178,12 @@ func (scriptStore *ScriptStore) Save(script model.Script) error {
 func (scriptStore *ScriptStore) QueueSave(scripts ...model.Script) {
 	scriptStore.queueMu.Lock()
 	if scriptStore.pending == nil {
-		scriptStore.pending = map[string]model.Script{}
+		scriptStore.pending = map[string]queuedSave{}
 	}
 	for _, script := range scripts {
-		if _, ok := scriptStore.pending[script.ID]; !ok {
-			scriptStore.pendingOrd = append(scriptStore.pendingOrd, script.ID)
-		}
-		scriptStore.pending[script.ID] = script
+		token := scriptStore.supersedeLocked(script.ID)
+		scriptStore.pendingOrd = append(scriptStore.pendingOrd, script.ID)
+		scriptStore.pending[script.ID] = queuedSave{script: script, token: token}
 	}
 	start := !scriptStore.draining && len(scriptStore.pendingOrd) > 0
 	if start {
@@ -178,6 +222,18 @@ func (scriptStore *ScriptStore) FlushSaves(timeout time.Duration) bool {
 	}
 }
 
+// writeQueued writes a queued snapshot only if it is still the latest for its ID.
+func (scriptStore *ScriptStore) writeQueued(item queuedSave) {
+	scriptStore.mu.Lock()
+	defer scriptStore.mu.Unlock()
+	scriptStore.queueMu.Lock()
+	current := scriptStore.gen[item.script.ID] == item.token
+	scriptStore.queueMu.Unlock()
+	if current {
+		scriptStore.writeLocked(item.script)
+	}
+}
+
 func (scriptStore *ScriptStore) drainQueue() {
 	for {
 		scriptStore.queueMu.Lock()
@@ -192,10 +248,13 @@ func (scriptStore *ScriptStore) drainQueue() {
 		}
 		id := scriptStore.pendingOrd[0]
 		scriptStore.pendingOrd = scriptStore.pendingOrd[1:]
-		script := scriptStore.pending[id]
+		item := scriptStore.pending[id]
 		delete(scriptStore.pending, id)
 		scriptStore.queueMu.Unlock()
-		scriptStore.Save(script)
+		if beforeQueuedWrite != nil {
+			beforeQueuedWrite(id)
+		}
+		scriptStore.writeQueued(item)
 	}
 }
 
@@ -244,7 +303,8 @@ func (scriptStore *ScriptStore) Delete(scriptID string) error {
 		index = scriptStore.files
 	}
 	scriptStore.queueMu.Lock()
-	delete(scriptStore.pending, scriptID)
+	scriptStore.supersedeLocked(scriptID)
+	delete(scriptStore.gen, scriptID)
 	scriptStore.queueMu.Unlock()
 	if !ok {
 		return fmt.Errorf("script %s not found", scriptID)

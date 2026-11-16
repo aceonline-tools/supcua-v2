@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -214,5 +215,108 @@ func TestConcurrentSaves(t *testing.T) {
 	}
 	if all, _ := store.List(); len(all) != 30 {
 		t.Errorf("expected 30, got %d", len(all))
+	}
+}
+
+// stallWorker makes the queue worker block after popping the given ID until release is called.
+func stallWorker(t *testing.T, id string) (popped <-chan struct{}, release func()) {
+	t.Helper()
+	poppedCh := make(chan struct{})
+	gate := make(chan struct{})
+	var once sync.Once
+	beforeQueuedWrite = func(got string) {
+		if got == id {
+			once.Do(func() { close(poppedCh) })
+			<-gate
+		}
+	}
+	var relOnce sync.Once
+	rel := func() { relOnce.Do(func() { close(gate) }) }
+	t.Cleanup(func() { rel(); beforeQueuedWrite = nil })
+	return poppedCh, rel
+}
+
+func fileExists(dir, name string) bool {
+	_, err := os.Stat(filepath.Join(dir, name))
+	return err == nil
+}
+
+func TestDeleteCancelsPendingQueuedSave(t *testing.T) {
+	dir := t.TempDir()
+	store := NewScriptStore(dir)
+	store.Save(model.Script{ID: "a", Name: "A"})
+	store.Save(model.Script{ID: "b", Name: "B"})
+	popped, release := stallWorker(t, "a")
+	store.QueueSave(model.Script{ID: "a", Name: "A", Enabled: true}, model.Script{ID: "b", Name: "B", Enabled: true})
+	<-popped
+	if err := store.Delete("b"); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if !store.FlushSaves(10 * time.Second) {
+		t.Fatal("flush timed out")
+	}
+	if fileExists(dir, "b.json") || fileExists(dir, ".json") {
+		t.Error("deleted pending script was written")
+	}
+	all, _ := store.List()
+	if len(all) != 1 || all[0].ID != "a" || !all[0].Enabled {
+		t.Errorf("unexpected scripts: %+v", all)
+	}
+}
+
+func TestDeleteCancelsInFlightQueuedSave(t *testing.T) {
+	dir := t.TempDir()
+	store := NewScriptStore(dir)
+	store.Save(model.Script{ID: "a", Name: "A"})
+	popped, release := stallWorker(t, "a")
+	store.QueueSave(model.Script{ID: "a", Name: "A", Enabled: true})
+	<-popped
+	if err := store.Delete("a"); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if !store.FlushSaves(10 * time.Second) {
+		t.Fatal("flush timed out")
+	}
+	if all, _ := store.List(); len(all) != 0 {
+		t.Errorf("deleted script resurrected: %+v", all)
+	}
+}
+
+func TestSaveSupersedesInFlightQueuedSave(t *testing.T) {
+	dir := t.TempDir()
+	store := NewScriptStore(dir)
+	store.Save(model.Script{ID: "a", Name: "Old"})
+	popped, release := stallWorker(t, "a")
+	store.QueueSave(model.Script{ID: "a", Name: "Old", Enabled: true})
+	<-popped
+	store.Save(model.Script{ID: "a", Name: "Newer"})
+	release()
+	if !store.FlushSaves(10 * time.Second) {
+		t.Fatal("flush timed out")
+	}
+	all, _ := store.List()
+	if len(all) != 1 || all[0].Name != "Newer" || all[0].Enabled || !fileExists(dir, "newer.json") || fileExists(dir, "old.json") {
+		t.Errorf("stale queued snapshot won: %+v", all)
+	}
+}
+
+func TestSaveSupersedesPendingQueuedSave(t *testing.T) {
+	dir := t.TempDir()
+	store := NewScriptStore(dir)
+	store.Save(model.Script{ID: "a", Name: "A"})
+	store.Save(model.Script{ID: "b", Name: "Old"})
+	popped, release := stallWorker(t, "a")
+	store.QueueSave(model.Script{ID: "a", Name: "A", Enabled: true}, model.Script{ID: "b", Name: "Old", Enabled: true})
+	<-popped
+	store.Save(model.Script{ID: "b", Name: "Newer"})
+	release()
+	if !store.FlushSaves(10 * time.Second) {
+		t.Fatal("flush timed out")
+	}
+	got, err := getByID(store, "b")
+	if err != nil || got.Name != "Newer" || got.Enabled || fileExists(dir, "old.json") {
+		t.Errorf("stale pending snapshot won: %+v %v", got, err)
 	}
 }
