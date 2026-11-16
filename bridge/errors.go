@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 )
 
 // Error codes (contract §9). Messages are fixed strings: never Go error text or type names.
@@ -62,13 +63,28 @@ func invalidSetting(field string) *Error {
 
 func badRequest() *Error { return newErr(CodeBadRequest) }
 
-// decode strictly decodes params into P: unknown fields and trailing data are rejected.
-func decode[P any](raw json.RawMessage) (P, error) {
+// decode strictly decodes params into P: the value must be a JSON object, unknown fields, null
+// and trailing data are rejected, and every key in required must be present and not null (a trailing "?" allows null).
+func decode[P any](raw json.RawMessage, required ...string) (P, error) {
 	var p P
-	if len(raw) == 0 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return p, badRequest()
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
+	if len(required) > 0 {
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(trimmed, &keys) != nil {
+			return p, badRequest()
+		}
+		for _, k := range required {
+			nullable := strings.HasSuffix(k, "?")
+			v, ok := keys[strings.TrimSuffix(k, "?")]
+			if !ok || (!nullable && bytes.Equal(bytes.TrimSpace(v), []byte("null"))) {
+				return p, badRequest()
+			}
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p); err != nil || dec.More() {
 		return p, badRequest()

@@ -133,6 +133,8 @@ Transport (`spike/rpc/rpc.go`): JS → `chrome.webview.postMessage(JSON.stringif
 
 **Errors** `{code, message}` (messages are fixed strings, never Go error text/type names): `BAD_REQUEST`, `UNKNOWN_METHOD`, `BUSY`, `INTERNAL`, `NOT_FOUND`, `NAME_EMPTY`, `NAME_TAKEN`, `HOTKEY_CONFLICT{conflicts[]}`, `HOTKEY_REGISTER_FAILED`, `EDITOR_BUSY`, `EDITOR_CLOSED`, `SAVE_FAILED`, `INVALID_SETTING{field}`, `UPDATE_FAILED`, `NOT_LICENSED`.
 
+**Shutdown and session additions.** `BeginShutdown(deadline, then)` (UI thread, non-blocking) rejects new mutating RPCs except `editor.save`, `editor.close` and the new `app.closingReady` (no params), emits `app.closing {deadline_ms}`, waits off the UI thread for `app.closingReady` or the deadline, then posts `then` to the UI thread; `then` calls the synchronous `Shutdown(timeout)`, which fences in-flight RPC work (later mutations get `BUSY`), clears editor-open, stops auto-active, persists the overlay position and flushes saves. `ResetSession(reason)` (any goroutine, idempotent; host on ProcessFailed/navigation) ends captures, drops the editor session and draft and re-enables execution. Params are strict: objects only, unknown fields/null rejected, required keys must be present; `editor.close.autosave` defaults to true. Script hotkeys must use the `hotkey.Manager` key vocabulary (modifiers de-duplicated and ordered). A save that does not flush in time is `SAVE_FAILED`.
+
 ### 9.1 Methods
 
 | Method | Params → Result | Replaces / source |

@@ -5,6 +5,7 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log"
@@ -41,6 +42,7 @@ type Store interface {
 	List() ([]model.Script, error)
 	Delete(id string) error
 	NameOrFileTaken(name string) bool
+	NameOrFileTakenExcept(name, excludeID string) bool
 	QueueSave(scripts ...model.Script)
 	FlushSaves(timeout time.Duration) bool
 	SetOnSaveError(hook func(script model.Script, err error))
@@ -111,10 +113,16 @@ type Deps struct {
 	Host       Host
 }
 
-const (
-	uiCallTimeout = 3 * time.Second
-	saveWait      = 3 * time.Second
-)
+var uiCallTimeout = 3 * time.Second
+
+const saveWait = 3 * time.Second
+
+// uiCallTimeoutForTest overrides the UI-call timeout and returns the restore function.
+func uiCallTimeoutForTest(d time.Duration) func() {
+	old := uiCallTimeout
+	uiCallTimeout = d
+	return func() { uiCallTimeout = old }
+}
 
 // Bridge implements the API contract.
 type Bridge struct {
@@ -123,6 +131,16 @@ type Bridge struct {
 	checker *hotkey.ConflictChecker
 	known   map[string]bool
 	capture *CaptureManager
+
+	// fence: mutating handlers hold RLock; Shutdown takes Lock so no save is queued after the final flush.
+	fence    sync.RWMutex
+	hard     atomic.Bool // shutdown ran: every mutating RPC is rejected
+	stopping atomic.Bool // shutdown began: mutating RPCs except editor.save/close are rejected
+	// sessMu orders editor-session changes together with the edit-dialog-open flag.
+	sessMu       sync.Mutex
+	beginOnce    sync.Once
+	closingReady chan struct{}
+	readyOnce    sync.Once
 
 	mu      sync.Mutex
 	scripts []model.Script
@@ -148,6 +166,8 @@ func New(d Deps, e Emitter) *Bridge {
 		checker: hotkey.NewConflictChecker(),
 		known:   knownActionTypes(),
 		failed:  map[string]struct{}{},
+
+		closingReady: make(chan struct{}),
 	}
 	b.capture = newCaptureManager(d.Capture, b.emit, defaultCaptureIdle)
 	if d.Store != nil {
@@ -179,18 +199,32 @@ func (b *Bridge) post(fn func()) {
 	fn()
 }
 
-// callUI runs fn on the UI thread and waits (RPC worker only, never from the UI thread).
+// callUI runs fn on the UI thread and waits (RPC worker only, never from the UI thread). If the
+// UI thread does not start the job within the timeout the job is cancelled and never runs; once it
+// has started its real outcome is awaited, so a rollback never races a late-running job.
 func (b *Bridge) callUI(fn func() error) error {
 	if b.d.UI == nil {
 		return fn()
 	}
+	const pending, started, cancelled = 0, 1, 2
+	var state atomic.Int32
 	done := make(chan error, 1)
-	b.d.UI.Post(func() { done <- fn() })
+	b.d.UI.Post(func() {
+		if !state.CompareAndSwap(pending, started) {
+			return
+		}
+		done <- fn()
+	})
+	timer := time.NewTimer(uiCallTimeout)
+	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(uiCallTimeout):
-		return newErr(CodeBusy)
+	case <-timer.C:
+		if state.CompareAndSwap(pending, cancelled) {
+			return newErr(CodeBusy)
+		}
+		return <-done
 	}
 }
 
@@ -309,12 +343,80 @@ func (b *Bridge) onSaveError(script model.Script, err error) {
 	})
 }
 
-// Shutdown runs the §4 rule 7 steps the bridge owns, on the UI thread: app.closing, stop
-// captures, editor-open off, auto-active stop, overlay position, flush saves. Idempotent.
+// BeginShutdown starts a cooperative shutdown; call it on the UI thread. It returns at once:
+// new mutating RPCs (except editor.save, editor.close and app.closingReady) are rejected, the page
+// gets app.closing{deadline_ms}, and a one-shot goroutine waits for app.closingReady or the
+// deadline before posting then to the UI thread. Later calls are no-ops.
+func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
+	started := false
+	b.beginOnce.Do(func() {
+		started = true
+		b.stopping.Store(true)
+		b.emit(EvAppClosing, map[string]int64{"deadline_ms": deadline.Milliseconds()})
+	})
+	if !started {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(deadline)
+		defer timer.Stop()
+		select {
+		case <-b.closingReady:
+		case <-timer.C:
+		}
+		if then != nil {
+			b.post(then)
+		}
+	}()
+}
+
+func (b *Bridge) closingReadyHandler() (any, error) {
+	b.readyOnce.Do(func() { close(b.closingReady) })
+	return empty{}, nil
+}
+
+// ResetSession ends any capture, drops the editor session and draft and re-enables script
+// execution (host: ProcessFailed, navigation away). Safe from any goroutine; idempotent.
+func (b *Bridge) ResetSession(reason string) {
+	switch reason {
+	case EndStopped, EndBlur, EndTimeout, EndEditorClosed:
+	default:
+		reason = EndEditorClosed
+	}
+	b.capture.End(reason)
+	b.sessMu.Lock()
+	b.mu.Lock()
+	b.session = nil
+	b.mu.Unlock()
+	if b.d.Controller != nil {
+		b.d.Controller.SetEditDialogOpen(false)
+	}
+	b.sessMu.Unlock()
+}
+
+// Shutdown runs the §4 rule 7 steps the bridge owns, on the UI thread: stop captures, fence out
+// RPC work (in-flight mutations finish first, later ones are rejected), editor-open off,
+// auto-active stop, overlay position, flush saves. Idempotent; it emits app.closing itself only
+// if BeginShutdown was not used.
 func (b *Bridge) Shutdown(timeout time.Duration) error {
 	b.shutdownOnce.Do(func() {
-		b.emit(EvAppClosing, empty{})
+		b.beginOnce.Do(func() {
+			b.stopping.Store(true)
+			b.emit(EvAppClosing, map[string]int64{"deadline_ms": 0})
+		})
 		b.capture.End(EndEditorClosed)
+		// Wait (bounded) for in-flight mutations; a handler stuck on the UI thread must not hang us.
+		limit := time.Now().Add(max(timeout/2, 50*time.Millisecond))
+		locked := b.fence.TryLock()
+		for !locked && time.Now().Before(limit) {
+			time.Sleep(2 * time.Millisecond)
+			locked = b.fence.TryLock()
+		}
+		b.hard.Store(true)
+		if locked {
+			defer b.fence.Unlock()
+		}
+		b.sessMu.Lock()
 		b.mu.Lock()
 		b.closed = true
 		b.session = nil
@@ -322,6 +424,7 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 		if b.d.Controller != nil {
 			b.d.Controller.SetEditDialogOpen(false)
 		}
+		b.sessMu.Unlock()
 		if b.d.AutoActive != nil {
 			b.d.AutoActive.Stop()
 		}
@@ -333,11 +436,45 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 				log.Printf("bridge: persist overlay position failed: %v", err)
 			}
 		}
+		if !locked {
+			b.shutdownErr = errors.New("bridge: in-flight RPC work did not finish before shutdown")
+		}
 		if !b.d.Store.FlushSaves(timeout) {
 			b.shutdownErr = errors.New("bridge: pending script saves did not flush before timeout")
 		}
 	})
 	return b.shutdownErr
+}
+
+// shutdownAllowed are the mutating methods still accepted while shutdown is in progress.
+var shutdownAllowed = map[string]bool{"editor.save": true, "editor.close": true, "app.closingReady": true}
+
+// mutating lists every method that changes state; they run under the fence and are rejected
+// once shutdown begins (hard-rejected, including editor.save/close, once Shutdown has run).
+var mutating = []string{
+	"app.setGlobalActive", "app.exit", "window.hide", "window.show", "window.reportBounds",
+	"scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed", "scripts.clone",
+	"scripts.delete", "scripts.retrySave", "editor.open", "editor.save", "editor.close",
+	"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.stop", "capture.mouse.stop",
+	"settings.update", "overlay.set", "autoactive.set", "update.apply", "update.skip", "app.closingReady",
+}
+
+func (b *Bridge) fenceMutations(m map[string]Handler) {
+	for _, name := range mutating {
+		inner, ok := m[name]
+		if !ok {
+			continue
+		}
+		allowed := shutdownAllowed[name]
+		m[name] = func(raw json.RawMessage) (any, error) {
+			b.fence.RLock()
+			defer b.fence.RUnlock()
+			if b.hard.Load() || (b.stopping.Load() && !allowed) {
+				return nil, newErr(CodeBusy)
+			}
+			return inner(raw)
+		}
+	}
 }
 
 func (b *Bridge) syncHotkeys() {
@@ -359,9 +496,9 @@ func (b *Bridge) indexLocked(id string) int {
 	return -1
 }
 
-func reg[P any](m map[string]Handler, name string, fn func(P) (any, error)) {
+func reg[P any](m map[string]Handler, name string, fn func(P) (any, error), required ...string) {
 	m[name] = func(raw json.RawMessage) (any, error) {
-		p, err := decode[P](raw)
+		p, err := decode[P](raw, required...)
 		if err != nil {
 			return nil, err
 		}
@@ -370,7 +507,13 @@ func reg[P any](m map[string]Handler, name string, fn func(P) (any, error)) {
 }
 
 func regNoParams(m map[string]Handler, name string, fn func() (any, error)) {
-	m[name] = func(json.RawMessage) (any, error) { return fn() }
+	m[name] = func(raw json.RawMessage) (any, error) {
+		switch string(bytes.TrimSpace(raw)) {
+		case "", "null", "{}":
+			return fn()
+		}
+		return nil, badRequest()
+	}
 }
 
 // MethodNames lists every contract method the bridge implements.
@@ -388,38 +531,40 @@ func (b *Bridge) Methods() map[string]Handler {
 	regNoParams(m, "app.getBootState", b.bootState)
 	regNoParams(m, "app.ready", b.ready)
 	regNoParams(m, "state.get", b.stateGet)
-	reg(m, "app.setGlobalActive", b.setGlobalActive)
+	reg(m, "app.setGlobalActive", b.setGlobalActive, "active")
 	regNoParams(m, "app.exit", b.appExit)
 	regNoParams(m, "window.hide", func() (any, error) { return b.hostCall(func(h Host) { h.Hide() }) })
 	regNoParams(m, "window.show", func() (any, error) { return b.hostCall(func(h Host) { h.Show() }) })
-	reg(m, "window.reportBounds", b.reportBounds)
+	reg(m, "window.reportBounds", b.reportBounds, "x", "y", "w", "h")
 	regNoParams(m, "scripts.list", b.scriptsList)
-	reg(m, "scripts.get", b.scriptsGet)
-	reg(m, "scripts.setEnabled", b.scriptsSetEnabled)
-	reg(m, "scripts.setGroupEnabled", b.scriptsSetGroupEnabled)
-	reg(m, "scripts.setGroupCollapsed", b.scriptsSetGroupCollapsed)
-	reg(m, "scripts.clone", b.scriptsClone)
-	reg(m, "scripts.delete", b.scriptsDelete)
-	reg(m, "scripts.retrySave", b.scriptsRetrySave)
-	reg(m, "editor.open", b.editorOpen)
-	reg(m, "editor.save", b.editorSave)
-	reg(m, "editor.close", b.editorClose)
-	reg(m, "editor.describeActions", b.editorDescribe)
-	reg(m, "editor.toJSON", b.editorToJSON)
-	reg(m, "editor.fromJSON", b.editorFromJSON)
+	reg(m, "scripts.get", b.scriptsGet, "id")
+	reg(m, "scripts.setEnabled", b.scriptsSetEnabled, "id", "enabled")
+	reg(m, "scripts.setGroupEnabled", b.scriptsSetGroupEnabled, "group", "enabled")
+	reg(m, "scripts.setGroupCollapsed", b.scriptsSetGroupCollapsed, "group", "collapsed")
+	reg(m, "scripts.clone", b.scriptsClone, "id")
+	reg(m, "scripts.delete", b.scriptsDelete, "id")
+	reg(m, "scripts.retrySave", b.scriptsRetrySave, "id")
+	reg(m, "editor.open", b.editorOpen, "id?")
+	reg(m, "editor.save", b.editorSave, "sessionId", "script")
+	reg(m, "editor.close", b.editorClose, "sessionId")
+	reg(m, "editor.describeActions", b.editorDescribe, "actions")
+	reg(m, "editor.toJSON", b.editorToJSON, "script")
+	reg(m, "editor.fromJSON", b.editorFromJSON, "text")
 	regNoParams(m, "actions.catalog", func() (any, error) { return buildCatalog(), nil })
-	reg(m, "capture.hotkey.start", b.captureHotkeyStart)
-	reg(m, "capture.key.start", b.captureKeyStart)
-	reg(m, "capture.stop", b.captureStop)
-	reg(m, "capture.mouse.start", b.captureMouseStart)
-	reg(m, "capture.mouse.stop", b.captureStop)
-	reg(m, "clipboard.write", b.clipboardWrite)
+	reg(m, "capture.hotkey.start", b.captureHotkeyStart, "sessionId", "field")
+	reg(m, "capture.key.start", b.captureKeyStart, "sessionId")
+	reg(m, "capture.stop", b.captureStop, "sessionId")
+	reg(m, "capture.mouse.start", b.captureMouseStart, "sessionId")
+	reg(m, "capture.mouse.stop", b.captureStop, "sessionId")
+	reg(m, "clipboard.write", b.clipboardWrite, "text")
 	regNoParams(m, "settings.get", b.settingsGet)
-	reg(m, "settings.update", b.settingsUpdate)
+	reg(m, "settings.update", b.settingsUpdate, "patch")
 	reg(m, "overlay.set", b.overlaySet)
 	reg(m, "autoactive.set", b.autoActiveSet)
 	regNoParams(m, "update.apply", b.updateApply)
 	regNoParams(m, "update.skip", b.updateSkip)
+	regNoParams(m, "app.closingReady", b.closingReadyHandler)
+	b.fenceMutations(m)
 	return m
 }
 

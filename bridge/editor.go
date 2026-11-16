@@ -22,6 +22,8 @@ type editorSession struct {
 func (b *Bridge) editorOpen(p struct {
 	ID *string `json:"id"`
 }) (any, error) {
+	b.sessMu.Lock()
+	defer b.sessMu.Unlock()
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -106,7 +108,6 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 	}
 
 	b.mu.Lock()
-	idx := b.indexLocked(script.ID)
 	taken := b.nameTakenLocked(script.Name, script.ID)
 	others := make([]model.Script, 0, len(b.scripts))
 	for _, s := range b.scripts {
@@ -115,7 +116,7 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 		}
 	}
 	b.mu.Unlock()
-	if taken || (idx < 0 && b.d.Store.NameOrFileTaken(script.Name)) {
+	if taken || b.d.Store.NameOrFileTakenExcept(script.Name, script.ID) {
 		return fail(newErr(CodeNameTaken))
 	}
 
@@ -159,7 +160,7 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 	b.mu.Unlock()
 
 	b.queue(changed)
-	b.d.Store.FlushSaves(saveWait)
+	flushed := b.d.Store.FlushSaves(saveWait)
 	b.mu.Lock()
 	var failed bool
 	for _, s := range changed {
@@ -168,7 +169,7 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override bool)
 		}
 	}
 	b.mu.Unlock()
-	if failed {
+	if failed || !flushed {
 		return fail(newErr(CodeSaveFailed))
 	}
 	b.emit(EvScriptsChanged, revResult{rev})
@@ -211,11 +212,11 @@ type closeResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// editorClose always releases the session, stops captures and re-enables execution. With autosave,
+// editorClose (autosave defaults to true when omitted, §9.1) always releases the session, stops captures and re-enables execution. With autosave,
 // the supplied (or last failed) draft is saved when valid; the result reports Saved / Not saved: reason.
 func (b *Bridge) editorClose(p struct {
 	SessionID string        `json:"sessionId"`
-	Autosave  bool          `json:"autosave"`
+	Autosave  *bool         `json:"autosave"`
 	Script    *model.Script `json:"script"`
 }) (any, error) {
 	sess, err := b.requireSession(p.SessionID)
@@ -225,7 +226,7 @@ func (b *Bridge) editorClose(p struct {
 	b.capture.End(EndEditorClosed)
 
 	res := closeResult{}
-	if p.Autosave {
+	if p.Autosave == nil || *p.Autosave {
 		draft := p.Script
 		if draft == nil {
 			b.mu.Lock()
@@ -246,6 +247,7 @@ func (b *Bridge) editorClose(p struct {
 			}
 		}
 	}
+	b.sessMu.Lock()
 	b.mu.Lock()
 	if b.session == sess {
 		b.session = nil
@@ -255,6 +257,7 @@ func (b *Bridge) editorClose(p struct {
 	}
 	b.mu.Unlock()
 	b.d.Controller.SetEditDialogOpen(false)
+	b.sessMu.Unlock()
 	return res, nil
 }
 

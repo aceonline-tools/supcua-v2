@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,21 +25,52 @@ func readFrontend(t *testing.T, rel string) []byte {
 	return data
 }
 
-// typesBlock returns the names declared as `'x.y': {` / `x: ` inside the interface named iface.
-func typesBlock(t *testing.T, iface string) []string {
-	src := string(readFrontend(t, "types.ts"))
-	i := strings.Index(src, "export interface "+iface+" {")
-	if i < 0 {
-		t.Fatalf("interface %s not found", iface)
+// parseTypesBlock returns the names declared inside `export interface <iface> {` in a types.ts
+// source; CRLF and LF checkouts parse identically.
+func parseTypesBlock(src, iface string) ([]string, error) {
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+	start := strings.Index(src, "export interface "+iface+" {")
+	if start < 0 {
+		return nil, fmt.Errorf("interface %s not found in types.ts", iface)
 	}
-	body := src[i:]
-	body = body[:strings.Index(body, "\n}\n")]
+	body := src[start:]
+	end := strings.Index(body, "\n}")
+	if end < 0 {
+		return nil, fmt.Errorf("interface %s has no closing brace", iface)
+	}
 	re := regexp.MustCompile(`(?m)^  '?([A-Za-z.]+)'?:`)
 	var names []string
-	for _, m := range re.FindAllStringSubmatch(body, -1) {
+	for _, m := range re.FindAllStringSubmatch(body[:end], -1) {
 		names = append(names, m[1])
 	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("interface %s is empty", iface)
+	}
+	return names, nil
+}
+
+func typesBlock(t *testing.T, iface string) []string {
+	t.Helper()
+	names, err := parseTypesBlock(string(readFrontend(t, "types.ts")), iface)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return names
+}
+
+func TestTypesParserIsLineEndingAgnostic(t *testing.T) {
+	src := string(readFrontend(t, "types.ts"))
+	lf, err := parseTypesBlock(src, "Methods")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf, err := parseTypesBlock(strings.ReplaceAll(strings.ReplaceAll(src, "\r\n", "\n"), "\n", "\r\n"), "Methods")
+	if err != nil || !reflect.DeepEqual(lf, crlf) {
+		t.Fatalf("CRLF parse differs: %v / %v", err, crlf)
+	}
+	if _, err := parseTypesBlock("export interface X {\n a: 1\n}\n", "Missing"); err == nil {
+		t.Error("missing interface must be an error, not a panic")
+	}
 }
 
 func TestEveryContractMethodHasHandler(t *testing.T) {
@@ -317,7 +349,7 @@ func TestShutdownClearsEditorOpenAndRunsOwnedSteps(t *testing.T) {
 		t.Errorf("auto-active stop=%v flushed=%d", log, r.store.flushed)
 	}
 	_, err := r.call(t, "editor.open", `{"id":null}`)
-	wantCode(t, err, CodeEditorClosed)
+	wantCode(t, err, CodeBusy)
 	r.store.flushOK = false
 	r.b.shutdownOnce = sync_Once()
 	if r.b.Shutdown(time.Millisecond) == nil {

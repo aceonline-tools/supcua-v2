@@ -40,20 +40,22 @@ func (r *recEmitter) named(name string) []event {
 }
 
 type fakeStore struct {
-	mu       sync.Mutex
-	initial  []model.Script
-	queued   [][]model.Script
-	failIDs  map[string]bool
-	hook     func(model.Script, error)
-	deleted  []string
-	flushed  int
-	taken    map[string]bool
-	flushOK  bool
-	deleteEr error
+	mu        sync.Mutex
+	initial   []model.Script
+	queued    [][]model.Script
+	failIDs   map[string]bool
+	hook      func(model.Script, error)
+	deleted   []string
+	flushed   int
+	taken     map[string]bool
+	owner     map[string]string // name -> script ID that owns it (for NameOrFileTakenExcept)
+	flushHook func()
+	flushOK   bool
+	deleteEr  error
 }
 
 func newFakeStore(initial ...model.Script) *fakeStore {
-	return &fakeStore{initial: initial, failIDs: map[string]bool{}, taken: map[string]bool{}, flushOK: true}
+	return &fakeStore{initial: initial, failIDs: map[string]bool{}, taken: map[string]bool{}, owner: map[string]string{}, flushOK: true}
 }
 
 func (f *fakeStore) List() ([]model.Script, error) {
@@ -71,6 +73,11 @@ func (f *fakeStore) NameOrFileTaken(name string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.taken[name]
+}
+func (f *fakeStore) NameOrFileTakenExcept(name, id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.taken[name] && f.owner[name] != id
 }
 func (f *fakeStore) QueueSave(scripts ...model.Script) {
 	f.mu.Lock()
@@ -93,6 +100,9 @@ func (f *fakeStore) FlushSaves(time.Duration) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.flushed++
+	if f.flushHook != nil {
+		f.flushHook()
+	}
 	return f.flushOK
 }
 func (f *fakeStore) SetOnSaveError(h func(model.Script, error)) {

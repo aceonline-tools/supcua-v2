@@ -43,11 +43,11 @@ func TestRealStoreRoundTripAndShutdownFlush(t *testing.T) {
 	if len(list) != 2 || !list[0].Enabled || !list[1].Enabled {
 		t.Errorf("flush on shutdown must persist both scripts: %+v", list)
 	}
-	if _, err := m["scripts.delete"]([]byte(`{"id":"a"}`)); err != nil {
-		t.Fatal(err)
+	if _, err := m["scripts.delete"]([]byte(`{"id":"a"}`)); err == nil {
+		t.Error("mutations after Shutdown must be rejected")
 	}
-	if list, _ = store.List(); len(list) != 1 {
-		t.Errorf("delete did not remove the file: %+v", list)
+	if list, _ = store.List(); len(list) != 2 {
+		t.Errorf("a rejected delete must not touch files: %+v", list)
 	}
 }
 
@@ -70,6 +70,7 @@ func TestRefreshOverlayRereadsAndEmitsState(t *testing.T) {
 func TestEditorSaveNameTakenForNewButNotOwnID(t *testing.T) {
 	r := newRig(t, script("s1", "Alpha", "", true))
 	r.store.taken["Alpha"] = true // as when s1's own write is in flight
+	r.store.owner["Alpha"] = "s1"
 	sid, edit := openEditor(t, r, "s1")
 	body := mustJSON(map[string]any{"sessionId": sid, "script": edit})
 	if _, err := r.call(t, "editor.save", body); err != nil {

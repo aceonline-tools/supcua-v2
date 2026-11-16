@@ -260,16 +260,22 @@ func (b *Bridge) overlaySet(p struct {
 		return nil, newErr(CodeInternal)
 	}
 	if p.Enabled != nil {
+		b.refreshOverlay(true)
+		was := b.overlayState().Enabled
 		if err := b.setOverlayEnabled(*p.Enabled); err != nil {
 			return nil, err
 		}
 		if err := b.d.Config.Update(func(c *model.AppConfig) { c.OverlayEnabled = *p.Enabled }); err != nil {
 			log.Printf("bridge: persist overlay_enabled failed: %v", err)
+			if rerr := b.setOverlayEnabled(was); rerr != nil {
+				log.Printf("bridge: overlay rollback failed: %v", rerr)
+			}
+			b.refreshOverlay(true)
 			return nil, newErr(CodeSaveFailed)
 		}
 	}
 	if p.Visible != nil || p.Draggable != nil {
-		_ = b.callUI(func() error {
+		err := b.callUI(func() error {
 			if p.Visible != nil {
 				b.d.Overlay.SetVisible(*p.Visible)
 			}
@@ -278,6 +284,10 @@ func (b *Bridge) overlaySet(p struct {
 			}
 			return nil
 		})
+		if err != nil {
+			b.refreshOverlay(true)
+			return nil, err
+		}
 	}
 	b.refreshOverlay(true)
 	b.NotifyStateChanged()

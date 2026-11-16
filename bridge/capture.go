@@ -42,11 +42,15 @@ type CaptureBackend interface {
 }
 
 // CaptureManager is the §9.5 state machine: one session at a time, no per-dialog goroutines.
+// opMu serialises every backend Start/Stop with the state change that goes with it; mu guards the
+// fields and is never held across a backend call. Teardown is generation-specific, and the idle
+// timer re-checks the generation and the deadline, so a late timer never ends a newer capture.
 type CaptureManager struct {
 	backend CaptureBackend
 	emit    func(event string, payload any)
 	idle    time.Duration
 
+	opMu     sync.Mutex
 	mu       sync.Mutex
 	gen      uint64
 	mode     CaptureMode
@@ -72,7 +76,9 @@ func (m *CaptureManager) Active() (CaptureMode, string) {
 
 // Start begins a capture, ending any previous one with reason "stopped".
 func (m *CaptureManager) Start(session string, mode CaptureMode, field string, pickKey model.Hotkey) error {
-	m.End(EndStopped)
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.endLocked(0, EndStopped, true, false)
 	if m.backend == nil {
 		return newErr(CodeInternal)
 	}
@@ -83,18 +89,30 @@ func (m *CaptureManager) Start(session string, mode CaptureMode, field string, p
 	m.armLocked(gen)
 	m.mu.Unlock()
 	if err := m.backend.Start(mode, pickKey, &sink{m: m, gen: gen}); err != nil {
-		m.endGen(gen, "", false)
+		m.endLocked(gen, "", false, false)
 		return newErr(CodeInternal)
 	}
 	return nil
 }
 
 // End stops the active capture (if any), removes the hook and emits capture.ended{reason}.
-func (m *CaptureManager) End(reason string) { m.endGen(0, reason, true) }
+func (m *CaptureManager) End(reason string) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.endLocked(0, reason, true, false)
+}
 
-func (m *CaptureManager) endGen(gen uint64, reason string, notify bool) {
+// expire is the idle-timer path: it ends generation gen only if its deadline really passed.
+func (m *CaptureManager) expire(gen uint64) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.endLocked(gen, EndTimeout, true, true)
+}
+
+// endLocked tears down generation gen (0 = whatever is active). opMu must be held.
+func (m *CaptureManager) endLocked(gen uint64, reason string, notify, needExpired bool) {
 	m.mu.Lock()
-	if m.mode == CaptureNone || (gen != 0 && m.gen != gen) {
+	if m.mode == CaptureNone || (gen != 0 && m.gen != gen) || (needExpired && time.Now().Before(m.deadline)) {
 		m.mu.Unlock()
 		return
 	}
@@ -119,7 +137,7 @@ func (m *CaptureManager) armLocked(gen uint64) {
 	if m.timer != nil {
 		m.timer.Stop()
 	}
-	m.timer = time.AfterFunc(m.idle, func() { m.endGen(gen, EndTimeout, true) })
+	m.timer = time.AfterFunc(m.idle, func() { m.expire(gen) })
 }
 
 // touch validates the event's generation and refreshes the idle deadline.

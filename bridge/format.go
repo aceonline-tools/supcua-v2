@@ -2,16 +2,69 @@ package bridge
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
 )
 
-var keyTokenRe = regexp.MustCompile(`^[a-z0-9_]{1,16}$`)
+// validKeys is the key vocabulary hotkey.Manager can register (hotkey/manager.go
+// convertKeyNameToVirtualKeyCode); it is mirrored here because that package is Windows-only.
+var validKeys = func() map[string]bool {
+	m := map[string]bool{}
+	for _, k := range []string{
+		"space", "enter", "escape", "tab", "lctrl", "rctrl", "lshift", "rshift", "lalt", "ralt", "lwin", "rwin",
+		";", "=", ",", "-", ".", "/", "`", "[", `\`, "]", "'",
+	} {
+		m[k] = true
+	}
+	for c := 'a'; c <= 'z'; c++ {
+		m[string(c)] = true
+	}
+	for c := '0'; c <= '9'; c++ {
+		m[string(c)] = true
+	}
+	for n := 1; n <= 12; n++ {
+		m[fmt.Sprintf("f%d", n)] = true
+	}
+	return m
+}()
 
-var validModifiers = map[string]bool{"ctrl": true, "alt": true, "shift": true, "win": true}
+var modifierOrder = []string{"ctrl", "alt", "shift", "win"}
+
+// normalizeHotkey lowercases, de-duplicates and canonically orders modifiers and checks the key
+// against the manager vocabulary. It reports false for an unusable hotkey.
+func normalizeHotkey(hk *model.Hotkey) bool {
+	key := strings.ToLower(hk.Key)
+	if !validKeys[key] || len(hk.Modifiers) > len(modifierOrder) {
+		return false
+	}
+	have := map[string]bool{}
+	for _, m := range hk.Modifiers {
+		m = strings.ToLower(m)
+		if !modifierSet(m) {
+			return false
+		}
+		have[m] = true
+	}
+	mods := []string{}
+	for _, m := range modifierOrder {
+		if have[m] {
+			mods = append(mods, m)
+		}
+	}
+	hk.Key, hk.Modifiers = key, mods
+	return true
+}
+
+func modifierSet(m string) bool {
+	for _, o := range modifierOrder {
+		if o == m {
+			return true
+		}
+	}
+	return false
+}
 
 var keyDisplay = map[string]string{
 	"lctrl": "LCtrl", "rctrl": "RCtrl", "lshift": "LShift", "rshift": "RShift",
@@ -57,45 +110,27 @@ func titleCase(s string) string {
 	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
 }
 
-// ParseHotkey parses a display string ("Ctrl + O", "RCtrl", "alt+f5") into a model hotkey.
+// ParseHotkey parses a display string ("Ctrl + O", "RCtrl", "alt+f5", "Ctrl + ;") into a model
+// hotkey, rejecting unknown keys and duplicate modifiers.
 func ParseHotkey(text string) (model.Hotkey, bool) {
 	if len(text) > 64 {
 		return model.Hotkey{}, false
 	}
 	tokens := strings.Split(text, "+")
-	mods := []string{}
-	var key string
-	for i, tok := range tokens {
+	hk := model.Hotkey{Key: strings.TrimSpace(tokens[len(tokens)-1])}
+	seen := map[string]bool{}
+	for _, tok := range tokens[:len(tokens)-1] {
 		tok = strings.ToLower(strings.TrimSpace(tok))
-		if i < len(tokens)-1 {
-			if !validModifiers[tok] {
-				return model.Hotkey{}, false
-			}
-			mods = append(mods, tok)
-			continue
+		if seen[tok] {
+			return model.Hotkey{}, false
 		}
-		key = tok
+		seen[tok] = true
+		hk.Modifiers = append(hk.Modifiers, tok)
 	}
-	if !keyTokenRe.MatchString(key) {
+	if !normalizeHotkey(&hk) {
 		return model.Hotkey{}, false
 	}
-	return model.Hotkey{Modifiers: mods, Key: key}, true
-}
-
-// validHotkey checks a script hotkey's shape.
-func validHotkey(hk *model.Hotkey) bool {
-	if hk == nil {
-		return true
-	}
-	if !keyTokenRe.MatchString(strings.ToLower(hk.Key)) || len(hk.Modifiers) > 4 {
-		return false
-	}
-	for _, m := range hk.Modifiers {
-		if !validModifiers[strings.ToLower(m)] {
-			return false
-		}
-	}
-	return true
+	return hk, true
 }
 
 func scriptHotkeyLabel(s model.Script) string {
@@ -238,8 +273,10 @@ func validateScript(s *model.Script, known map[string]bool) *Error {
 	if s.HotkeyMode != model.HotkeyModeToggle && s.HotkeyMode != model.HotkeyModeSeparate {
 		return badRequest()
 	}
-	if !validHotkey(s.ToggleHotkey) || !validHotkey(s.StartHotkey) || !validHotkey(s.StopHotkey) {
-		return badRequest()
+	for _, hk := range []*model.Hotkey{s.ToggleHotkey, s.StartHotkey, s.StopHotkey} {
+		if hk != nil && !normalizeHotkey(hk) {
+			return badRequest()
+		}
 	}
 	if s.Actions == nil {
 		s.Actions = []model.Action{}
