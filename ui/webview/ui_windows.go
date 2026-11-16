@@ -54,15 +54,11 @@ type Config struct {
 	OnPageLoaded func()
 	// OnProcessFailed runs on the UI thread (inside a WebView2 event: post work, never block or
 	// open a modal loop) when a browser/renderer process fails; kind is COREWEBVIEW2_PROCESS_FAILED_KIND.
+	// The callee recovers with EnqueueRPCJob (reset) followed by a posted Reload.
 	OnProcessFailed func(kind int32)
-	// OnNavigate runs on the UI thread for every allowed top-level navigation AFTER the first page
-	// load (reload or in-app navigation): page state held by the backend (editor session, capture)
-	// is stale from then on. RPCs are held (BUSY) from the moment the navigation starts; the callee
-	// MUST call ReleaseRPC once the reset has completed. Calls of the new document are QUEUED during
-	// that time and run after the release; not-yet-started calls of the old document are dropped.
-	OnNavigate func(uri string)
 	// OnFatal runs on the UI thread when a security handler failed (navigation not cancelled,
-	// popup not denied): the host must take the ordered exit and show the startup-failure box.
+	// popup not denied), AFTER the host has quarantined itself (see Quarantine): the callee must
+	// take the ordered exit under a hard watchdog and show the startup-failure box.
 	OnFatal func(err error)
 }
 
@@ -77,6 +73,7 @@ type UI struct {
 	threadID uint32
 
 	closed     atomic.Bool
+	nav        navGate // UI thread only
 	loadedOnce sync.Once
 	loaded     chan struct{}
 	blockedNav atomic.Int64
@@ -124,26 +121,7 @@ func New(cfg Config) (*UI, error) {
 		b.DataPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "supcua-v2", "webview2")
 	}
 	b.MessageCallback = u.disp.Submit // enqueue only
-	b.NavigationStartingCallback = func(uri string) bool {
-		if serve.AllowNavigation(uri) {
-			select {
-			case <-u.loaded: // not the initial navigation
-				// A new document is starting: hold its RPCs NOW (synchronously, before it can send
-				// anything) until OnNavigate's owner has reset the old page's backend state and
-				// called ReleaseRPC.
-				u.BeginDocumentRPC()
-				if cfg.OnNavigate != nil {
-					cfg.OnNavigate(uri)
-				} else {
-					u.ReleaseRPC()
-				}
-			default:
-			}
-			return true
-		}
-		u.blockedNav.Add(1)
-		return false
-	}
+	b.NavigationStartingCallback = u.allowNavigation
 	b.FatalCallback = func(err error) {
 		log.Printf("webview: security handler failed: %v", err)
 		u.Quarantine() // synchronous: no further page input reaches the backend, the page is gone
@@ -159,6 +137,7 @@ func New(cfg Config) (*UI, error) {
 	}
 	b.WebResourceRequestedCallback = u.serveRequest
 	b.NavigationCompletedCallback = func(*edge.ICoreWebView2, *edge.ICoreWebView2NavigationCompletedEventArgs) {
+		u.nav.completed()
 		u.loadedOnce.Do(func() {
 			close(u.loaded)
 			if cfg.OnPageLoaded != nil {
@@ -215,42 +194,61 @@ func (u *UI) serveRequest(req *edge.ICoreWebView2WebResourceRequest, args *edge.
 	}
 }
 
-// BeginDocumentRPC starts a new document generation and holds RPC: new calls are queued until
-// ReleaseRPC, not-yet-started calls of the old document are dropped. Safe from any goroutine,
-// but call it synchronously when the navigation/failure is observed.
-func (u *UI) BeginDocumentRPC() {
-	if u.disp != nil {
-		u.disp.BeginDocument()
+func (u *UI) allowNavigation(uri string) bool {
+	if u.nav.allow(serve.AllowNavigation(uri)) {
+		return true
 	}
+	u.blockedNav.Add(1)
+	return false
 }
 
-// Quarantine cuts the page off for good (security failure): RPC is held with no release and
-// older calls are dropped, the window is hidden and the WebView2 controller is closed. Saves
-// already queued still flush through the ordered exit. UI thread only; idempotent.
+// EnqueueRPCJob runs job on the RPC worker strictly after every page call already queued or in
+// flight and before every call submitted later (the renderer-crash reset). Reports false once
+// the dispatcher is quarantined/closed. Safe from any goroutine.
+func (u *UI) EnqueueRPCJob(job func()) bool {
+	return u.disp != nil && u.disp.Enqueue(job)
+}
+
+// Quarantine cuts the page off for good: the dispatcher is closed terminally (later calls are
+// rejected, queued calls and jobs discarded, the worker exits after the call in flight), the
+// window is hidden and the WebView2 controller closed. A handler already running finishes on
+// its own; the caller's exit watchdog bounds it. UI thread only; idempotent.
 func (u *UI) Quarantine() {
-	u.BeginDocumentRPC()
+	if u.nav.quarantined {
+		return
+	}
+	u.nav.quarantined = true
+	if u.disp != nil {
+		u.disp.Close()
+	}
 	if u.hwnd != 0 {
 		win.ShowWindow(u.hwnd, win.SW_HIDE)
 	}
-	if u.browser != nil {
-		u.browser.Close()
-		u.browser = nil
-	}
+	u.closeBrowser()
 }
 
-// ReleaseRPC undoes one HoldRPC.
-func (u *UI) ReleaseRPC() {
-	if u.disp != nil {
-		u.disp.Release()
-	}
-}
-
-// Reload reloads the app page (after a renderer failure). UI thread only.
-func (u *UI) Reload() error {
+func (u *UI) closeBrowser() {
 	if u.browser == nil {
+		return
+	}
+	if err := u.browser.Close(); err != nil {
+		log.Printf("webview: controller close: %v", err)
+	}
+	u.browser = nil
+}
+
+// Reload reloads the app page: the only post-load navigation the host permits. UI thread only;
+// call it after the reset job has completed.
+func (u *UI) Reload() error {
+	if u.browser == nil || u.nav.quarantined {
 		return errors.New("webview closed")
 	}
-	return u.browser.Reload()
+	u.nav.permit = true
+	err := u.browser.Reload()
+	if err != nil {
+		u.nav.permit = false
+	}
+	return err
 }
 
 // Run executes the walk message loop until Quit. Returns walk's exit code.
@@ -371,10 +369,7 @@ func (u *UI) teardown() {
 	if u.disp != nil {
 		u.disp.Close() // non-blocking: a handler may be waiting for this very thread
 	}
-	if u.browser != nil {
-		u.browser.Close()
-		u.browser = nil
-	}
+	u.closeBrowser()
 	if u.hwnd != 0 {
 		win.DestroyWindow(u.hwnd)
 		u.hwnd = 0

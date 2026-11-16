@@ -29,7 +29,6 @@ import (
 	"github.com/yanmad27/supcua-v2/ui"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 	"github.com/yanmad27/supcua-v2/ui/webview/assets"
-	"github.com/yanmad27/supcua-v2/ui/webview/rpc"
 	"github.com/yanmad27/supcua-v2/updater"
 	"github.com/yanmad27/supcua-v2/version"
 )
@@ -223,6 +222,11 @@ func main() {
 		}
 	}
 
+	// Every exit path runs under a hard bound: a stuck lock in a shutdown step must never leave
+	// the process alive with a hidden window.
+	const normalExitBound, fatalExitBound = 10 * time.Second, 5 * time.Second
+	watchdog := ui.NewExitWatchdog(os.Exit)
+
 	title := "supcua-v2 v" + version.Version
 	late := &lateUI{}
 	host := &ui.Host{Mode: "main", Macs: macs, Version: version.Version, RuntimeVersion: runtimeVersion, ExePath: executablePath}
@@ -230,11 +234,19 @@ func main() {
 	if !licensed {
 		host.Mode = "notLicensed"
 		var u *webview.UI
-		host.OnExit = func() { u.Quit() }
+		quit := func() {
+			watchdog.Arm(normalExitBound, 0, "exit")
+			u.Quit()
+		}
+		host.OnExit = quit
 		u, err = webview.New(webview.Config{
 			Title: title, Methods: ui.NotLicensedMethods(host), Assets: assets.FS(),
 			DarkTitleBar: systemPrefersDark(), MinW: 480, MinH: 360,
-			OnClose: func() { u.Quit() },
+			OnClose: quit,
+			OnFatal: func(error) { // already quarantined; nothing to flush
+				watchdog.Arm(fatalExitBound, 5, "fatal exit")
+				u.Post(u.Quit)
+			},
 		})
 		if err != nil {
 			log.Printf("webview startup failed: %v", err)
@@ -353,6 +365,7 @@ func main() {
 		if !shutting.CompareAndSwap(false, true) {
 			return false
 		}
+		watchdog.Arm(normalExitBound, 0, "ordered exit")
 		br.BeginShutdown(1500*time.Millisecond, func() {
 			if err := br.Shutdown(2 * time.Second); err != nil {
 				flushFailed.Store(true)
@@ -396,54 +409,58 @@ func main() {
 		}
 	}
 
-	// Page failure: end the editor session/capture (the page that owned them is gone) to
-	// completion FIRST, then reload; a dead browser process or repeated failures take the
-	// startup-failure path. RPCs stay held (BUSY) until the reload has been issued.
-	const resetDeadline = 5 * time.Second // a stuck reset (e.g. capture hook) takes the fatal path
-	var failMu sync.Mutex
-	var failTimes []time.Time
+	// fatal: terminal quarantine of the page (dispatcher closed for good, window hidden,
+	// controller closed), a hard watchdog, then the ordered exit; Run's caller shows the
+	// startup-failure box and exits 5. UI thread.
 	var fatalPage atomic.Bool
-	leaveWithFailure := func(why string) {
+	fatal := func(why string) {
 		log.Printf("webview failure: %s: leaving the app", why)
+		if u := late.p.Load(); u != nil {
+			u.Quarantine()
+		}
+		watchdog.Arm(fatalExitBound, 5, "fatal exit")
 		fatalPage.Store(true)
-		quitApp()
+		late.Post(quitApp)
 	}
-	pageFailed := func(kind int32) { // UI thread, inside a WebView2 event: only post work
+
+	// Renderer failure: the crashed renderer can send nothing more, so a reset job queued on the
+	// RPC worker runs after every call it already sent (queued or in flight) and before any call
+	// of the reloaded document, which only exists once the job has posted the host Reload. A
+	// dead browser process or repeated failures take the fatal path. UI thread, inside a
+	// WebView2 event: only post/enqueue work.
+	var failTimes []time.Time // UI thread only
+	pageFailed := func(kind int32) {
 		u := late.p.Load()
 		if u == nil || shutting.Load() {
 			return
 		}
-		u.BeginDocumentRPC()
-		go func() {
-			resetDone := rpc.RunWithin(resetDeadline, func() { br.ResetSession("processFailed") }) // before the reload is posted
+		now := time.Now()
+		keep := failTimes[:0]
+		for _, t := range failTimes {
+			if now.Sub(t) < time.Minute {
+				keep = append(keep, t)
+			}
+		}
+		failTimes = append(keep, now)
+		const browserExited = 0 // COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+		if kind == browserExited || len(failTimes) > 3 {
+			late.Post(func() { fatal("process failed") })
+			return
+		}
+		queued := u.EnqueueRPCJob(func() {
+			br.ResetSession("processFailed")
 			late.Post(func() {
-				defer u.ReleaseRPC()
 				if shutting.Load() { // exit already began: never reload
 					return
 				}
-				if !resetDone {
-					leaveWithFailure("session reset did not finish")
-					return
-				}
-				failMu.Lock()
-				now := time.Now()
-				keep := failTimes[:0]
-				for _, t := range failTimes {
-					if now.Sub(t) < time.Minute {
-						keep = append(keep, t)
-					}
-				}
-				failTimes = append(keep, now)
-				tooMany := len(failTimes) > 3
-				failMu.Unlock()
-				const browserExited = 0 // COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
-				if kind == browserExited || tooMany {
-					leaveWithFailure("process failed")
-				} else if err := u.Reload(); err != nil {
-					leaveWithFailure("reload: " + err.Error())
+				if err := u.Reload(); err != nil {
+					fatal("reload: " + err.Error())
 				}
 			})
-		}()
+		})
+		if !queued {
+			log.Println("webview: renderer failed after the RPC dispatcher closed; not reloading")
+		}
 	}
 	host.OnExit = quitApp
 	host.Rebind = fixed.rebind
@@ -500,19 +517,10 @@ func main() {
 		MinH:            420,
 		OnClose:         quitApp, // X exits for real (as before); minimize hides to the tray
 		OnProcessFailed: pageFailed,
-		OnNavigate: func(string) { // reload/navigation: the editor session and capture belong to the old page
-			go func() {
-				ok := rpc.RunWithin(resetDeadline, func() { br.ResetSession("navigation") })
-				if u := late.p.Load(); u != nil {
-					u.ReleaseRPC() // the new document's queued calls run now
-				}
-				if !ok {
-					late.Post(func() { leaveWithFailure("session reset did not finish") })
-				}
-			}()
-		},
-		OnFatal: func(err error) { // a security handler failed: ordered exit + startup-failure box
-			late.Post(func() { leaveWithFailure(err.Error()) })
+		OnFatal: func(err error) { // a security handler failed (host already quarantined)
+			watchdog.Arm(fatalExitBound, 5, "fatal exit")
+			fatalPage.Store(true)
+			late.Post(func() { fatal(err.Error()) })
 		},
 		OnBounds: func(b webview.Bounds) {
 			want := model.WindowPos{X: b.X, Y: b.Y, Width: b.W, Height: b.H}
@@ -540,6 +548,9 @@ func main() {
 	}
 	late.p.Store(webUI)
 	host.UI = webUI
+	if fatalPage.Load() { // a security handler failed during startup, before Post could reach the UI
+		late.Post(func() { fatal("security handler failed during startup") })
+	}
 
 	tray, err = ui.NewTrayIcon(webUI.MainWindow(), webUI, appController, overlayCtl, quitApp)
 	if err != nil {
@@ -621,6 +632,7 @@ func main() {
 	watcher.Stop()
 	if fatalPage.Load() {
 		log.Println("supcua-v2 exiting: WebView2 failed")
+		watchdog.Disarm() // teardown is complete; the box waits for the user, then exit 5
 		webview.ShowStartupFailure()
 		os.Exit(5)
 	}

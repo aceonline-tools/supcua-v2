@@ -326,6 +326,9 @@ const UpdateTempPrefix = "supcua-v2-update-"
 // ErrUpdatePath: the file is not one Download created (wrong directory or name); it is left alone.
 var ErrUpdatePath = errors.New("update file is not a download of this application")
 
+// ErrUpdateBatchPath: a path cannot be quoted safely in update.bat (", CR, LF or NUL).
+var ErrUpdateBatchPath = errors.New("install path cannot be used in the update script")
+
 var ErrUpdateChanged = errors.New("downloaded update changed on disk; refusing to install it")
 
 // Downloaded identifies a verified download: Replace re-checks these exact bytes.
@@ -419,18 +422,23 @@ func Replace(d Downloaded, exePath string) error {
 		return err
 	}
 
+	pid := os.Getpid()
+	oldExe := exePath + ".old"
+	batContent, err := buildBatch(pid, tmpExe, exePath, oldExe)
+	if err != nil { // before anything is touched; the download is ours and useless here
+		os.Remove(tmpExe)
+		return err
+	}
+
 	// Rename the running exe out of the way now (Windows allows renaming open files).
 	// Then the batch just needs to move the update into place after we exit.
-	oldExe := exePath + ".old"
 	os.Remove(oldExe) // clean up any leftover from previous update
 	if err := os.Rename(exePath, oldExe); err != nil {
 		return fmt.Errorf("rename current exe: %w", err)
 	}
 	restore := func() { os.Rename(oldExe, exePath) }
 
-	pid := os.Getpid()
 	batPath := filepath.Join(dir, "update.bat")
-	batContent := buildBatch(pid, tmpExe, exePath, oldExe)
 
 	if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
 		restore()
@@ -463,20 +471,46 @@ func DownloadAndReplace(dlURL, exePath string) error {
 
 // buildBatch is the replacement script. If moving the new executable into place fails, the old
 // one is moved back and started, and nothing is deleted; .old is only deleted after success.
-func buildBatch(pid int, tmpExe, exePath, oldExe string) string {
-	return fmt.Sprintf(`@echo off
-taskkill /pid %d /f >nul 2>&1
-timeout /t 2 /nobreak >nul
-move /y "%s" "%s"
-if errorlevel 1 (
-  move /y "%s" "%s"
-  start "" "%s"
-  del "%%~f0"
-  exit /b 1
-)
-start "" "%s"
-timeout /t 3 /nobreak >nul
-del "%s"
-del "%%~f0"
-`, pid, tmpExe, exePath, oldExe, exePath, exePath, exePath, oldExe)
+//
+// Every path is embedded literally: delayed expansion is off (so "!" is plain text), "%" is
+// doubled (the only character cmd expands inside a quoted batch argument), and every path is
+// double-quoted (so &, |, <, >, ^, ( and spaces are plain text). A path cmd cannot quote at all
+// (", CR, LF, NUL) is refused with ErrUpdateBatchPath.
+func buildBatch(pid int, tmpExe, exePath, oldExe string) (string, error) {
+	q := func(p string) (string, error) {
+		if p == "" || strings.ContainsAny(p, "\"\r\n\x00") {
+			return "", ErrUpdateBatchPath
+		}
+		return `"` + strings.ReplaceAll(p, "%", "%%") + `"`, nil
+	}
+	newQ, err := q(tmpExe)
+	if err != nil {
+		return "", err
+	}
+	exeQ, err := q(exePath)
+	if err != nil {
+		return "", err
+	}
+	oldQ, err := q(oldExe)
+	if err != nil {
+		return "", err
+	}
+	lines := []string{
+		"@echo off",
+		"setlocal DisableDelayedExpansion",
+		"taskkill /pid " + strconv.Itoa(pid) + " /f >nul 2>&1",
+		"timeout /t 2 /nobreak >nul",
+		"move /y " + newQ + " " + exeQ,
+		"if errorlevel 1 (",
+		"  move /y " + oldQ + " " + exeQ,
+		`  start "" ` + exeQ,
+		`  del "%~f0"`,
+		"  exit /b 1",
+		")",
+		`start "" ` + exeQ,
+		"timeout /t 3 /nobreak >nul",
+		"del " + oldQ,
+		`del "%~f0"`,
+	}
+	return strings.Join(lines, "\r\n") + "\r\n", nil
 }

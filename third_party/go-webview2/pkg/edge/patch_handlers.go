@@ -216,10 +216,14 @@ func (e *Chromium) NewWindowRequested(_ *ICoreWebView2, args *ICoreWebView2NewWi
 
 // ---- Close / PostWebMessageAsJSON / settings / resource serving ----
 
-// Close closes the controller and releases the COM references. UI thread only.
-func (e *Chromium) Close() {
+// Close closes the controller and releases the COM references (always, even when the
+// controller's Close failed). Returns the ICoreWebView2Controller::Close HRESULT as an error.
+// UI thread only.
+func (e *Chromium) Close() error {
+	var err error
 	if e.controller != nil {
-		_, _, _ = e.controller.vtbl.Close.Call(uintptr(unsafe.Pointer(e.controller)))
+		r, _, _ := e.controller.vtbl.Close.Call(uintptr(unsafe.Pointer(e.controller)))
+		err = hrErr("Controller.Close", r)
 		_, _, _ = e.controller.vtbl.Release.Call(uintptr(unsafe.Pointer(e.controller)))
 		e.controller = nil
 	}
@@ -231,6 +235,7 @@ func (e *Chromium) Close() {
 		_, _, _ = e.environment.vtbl.Release.Call(uintptr(unsafe.Pointer(e.environment)))
 		e.environment = nil
 	}
+	return err
 }
 
 // PostWebMessageAsJSON delivers a JSON document to page listeners of

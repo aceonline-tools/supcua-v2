@@ -15,7 +15,6 @@ const (
 	CodeUnknownMethod = "UNKNOWN_METHOD"
 	CodeBusy          = "BUSY"
 	CodeInternal      = "INTERNAL"
-	CodeStale         = "STALE_PAGE" // request of a document that was replaced before it started
 
 	DefaultQueue = 64
 )
@@ -27,7 +26,6 @@ type request struct {
 	ID     int64           `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params,omitempty"`
-	gen    uint64          // document generation at Submit time (never on the wire)
 }
 
 type response struct {
@@ -37,20 +35,27 @@ type response struct {
 	Error  json.RawMessage `json:"error,omitempty"`
 }
 
-// Dispatcher executes every call on ONE worker goroutine (serialized mutations, no
-// goroutine per message). Submit never blocks; a full queue answers BUSY.
+// item is one unit of worker work: a page request, or a host job when job != nil.
+type item struct {
+	req request
+	job func()
+}
+
+// Dispatcher executes every page call and every host job on ONE worker goroutine, strictly in
+// submission order (serialized mutations, no goroutine per message). Submit never blocks; when
+// queueSize page requests are already waiting it answers BUSY. Host jobs are never refused for
+// fullness. Close is terminal: queued work is discarded and nothing is accepted afterwards.
 type Dispatcher struct {
 	handlers map[string]Handler
-	queue    chan request
+	limit    int
 	reply    func([]byte)
-	done     chan struct{}
 	stopped  chan struct{}
-	once     sync.Once
 
-	mu      sync.Mutex
-	gen     uint64    // current document generation
-	held    int       // Hold nesting
-	pending []request // submitted while held; run, in order, after the last Release
+	mu     sync.Mutex
+	wake   *sync.Cond
+	items  []item
+	nreq   int  // page requests in items
+	closed bool // terminal
 }
 
 // New copies methods; queueSize <= 0 selects DefaultQueue.
@@ -62,124 +67,113 @@ func New(methods map[string]Handler, queueSize int) *Dispatcher {
 	for k, v := range methods {
 		h[k] = v
 	}
-	return &Dispatcher{
-		handlers: h,
-		queue:    make(chan request, queueSize),
-		done:     make(chan struct{}),
-		stopped:  make(chan struct{}),
-	}
+	d := &Dispatcher{handlers: h, limit: queueSize, stopped: make(chan struct{})}
+	d.wake = sync.NewCond(&d.mu)
+	return d
 }
 
 // Start launches the single worker; reply receives each encoded response and is called
 // from the worker goroutine (and from Submit for BAD_REQUEST/BUSY) — it must not block.
+// No reply is delivered once the dispatcher is closed.
 func (d *Dispatcher) Start(reply func([]byte)) {
 	d.reply = reply
 	go func() {
 		defer close(d.stopped)
 		for {
-			select {
-			case <-d.done:
+			it, ok := d.take()
+			if !ok {
 				return
-			case req := <-d.queue:
-				if req.gen != d.generation() { // its document was replaced before it started: never run it
-					d.reply(encode(response{ID: req.ID, Error: errObj(CodeStale, "page was replaced")}))
-					continue
-				}
-				d.reply(d.run(req))
+			}
+			if it.job != nil {
+				it.job()
+				continue
+			}
+			out := d.run(it.req)
+			if !d.isClosed() {
+				d.reply(out)
 			}
 		}
 	}()
 }
 
+func (d *Dispatcher) take() (item, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for len(d.items) == 0 && !d.closed {
+		d.wake.Wait()
+	}
+	if d.closed {
+		return item{}, false
+	}
+	it := d.items[0]
+	d.items[0] = item{}
+	d.items = d.items[1:]
+	if it.job == nil {
+		d.nreq--
+	}
+	return it, true
+}
+
+func (d *Dispatcher) isClosed() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.closed
+}
+
 // Submit decodes one raw message and enqueues it. Called on the UI thread from the
-// WebView2 message callback: it does no I/O and never blocks.
+// WebView2 message callback: it does no I/O and never blocks. Dropped silently once closed.
 func (d *Dispatcher) Submit(raw string) {
 	var req request
 	if err := json.Unmarshal([]byte(raw), &req); err != nil || req.Method == "" {
-		d.reply(encode(response{Error: errObj(CodeBadRequest, "invalid request")}))
+		if !d.isClosed() {
+			d.reply(encode(response{Error: errObj(CodeBadRequest, "invalid request")}))
+		}
 		return
 	}
 	d.mu.Lock()
-	req.gen = d.gen
-	if d.held > 0 { // a new document's calls wait (in order) until the old page state is reset
-		if len(d.pending) >= cap(d.queue) {
-			d.mu.Unlock()
-			d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
-			return
-		}
-		d.pending = append(d.pending, req)
+	if d.closed {
 		d.mu.Unlock()
 		return
 	}
-	d.mu.Unlock()
-	select {
-	case <-d.done:
-	case d.queue <- req:
-	default:
+	if d.nreq >= d.limit {
+		d.mu.Unlock()
 		d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
+		return
 	}
-}
-
-func (d *Dispatcher) generation() uint64 {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.gen
-}
-
-// Hold queues new submissions (nesting) until the matching Release.
-func (d *Dispatcher) Hold() {
-	d.mu.Lock()
-	d.held++
+	d.items = append(d.items, item{req: req})
+	d.nreq++
+	d.wake.Signal()
 	d.mu.Unlock()
 }
 
-// BeginDocument starts a new document generation and Holds: requests of older generations
-// that have not started yet are dropped by the worker (reply STALE_PAGE), requests submitted
-// from now on are queued until Release. Call it synchronously when a navigation starts.
-func (d *Dispatcher) BeginDocument() {
-	d.mu.Lock()
-	d.gen++
-	d.held++
-	d.mu.Unlock()
-}
-
-// Release undoes one Hold/BeginDocument; the last one flushes the queued new-document calls.
-func (d *Dispatcher) Release() {
-	d.mu.Lock()
-	if d.held > 0 {
-		d.held--
-	}
-	var flush []request
-	if d.held == 0 {
-		flush, d.pending = d.pending, nil
-	}
-	d.mu.Unlock()
-	for _, req := range flush {
-		select {
-		case <-d.done:
-		case d.queue <- req:
-		default:
-			d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
-		}
-	}
-}
-
-// RunWithin runs reset and reports whether it finished within deadline (the caller takes the
-// fatal path when it did not; the reset goroutine is left to finish on its own).
-func RunWithin(deadline time.Duration, reset func()) bool {
-	done := make(chan struct{})
-	go func() { reset(); close(done) }()
-	select {
-	case <-done:
-		return true
-	case <-time.After(deadline):
+// Enqueue appends a host job to the worker queue: it runs after every request submitted
+// before it (queued or in flight) has finished and before any request submitted after it.
+// Reports false (job not queued) once the dispatcher is closed. Never blocks.
+func (d *Dispatcher) Enqueue(job func()) bool {
+	if job == nil {
 		return false
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return false
+	}
+	d.items = append(d.items, item{job: job})
+	d.wake.Signal()
+	return true
 }
 
-// Close signals the worker to stop after the call in flight. It never blocks, so it is
-// safe on the UI thread while a handler waits for the UI thread.
-func (d *Dispatcher) Close() { d.once.Do(func() { close(d.done) }) }
+// Close is the terminal quarantine: Submit and Enqueue reject from now on, queued requests
+// and jobs are discarded unrun, and the worker exits after the item in flight (whose reply is
+// suppressed). It never blocks, so it is safe on the UI thread while a handler waits for the
+// UI thread. Idempotent.
+func (d *Dispatcher) Close() {
+	d.mu.Lock()
+	d.closed = true
+	d.items, d.nreq = nil, 0
+	d.wake.Broadcast()
+	d.mu.Unlock()
+}
 
 // Wait blocks until the worker has exited or timeout elapses.
 func (d *Dispatcher) Wait(timeout time.Duration) bool {

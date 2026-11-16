@@ -164,80 +164,129 @@ func TestWireFrames(t *testing.T) {
 
 func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
 
-func TestHoldQueuesNewCallsAndRunsThemAfterRelease(t *testing.T) {
-	d, out := newStarted(t, map[string]Handler{"app.getBootState": func(json.RawMessage) (any, error) { return "boot", nil }}, 4)
-	d.BeginDocument()
-	d.BeginDocument() // nests
-	d.Submit(`{"id":1,"method":"app.getBootState"}`)
-	select {
-	case s := <-out:
-		t.Fatalf("held call must be queued, not answered: %s", s)
-	case <-time.After(50 * time.Millisecond):
-	}
-	d.Release()
-	select {
-	case s := <-out:
-		t.Fatalf("still held once: %s", s)
-	case <-time.After(50 * time.Millisecond):
-	}
-	d.Release()
-	if s := next(t, out); s != `{"id":1,"ok":true,"result":"boot"}` {
-		t.Fatalf("new-document boot call must succeed after Release: %s", s)
-	}
+// session models the bridge's editor session: editor.open opens it, the reset job closes it.
+type session struct {
+	mu    sync.Mutex
+	open  bool
+	trace []string
 }
 
-func TestOldGenerationQueuedCallNeverRunsAfterReset(t *testing.T) {
+func (s *session) mark(ev string, open bool) {
+	s.mu.Lock()
+	s.open = open
+	s.trace = append(s.trace, ev)
+	s.mu.Unlock()
+}
+
+func TestResetJobRunsAfterQueuedOpenAndLeavesNoSession(t *testing.T) {
 	release := make(chan struct{})
-	opened := make(chan struct{}, 1)
+	s := &session{}
 	d, out := newStarted(t, map[string]Handler{
-		"block":       func(json.RawMessage) (any, error) { <-release; return 1, nil },
-		"editor.open": func(json.RawMessage) (any, error) { opened <- struct{}{}; return "session", nil },
-		"boot":        func(json.RawMessage) (any, error) { return "ok", nil },
+		"block":       func(json.RawMessage) (any, error) { <-release; s.mark("block", s.open); return 1, nil },
+		"editor.open": func(json.RawMessage) (any, error) { s.mark("open", true); return "session", nil },
 	}, 8)
-	d.Submit(`{"id":1,"method":"block"}`) // running in the worker
-	time.Sleep(50 * time.Millisecond)
-	d.Submit(`{"id":2,"method":"editor.open"}`) // queued, belongs to the OLD document
-	d.BeginDocument()                           // navigation starts
-	d.Submit(`{"id":3,"method":"boot"}`)        // NEW document, queued by the hold
+	d.Submit(`{"id":1,"method":"block"}`) // in flight
+	time.Sleep(30 * time.Millisecond)
+	d.Submit(`{"id":2,"method":"editor.open"}`) // queued by the crashed page
+	jobDone := make(chan bool, 1)
+	if !d.Enqueue(func() { s.mark("reset", false); jobDone <- true }) {
+		t.Fatal("job refused")
+	}
 	close(release)
-	if s := next(t, out); s != `{"id":1,"ok":true,"result":1}` {
-		t.Fatalf("in-flight call finishes: %s", s)
+	next(t, out)
+	next(t, out)
+	select {
+	case <-jobDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reset job never ran")
 	}
-	if s := next(t, out); !strings.Contains(s, `"id":2`) || !strings.Contains(s, `"code":"STALE_PAGE"`) {
-		t.Fatalf("old-generation call must be dropped: %s", s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.open {
+		t.Fatal("an editor.open queued before the reset job left a session open")
 	}
-	d.Release() // reset done
-	if s := next(t, out); s != `{"id":3,"ok":true,"result":"ok"}` {
-		t.Fatalf("new document call: %s", s)
+	if got := strings.Join(s.trace, ","); got != "block,open,reset" {
+		t.Fatalf("order %s", got)
+	}
+}
+
+func TestCallSubmittedAfterJobRunsAfterIt(t *testing.T) {
+	release := make(chan struct{})
+	s := &session{}
+	d, out := newStarted(t, map[string]Handler{
+		"app.getBootState": func(json.RawMessage) (any, error) { s.mark("boot", s.open); return "boot", nil },
+	}, 8)
+	d.Enqueue(func() { <-release; s.mark("reset", false) }) // slow reset
+	d.Submit(`{"id":1,"method":"app.getBootState"}`)        // new document's boot call
+	select {
+	case r := <-out:
+		t.Fatalf("call overtook the reset job: %s", r)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if r := next(t, out); r != `{"id":1,"ok":true,"result":"boot"}` {
+		t.Fatalf("boot call must succeed after the job: %s", r)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if got := strings.Join(s.trace, ","); got != "reset,boot" {
+		t.Fatalf("order %s", got)
+	}
+}
+
+func TestJobIsNeverRefusedForFullness(t *testing.T) {
+	release := make(chan struct{})
+	ran := make(chan struct{})
+	d, out := newStarted(t, map[string]Handler{"block": func(json.RawMessage) (any, error) { <-release; return 1, nil }}, 1)
+	d.Submit(`{"id":1,"method":"block"}`)
+	time.Sleep(30 * time.Millisecond)
+	d.Submit(`{"id":2,"method":"block"}`) // fills the request limit
+	if !d.Enqueue(func() { close(ran) }) {
+		t.Fatal("a reset job must not be refused when the request queue is full")
+	}
+	d.Submit(`{"id":3,"method":"block"}`)
+	if r := next(t, out); !strings.Contains(r, `"id":3`) || !strings.Contains(r, CodeBusy) {
+		t.Fatalf("request over the limit: %s", r)
+	}
+	close(release)
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job did not run")
+	}
+}
+
+func TestCloseIsTerminalQuarantine(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var ran []string
+	rec := func(n string) { mu.Lock(); ran = append(ran, n); mu.Unlock() }
+	d, out := newStarted(t, map[string]Handler{
+		"block": func(json.RawMessage) (any, error) { <-release; rec("block"); return 1, nil },
+		"x":     func(json.RawMessage) (any, error) { rec("x"); return 1, nil },
+	}, 8)
+	d.Submit(`{"id":1,"method":"block"}`) // in flight
+	time.Sleep(30 * time.Millisecond)
+	d.Submit(`{"id":2,"method":"x"}`) // queued: must be discarded
+	d.Enqueue(func() { rec("job") })  // queued: must be discarded
+	d.Close()
+	if d.Enqueue(func() { rec("late job") }) {
+		t.Fatal("Enqueue after Close must report false")
+	}
+	d.Submit(`{"id":3,"method":"x"}`)
+	d.Submit(`not json`)
+	close(release)
+	if !d.Wait(2 * time.Second) {
+		t.Fatal("worker did not stop after the call in flight")
 	}
 	select {
-	case <-opened:
-		t.Fatal("the old document's editor.open ran after the reset")
-	default:
+	case r := <-out:
+		t.Fatalf("no reply may be delivered after Close: %s", r)
+	case <-time.After(50 * time.Millisecond):
 	}
-}
-
-func TestHoldOverflowAnswersBusy(t *testing.T) {
-	d, out := newStarted(t, map[string]Handler{"x": func(json.RawMessage) (any, error) { return 1, nil }}, 1)
-	d.Hold()
-	d.Submit(`{"id":1,"method":"x"}`)
-	d.Submit(`{"id":2,"method":"x"}`)
-	if s := next(t, out); !strings.Contains(s, `"id":2`) || !strings.Contains(s, `"code":"BUSY"`) {
-		t.Fatalf("overflow: %s", s)
-	}
-}
-
-func TestRunWithinDeadline(t *testing.T) {
-	if !RunWithin(time.Second, func() {}) {
-		t.Fatal("a fast reset must complete")
-	}
-	block := make(chan struct{})
-	defer close(block)
-	start := time.Now()
-	if RunWithin(80*time.Millisecond, func() { <-block }) {
-		t.Fatal("a stuck reset must report the deadline (the caller takes the fatal path)")
-	}
-	if time.Since(start) > time.Second {
-		t.Fatal("deadline not enforced")
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(ran, ","); got != "block" {
+		t.Fatalf("only the in-flight call may finish: %s", got)
 	}
 }
