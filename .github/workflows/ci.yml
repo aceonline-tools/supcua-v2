@@ -51,6 +51,18 @@ jobs:
           cache-dependency-path: go.sum
       - run: go test -count=1 ./...
 
+  race-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go test -race -count=1 ./executor/ ./app/ .
+
   release-build:
     runs-on: windows-latest
     steps:
