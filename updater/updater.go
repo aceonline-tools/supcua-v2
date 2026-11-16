@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -117,8 +119,8 @@ func rateLimited(resp *http.Response) bool {
 
 // CheckUpdate returns the latest version (without "v") and download URL if a
 // newer published release exists. No update (nil error, empty values) is
-// reported for: no releases (404), draft/pre-release, non-semver tag, or a
-// version that is not newer. Single request, no retries.
+// reported for: draft/pre-release, non-semver tag, or a version that is not
+// newer. A 404 returns ErrNoRelease. Single request, no retries.
 func CheckUpdate(currentVersion string) (latestVersion, dlURL string, err error) {
 	req, err := http.NewRequest(http.MethodGet, apiBase+"/repos/"+repo+"/releases/latest", nil)
 	if err != nil {
@@ -192,7 +194,7 @@ var (
 func defaultInitialAllowed(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && u.Host == "github.com" &&
-		strings.HasPrefix(u.Path, downloadPath)
+		path.Clean(u.Path) == u.Path && strings.HasPrefix(u.Path, downloadPath)
 }
 
 func defaultRedirectAllowed(u *url.URL) bool {
@@ -218,6 +220,10 @@ func downloadTo(rawURL, dst string) error {
 		if wantSum == a.Digest {
 			wantSum = ""
 		}
+	}
+	if b, err := hex.DecodeString(wantSum); err != nil || len(b) != sha256.Size {
+		wantSum = ""
+		log.Printf("updater: no usable sha256 digest for asset, hash check skipped")
 	}
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {

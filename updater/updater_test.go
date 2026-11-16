@@ -434,6 +434,8 @@ func TestDefaultURLTrust(t *testing.T) {
 		"https://github.com.evil.com/aceonline-tools/supcua-v2/releases/download/v1/x",
 		"https://github.com/other/repo/releases/download/v1/supcua-v2.exe",
 		"https://github.com/aceonline-tools/supcua-v2/../x",
+		"https://github.com/aceonline-tools/supcua-v2/releases/download/v1/../../../../evil/x",
+		"https://github.com/aceonline-tools/supcua-v2/releases/download//v1/x",
 		"", "::bad",
 	}
 	for _, u := range good {
