@@ -214,6 +214,13 @@ func (b *Bridge) refreshOverlay(viaUI bool) {
 	}
 }
 
+// RefreshOverlay re-reads the overlay state and emits state. Call it on the UI thread after a
+// drag end, the overlay hotkey or a tray toggle.
+func (b *Bridge) RefreshOverlay() {
+	b.refreshOverlay(false)
+	b.NotifyStateChanged()
+}
+
 func (b *Bridge) setOverlay(st OverlayDTO) {
 	b.ovMu.Lock()
 	b.overlay = st

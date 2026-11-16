@@ -50,3 +50,38 @@ func TestRealStoreRoundTripAndShutdownFlush(t *testing.T) {
 		t.Errorf("delete did not remove the file: %+v", list)
 	}
 }
+
+func TestRefreshOverlayRereadsAndEmitsState(t *testing.T) {
+	r := newRig(t)
+	before := len(r.em.named(EvState))
+	r.ov.mu.Lock()
+	r.ov.state = OverlayDTO{Enabled: true, Visible: false, Draggable: true, X: 123, Y: 456}
+	r.ov.mu.Unlock()
+	r.b.RefreshOverlay()
+	ev := r.em.named(EvState)
+	if len(ev) != before+1 {
+		t.Fatalf("want one new state event, got %d", len(ev)-before)
+	}
+	if got := ev[len(ev)-1].payload.(StateDTO).Overlay; got != r.ov.State() {
+		t.Errorf("overlay in state = %+v", got)
+	}
+}
+
+func TestEditorSaveNameTakenForNewButNotOwnID(t *testing.T) {
+	r := newRig(t, script("s1", "Alpha", "", true))
+	r.store.taken["Alpha"] = true // as when s1's own write is in flight
+	sid, edit := openEditor(t, r, "s1")
+	body := mustJSON(map[string]any{"sessionId": sid, "script": edit})
+	if _, err := r.call(t, "editor.save", body); err != nil {
+		t.Fatalf("own name must not count as taken: %v", err)
+	}
+	r.mustCall(t, "editor.close", `{"sessionId":"`+sid+`","autosave":false}`)
+
+	sid, edit = openEditor(t, r, "")
+	edit["name"] = "Alpha"
+	_, err := r.call(t, "editor.save", mustJSON(map[string]any{"sessionId": sid, "script": edit}))
+	wantCode(t, err, CodeNameTaken)
+	r.mustCall(t, "editor.close", `{"sessionId":"`+sid+`","autosave":false}`)
+
+	r.mustCall(t, "scripts.retrySave", `{"id":"s1"}`)
+}
