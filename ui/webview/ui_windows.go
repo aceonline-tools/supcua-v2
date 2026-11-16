@@ -58,7 +58,8 @@ type Config struct {
 	// OnNavigate runs on the UI thread for every allowed top-level navigation AFTER the first page
 	// load (reload or in-app navigation): page state held by the backend (editor session, capture)
 	// is stale from then on. RPCs are held (BUSY) from the moment the navigation starts; the callee
-	// MUST call ReleaseRPC once the reset has completed.
+	// MUST call ReleaseRPC once the reset has completed. Calls of the new document are QUEUED during
+	// that time and run after the release; not-yet-started calls of the old document are dropped.
 	OnNavigate func(uri string)
 	// OnFatal runs on the UI thread when a security handler failed (navigation not cancelled,
 	// popup not denied): the host must take the ordered exit and show the startup-failure box.
@@ -130,7 +131,7 @@ func New(cfg Config) (*UI, error) {
 				// A new document is starting: hold its RPCs NOW (synchronously, before it can send
 				// anything) until OnNavigate's owner has reset the old page's backend state and
 				// called ReleaseRPC.
-				u.HoldRPC()
+				u.BeginDocumentRPC()
 				if cfg.OnNavigate != nil {
 					cfg.OnNavigate(uri)
 				} else {
@@ -145,6 +146,7 @@ func New(cfg Config) (*UI, error) {
 	}
 	b.FatalCallback = func(err error) {
 		log.Printf("webview: security handler failed: %v", err)
+		u.Quarantine() // synchronous: no further page input reaches the backend, the page is gone
 		if cfg.OnFatal != nil {
 			cfg.OnFatal(err)
 		}
@@ -205,15 +207,34 @@ func (u *UI) serveRequest(req *edge.ICoreWebView2WebResourceRequest, args *edge.
 		return
 	}
 	r := u.server.Handle(method, uri)
+	if u.browser == nil {
+		return
+	}
 	if err := u.browser.Respond(args, r.Status, r.Reason, r.Header, r.Body); err != nil {
 		log.Printf("webview: respond %q: %v", uri, err)
 	}
 }
 
-// HoldRPC makes the dispatcher answer BUSY until ReleaseRPC (calls nest). Safe from any goroutine.
-func (u *UI) HoldRPC() {
+// BeginDocumentRPC starts a new document generation and holds RPC: new calls are queued until
+// ReleaseRPC, not-yet-started calls of the old document are dropped. Safe from any goroutine,
+// but call it synchronously when the navigation/failure is observed.
+func (u *UI) BeginDocumentRPC() {
 	if u.disp != nil {
-		u.disp.Hold()
+		u.disp.BeginDocument()
+	}
+}
+
+// Quarantine cuts the page off for good (security failure): RPC is held with no release and
+// older calls are dropped, the window is hidden and the WebView2 controller is closed. Saves
+// already queued still flush through the ordered exit. UI thread only; idempotent.
+func (u *UI) Quarantine() {
+	u.BeginDocumentRPC()
+	if u.hwnd != 0 {
+		win.ShowWindow(u.hwnd, win.SW_HIDE)
+	}
+	if u.browser != nil {
+		u.browser.Close()
+		u.browser = nil
 	}
 }
 

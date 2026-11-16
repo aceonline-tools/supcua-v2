@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +15,7 @@ const (
 	CodeUnknownMethod = "UNKNOWN_METHOD"
 	CodeBusy          = "BUSY"
 	CodeInternal      = "INTERNAL"
+	CodeStale         = "STALE_PAGE" // request of a document that was replaced before it started
 
 	DefaultQueue = 64
 )
@@ -27,6 +27,7 @@ type request struct {
 	ID     int64           `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params,omitempty"`
+	gen    uint64          // document generation at Submit time (never on the wire)
 }
 
 type response struct {
@@ -45,7 +46,11 @@ type Dispatcher struct {
 	done     chan struct{}
 	stopped  chan struct{}
 	once     sync.Once
-	held     atomic.Int32
+
+	mu      sync.Mutex
+	gen     uint64    // current document generation
+	held    int       // Hold nesting
+	pending []request // submitted while held; run, in order, after the last Release
 }
 
 // New copies methods; queueSize <= 0 selects DefaultQueue.
@@ -76,6 +81,10 @@ func (d *Dispatcher) Start(reply func([]byte)) {
 			case <-d.done:
 				return
 			case req := <-d.queue:
+				if req.gen != d.generation() { // its document was replaced before it started: never run it
+					d.reply(encode(response{ID: req.ID, Error: errObj(CodeStale, "page was replaced")}))
+					continue
+				}
 				d.reply(d.run(req))
 			}
 		}
@@ -90,10 +99,19 @@ func (d *Dispatcher) Submit(raw string) {
 		d.reply(encode(response{Error: errObj(CodeBadRequest, "invalid request")}))
 		return
 	}
-	if d.held.Load() > 0 { // a new document must not talk to the backend before the old page state is reset
-		d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
+	d.mu.Lock()
+	req.gen = d.gen
+	if d.held > 0 { // a new document's calls wait (in order) until the old page state is reset
+		if len(d.pending) >= cap(d.queue) {
+			d.mu.Unlock()
+			d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
+			return
+		}
+		d.pending = append(d.pending, req)
+		d.mu.Unlock()
 		return
 	}
+	d.mu.Unlock()
 	select {
 	case <-d.done:
 	case d.queue <- req:
@@ -102,13 +120,62 @@ func (d *Dispatcher) Submit(raw string) {
 	}
 }
 
-// Hold makes Submit answer BUSY until the matching Release (calls nest). The host holds across
-// a page navigation/crash so requests of the NEW document cannot race the reset of the old
-// document's backend state (editor session, capture).
-func (d *Dispatcher) Hold() { d.held.Add(1) }
+func (d *Dispatcher) generation() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.gen
+}
 
-// Release undoes one Hold.
-func (d *Dispatcher) Release() { d.held.Add(-1) }
+// Hold queues new submissions (nesting) until the matching Release.
+func (d *Dispatcher) Hold() {
+	d.mu.Lock()
+	d.held++
+	d.mu.Unlock()
+}
+
+// BeginDocument starts a new document generation and Holds: requests of older generations
+// that have not started yet are dropped by the worker (reply STALE_PAGE), requests submitted
+// from now on are queued until Release. Call it synchronously when a navigation starts.
+func (d *Dispatcher) BeginDocument() {
+	d.mu.Lock()
+	d.gen++
+	d.held++
+	d.mu.Unlock()
+}
+
+// Release undoes one Hold/BeginDocument; the last one flushes the queued new-document calls.
+func (d *Dispatcher) Release() {
+	d.mu.Lock()
+	if d.held > 0 {
+		d.held--
+	}
+	var flush []request
+	if d.held == 0 {
+		flush, d.pending = d.pending, nil
+	}
+	d.mu.Unlock()
+	for _, req := range flush {
+		select {
+		case <-d.done:
+		case d.queue <- req:
+		default:
+			d.reply(encode(response{ID: req.ID, Error: errObj(CodeBusy, "call queue full")}))
+		}
+	}
+}
+
+// RunWithin runs reset and reports whether it finished within deadline (the caller takes the
+// fatal path when it did not; the reset goroutine is left to finish on its own).
+func RunWithin(deadline time.Duration, reset func()) bool {
+	done := make(chan struct{})
+	go func() { reset(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(deadline):
+		return false
+	}
+}
 
 // Close signals the worker to stop after the call in flight. It never blocks, so it is
 // safe on the UI thread while a handler waits for the UI thread.

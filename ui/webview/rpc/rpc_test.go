@@ -164,22 +164,80 @@ func TestWireFrames(t *testing.T) {
 
 func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
 
-func TestHoldAnswersBusyUntilReleased(t *testing.T) {
-	d, out := newStarted(t, map[string]Handler{"x": func(json.RawMessage) (any, error) { return 1, nil }}, 4)
-	d.Hold()
-	d.Hold() // nests
-	d.Submit(`{"id":1,"method":"x"}`)
-	if s := next(t, out); !strings.Contains(s, `"id":1`) || !strings.Contains(s, `"code":"BUSY"`) {
-		t.Fatalf("held call must be BUSY: %s", s)
+func TestHoldQueuesNewCallsAndRunsThemAfterRelease(t *testing.T) {
+	d, out := newStarted(t, map[string]Handler{"app.getBootState": func(json.RawMessage) (any, error) { return "boot", nil }}, 4)
+	d.BeginDocument()
+	d.BeginDocument() // nests
+	d.Submit(`{"id":1,"method":"app.getBootState"}`)
+	select {
+	case s := <-out:
+		t.Fatalf("held call must be queued, not answered: %s", s)
+	case <-time.After(50 * time.Millisecond):
 	}
 	d.Release()
-	d.Submit(`{"id":2,"method":"x"}`)
-	if s := next(t, out); !strings.Contains(s, `"code":"BUSY"`) {
+	select {
+	case s := <-out:
 		t.Fatalf("still held once: %s", s)
+	case <-time.After(50 * time.Millisecond):
 	}
 	d.Release()
-	d.Submit(`{"id":3,"method":"x"}`)
-	if s := next(t, out); s != `{"id":3,"ok":true,"result":1}` {
-		t.Fatalf("released: %s", s)
+	if s := next(t, out); s != `{"id":1,"ok":true,"result":"boot"}` {
+		t.Fatalf("new-document boot call must succeed after Release: %s", s)
+	}
+}
+
+func TestOldGenerationQueuedCallNeverRunsAfterReset(t *testing.T) {
+	release := make(chan struct{})
+	opened := make(chan struct{}, 1)
+	d, out := newStarted(t, map[string]Handler{
+		"block":       func(json.RawMessage) (any, error) { <-release; return 1, nil },
+		"editor.open": func(json.RawMessage) (any, error) { opened <- struct{}{}; return "session", nil },
+		"boot":        func(json.RawMessage) (any, error) { return "ok", nil },
+	}, 8)
+	d.Submit(`{"id":1,"method":"block"}`) // running in the worker
+	time.Sleep(50 * time.Millisecond)
+	d.Submit(`{"id":2,"method":"editor.open"}`) // queued, belongs to the OLD document
+	d.BeginDocument()                           // navigation starts
+	d.Submit(`{"id":3,"method":"boot"}`)        // NEW document, queued by the hold
+	close(release)
+	if s := next(t, out); s != `{"id":1,"ok":true,"result":1}` {
+		t.Fatalf("in-flight call finishes: %s", s)
+	}
+	if s := next(t, out); !strings.Contains(s, `"id":2`) || !strings.Contains(s, `"code":"STALE_PAGE"`) {
+		t.Fatalf("old-generation call must be dropped: %s", s)
+	}
+	d.Release() // reset done
+	if s := next(t, out); s != `{"id":3,"ok":true,"result":"ok"}` {
+		t.Fatalf("new document call: %s", s)
+	}
+	select {
+	case <-opened:
+		t.Fatal("the old document's editor.open ran after the reset")
+	default:
+	}
+}
+
+func TestHoldOverflowAnswersBusy(t *testing.T) {
+	d, out := newStarted(t, map[string]Handler{"x": func(json.RawMessage) (any, error) { return 1, nil }}, 1)
+	d.Hold()
+	d.Submit(`{"id":1,"method":"x"}`)
+	d.Submit(`{"id":2,"method":"x"}`)
+	if s := next(t, out); !strings.Contains(s, `"id":2`) || !strings.Contains(s, `"code":"BUSY"`) {
+		t.Fatalf("overflow: %s", s)
+	}
+}
+
+func TestRunWithinDeadline(t *testing.T) {
+	if !RunWithin(time.Second, func() {}) {
+		t.Fatal("a fast reset must complete")
+	}
+	block := make(chan struct{})
+	defer close(block)
+	start := time.Now()
+	if RunWithin(80*time.Millisecond, func() { <-block }) {
+		t.Fatal("a stuck reset must report the deadline (the caller takes the fatal path)")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("deadline not enforced")
 	}
 }

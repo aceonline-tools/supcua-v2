@@ -29,6 +29,7 @@ import (
 	"github.com/yanmad27/supcua-v2/ui"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 	"github.com/yanmad27/supcua-v2/ui/webview/assets"
+	"github.com/yanmad27/supcua-v2/ui/webview/rpc"
 	"github.com/yanmad27/supcua-v2/updater"
 	"github.com/yanmad27/supcua-v2/version"
 )
@@ -398,6 +399,7 @@ func main() {
 	// Page failure: end the editor session/capture (the page that owned them is gone) to
 	// completion FIRST, then reload; a dead browser process or repeated failures take the
 	// startup-failure path. RPCs stay held (BUSY) until the reload has been issued.
+	const resetDeadline = 5 * time.Second // a stuck reset (e.g. capture hook) takes the fatal path
 	var failMu sync.Mutex
 	var failTimes []time.Time
 	var fatalPage atomic.Bool
@@ -411,12 +413,16 @@ func main() {
 		if u == nil || shutting.Load() {
 			return
 		}
-		u.HoldRPC()
+		u.BeginDocumentRPC()
 		go func() {
-			br.ResetSession("processFailed") // completes before the reload is posted
+			resetDone := rpc.RunWithin(resetDeadline, func() { br.ResetSession("processFailed") }) // before the reload is posted
 			late.Post(func() {
 				defer u.ReleaseRPC()
 				if shutting.Load() { // exit already began: never reload
+					return
+				}
+				if !resetDone {
+					leaveWithFailure("session reset did not finish")
 					return
 				}
 				failMu.Lock()
@@ -496,9 +502,12 @@ func main() {
 		OnProcessFailed: pageFailed,
 		OnNavigate: func(string) { // reload/navigation: the editor session and capture belong to the old page
 			go func() {
-				br.ResetSession("navigation")
+				ok := rpc.RunWithin(resetDeadline, func() { br.ResetSession("navigation") })
 				if u := late.p.Load(); u != nil {
-					u.ReleaseRPC() // the new document's calls are answered BUSY until now
+					u.ReleaseRPC() // the new document's queued calls run now
+				}
+				if !ok {
+					late.Post(func() { leaveWithFailure("session reset did not finish") })
 				}
 			}()
 		},

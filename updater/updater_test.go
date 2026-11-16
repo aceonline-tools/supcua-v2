@@ -508,8 +508,8 @@ func TestDownload_UnpredictableExclusiveNameAndRecordedHash(t *testing.T) {
 	if d1.Path == d2.Path || filepath.Dir(d1.Path) != dir || !strings.HasPrefix(filepath.Base(d1.Path), UpdateTempPrefix) {
 		t.Fatalf("names must be random and next to the exe: %q %q", d1.Path, d2.Path)
 	}
-	if _, serr := os.Stat(d1.Path); serr == nil {
-		t.Fatal("a second Download must clean up the stale file of the first")
+	if _, serr := os.Stat(d1.Path); serr != nil {
+		t.Fatal("a fresh earlier download must not be swept by a later Download")
 	}
 	sum := sha256.Sum256([]byte(payload))
 	if d2.Size != int64(len(payload)) || d2.SHA256 != hex.EncodeToString(sum[:]) {
@@ -587,17 +587,85 @@ func TestReplace_RefusesTamperedDownloadBeforeTouchingExe(t *testing.T) {
 	}
 }
 
-func TestReplace_RefusesFileOutsideExeDirOrWrongName(t *testing.T) {
+func TestReplace_RejectedPathIsNotDeleted(t *testing.T) {
 	d, exe := downloaded(t)
 	other := filepath.Join(t.TempDir(), filepath.Base(d.Path))
 	os.WriteFile(other, []byte(mz(2048)), 0o600)
-	if err := Replace(Downloaded{Path: other, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdateChanged) {
+	if err := Replace(Downloaded{Path: other, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdatePath) {
 		t.Fatalf("outside dir: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatal("a path rejected for its directory must not be deleted")
 	}
 	renamed := filepath.Join(filepath.Dir(exe), "evil.exe")
 	os.Rename(d.Path, renamed)
-	if err := Replace(Downloaded{Path: renamed, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdateChanged) {
+	if err := Replace(Downloaded{Path: renamed, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdatePath) {
 		t.Fatalf("wrong name: %v", err)
+	}
+	if _, err := os.Stat(renamed); err != nil {
+		t.Fatal("a path rejected for its name must not be deleted")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+		t.Fatal("running executable must be untouched")
+	}
+}
+
+func TestSweepStale_OnlyOldRandomNamesAreDeleted(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name string, age time.Duration) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte("x"), 0o600)
+		old := time.Now().Add(-age)
+		os.Chtimes(p, old, old)
+		return p
+	}
+	oldRandom := mk(UpdateTempPrefix+"0123456789abcdef.exe", 48*time.Hour)
+	freshRandom := mk(UpdateTempPrefix+"fedcba9876543210.exe", time.Hour)
+	oldLegacy := mk("supcua-v2-update.exe", 48*time.Hour)
+	oldOther := mk("notes-update-0123456789abcdef.exe", 48*time.Hour)
+	oldBadHex := mk(UpdateTempPrefix+"zzzzzzzzzzzzzzzz.exe", 48*time.Hour)
+	sweepStale(dir, time.Now())
+	if _, err := os.Stat(oldRandom); !os.IsNotExist(err) {
+		t.Error("an old file with the random pattern must be swept")
+	}
+	for name, p := range map[string]string{"fresh": freshRandom, "legacy name": oldLegacy, "other name": oldOther, "bad hex": oldBadHex} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s file must be left alone", name)
+		}
+	}
+}
+
+func TestDownload_DoesNotDeleteAFreshFileOfAnotherInstance(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(1024)) })
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "supcua-v2.exe")
+	d1, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []Downloaded{d1, d2} {
+		if _, err := os.Stat(d.Path); err != nil {
+			t.Fatalf("fresh download %s must survive another Download: %v", d.Path, err)
+		}
+	}
+}
+
+func TestBuildBatch_FailedMoveRestoresOldAndNeverDeletesIt(t *testing.T) {
+	b := buildBatch(42, "new.exe", "app.exe", "app.exe.old")
+	move := strings.Index(b, `move /y "new.exe" "app.exe"`)
+	fail := strings.Index(b, "if errorlevel 1 (")
+	restore := strings.Index(b, `move /y "app.exe.old" "app.exe"`)
+	closeFail := strings.Index(b, "exit /b 1")
+	delOld := strings.Index(b, `del "app.exe.old"`)
+	if !(move >= 0 && fail > move && restore > fail && closeFail > restore && delOld > closeFail) {
+		t.Fatalf("unexpected script:\n%s", b)
+	}
+	if strings.Count(b, `del "app.exe.old"`) != 1 {
+		t.Fatal(".old may only be deleted once, after the success path")
 	}
 }
 

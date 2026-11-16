@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -206,7 +207,16 @@ func defaultRedirectAllowed(u *url.URL) bool {
 // downloadTo fetches url into dst. It enforces trusted hosts, the asset size
 // (or Content-Length when unknown, else a hard cap), the PE "MZ" header and
 // the sha256 digest when known. The partial file is removed on any failure.
-func downloadTo(rawURL, dst string) error {
+func downloadTo(rawURL, dst string) error { return downloadRecorded(rawURL, dst, nil) }
+
+// downloadRecord is what the verified download looked like: the size and sha256 of the bytes
+// written, taken from the very pass that enforced size/digest/MZ (no second read of the file).
+type downloadRecord struct {
+	Size   int64
+	SHA256 string
+}
+
+func downloadRecorded(rawURL, dst string, rec *downloadRecord) error {
 	if !initialAllowed(rawURL) {
 		return fmt.Errorf("%w: %s", ErrUntrustedURL, rawURL)
 	}
@@ -290,6 +300,9 @@ func downloadTo(rawURL, dst string) error {
 		os.Remove(dst)
 		return fmt.Errorf("write temp file: %w", err)
 	}
+	if rec != nil {
+		rec.Size, rec.SHA256 = n, hex.EncodeToString(h.Sum(nil))
+	}
 	return nil
 }
 
@@ -310,6 +323,9 @@ func checkMZ(path string) error {
 const UpdateTempPrefix = "supcua-v2-update-"
 
 // ErrUpdateChanged: the downloaded file no longer matches what Download verified.
+// ErrUpdatePath: the file is not one Download created (wrong directory or name); it is left alone.
+var ErrUpdatePath = errors.New("update file is not a download of this application")
+
 var ErrUpdateChanged = errors.New("downloaded update changed on disk; refusing to install it")
 
 // Downloaded identifies a verified download: Replace re-checks these exact bytes.
@@ -333,39 +349,49 @@ func hashFile(path string) (int64, string, error) {
 	return n, hex.EncodeToString(h.Sum(nil)), err
 }
 
-// Download fetches and verifies the new executable (trusted-host allowlist, size, sha256 when
-// known, MZ header) into an unpredictably named file, created exclusively, next to exePath. It
-// never touches the running executable, so the caller can shut down cleanly before Replace.
-func Download(dlURL, exePath string) (Downloaded, error) {
-	dir := filepath.Dir(exePath)
-	for _, pat := range []string{UpdateTempPrefix + "*.exe", "supcua-v2-update.exe"} { // stale leftovers
-		if old, _ := filepath.Glob(filepath.Join(dir, pat)); len(old) > 0 {
-			for _, f := range old {
-				os.Remove(f)
-			}
+var staleName = regexp.MustCompile(`^` + regexp.QuoteMeta(UpdateTempPrefix) + `[0-9a-f]{16}\.exe$`)
+
+const staleAfter = 24 * time.Hour
+
+// sweepStale deletes leftovers of failed updates: only files whose name matches the random
+// pattern AND that are older than 24 h, so a download of this or another running instance
+// (always fresh) is never touched.
+func sweepStale(dir string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !staleName.MatchString(e.Name()) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > staleAfter {
+			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
+}
+
+// Download fetches and verifies the new executable (trusted-host allowlist, size, sha256 when
+// known, MZ header) into an unpredictably named file, created exclusively, next to exePath. The
+// recorded size/sha256 come from the same streaming pass. It never touches the running
+// executable, so the caller can shut down cleanly before Replace.
+func Download(dlURL, exePath string) (Downloaded, error) {
+	dir := filepath.Dir(exePath)
+	sweepStale(dir, time.Now())
 	var rnd [8]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
 		return Downloaded{}, fmt.Errorf("random name: %w", err)
 	}
 	tmpExe := filepath.Join(dir, UpdateTempPrefix+hex.EncodeToString(rnd[:])+".exe")
-	if err := downloadTo(dlURL, tmpExe); err != nil {
+	var rec downloadRecord
+	if err := downloadRecorded(dlURL, tmpExe, &rec); err != nil {
 		return Downloaded{}, err
 	}
-	n, sum, err := hashFile(tmpExe)
-	if err != nil {
-		os.Remove(tmpExe)
-		return Downloaded{}, fmt.Errorf("hash download: %w", err)
-	}
-	return Downloaded{Path: tmpExe, Size: n, SHA256: sum}, nil
+	return Downloaded{Path: tmpExe, Size: rec.Size, SHA256: rec.SHA256}, nil
 }
 
 // verify re-reads the file and refuses anything that differs from the verified download.
 func (d Downloaded) verify(exePath string) error {
-	if filepath.Dir(d.Path) != filepath.Dir(exePath) || !strings.HasPrefix(filepath.Base(d.Path), UpdateTempPrefix) {
-		return ErrUpdateChanged
-	}
 	n, sum, err := hashFile(d.Path)
 	if err != nil || n != d.Size || !strings.EqualFold(sum, d.SHA256) {
 		return ErrUpdateChanged
@@ -380,8 +406,14 @@ func (d Downloaded) verify(exePath string) error {
 func Replace(d Downloaded, exePath string) error {
 	dir := filepath.Dir(exePath)
 	tmpExe := d.Path
+	// A path we did not create is rejected WITHOUT deleting it (it may not be ours).
+	if filepath.Dir(d.Path) != dir || !staleName.MatchString(filepath.Base(d.Path)) {
+		return ErrUpdatePath
+	}
 	// Re-verify the exact bytes immediately before anything is touched (the file sat on disk
-	// while the application shut down).
+	// while the application shut down). Accepted residual window: between this check and the
+	// batch's move, someone who can write into the install directory could swap the file — but
+	// that someone can already replace supcua-v2.exe itself, so it is no escalation.
 	if err := d.verify(exePath); err != nil {
 		os.Remove(tmpExe)
 		return err
@@ -398,15 +430,7 @@ func Replace(d Downloaded, exePath string) error {
 
 	pid := os.Getpid()
 	batPath := filepath.Join(dir, "update.bat")
-	batContent := fmt.Sprintf(`@echo off
-taskkill /pid %d /f >nul 2>&1
-timeout /t 2 /nobreak >nul
-move /y "%s" "%s"
-start "" "%s"
-timeout /t 3 /nobreak >nul
-del "%s"
-del "%%~f0"
-`, pid, tmpExe, exePath, exePath, oldExe)
+	batContent := buildBatch(pid, tmpExe, exePath, oldExe)
 
 	if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
 		restore()
@@ -435,4 +459,24 @@ func DownloadAndReplace(dlURL, exePath string) error {
 	}
 	os.Exit(0)
 	return nil
+}
+
+// buildBatch is the replacement script. If moving the new executable into place fails, the old
+// one is moved back and started, and nothing is deleted; .old is only deleted after success.
+func buildBatch(pid int, tmpExe, exePath, oldExe string) string {
+	return fmt.Sprintf(`@echo off
+taskkill /pid %d /f >nul 2>&1
+timeout /t 2 /nobreak >nul
+move /y "%s" "%s"
+if errorlevel 1 (
+  move /y "%s" "%s"
+  start "" "%s"
+  del "%%~f0"
+  exit /b 1
+)
+start "" "%s"
+timeout /t 3 /nobreak >nul
+del "%s"
+del "%%~f0"
+`, pid, tmpExe, exePath, oldExe, exePath, exePath, exePath, oldExe)
 }
