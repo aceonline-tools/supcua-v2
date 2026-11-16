@@ -19,6 +19,9 @@ type AppConfig struct {
 	EditDialogPos       WindowPos `json:"edit_dialog_pos"`
 	ScriptsDir          string    `json:"scripts_dir"`
 	KeyPressDurationMs  int       `json:"key_press_duration_ms"`
+
+	AutoActiveEnabled     bool   `json:"auto_active_enabled"`
+	AutoActiveProcessName string `json:"auto_active_process_name"`
 }
 
 // DefaultConfig returns sensible defaults for a fresh install.

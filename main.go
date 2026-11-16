@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/yanmad27/supcua-v2/app"
+	"github.com/yanmad27/supcua-v2/autoactive"
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	imagedetector "github.com/yanmad27/supcua-v2/image"
@@ -188,8 +189,64 @@ func main() {
 		scriptHotkeys.SetScripts(scripts)
 	}
 
+	// Auto Active: global active follows the game window's focus
+	var autoActiveWatcher *autoactive.Watcher
+	autoActiveWatcher = autoactive.NewWatcher(autoactive.Options{
+		ProcessName:           autoactive.ResolveProcessName(appConfig.AutoActiveProcessName),
+		ForegroundProcessName: autoactive.ForegroundProcessName,
+		SetActive: func(active bool, generation uint64) {
+			mainWindow.Synchronize(func() {
+				if generation != autoActiveWatcher.Generation() {
+					return
+				}
+				if appController.IsGlobalActive() != active {
+					appController.ToggleGlobalStatus()
+				}
+			})
+		},
+	})
+	if appConfig.AutoActiveEnabled {
+		autoActiveWatcher.Start()
+	}
+	updateAutoActiveConfig := func(update func(*model.AppConfig)) error {
+		cfg, err := configStore.Load()
+		if err != nil {
+			return err
+		}
+		update(&cfg)
+		return configStore.Save(cfg)
+	}
+	trayIcon.AddAutoActiveToggle(appConfig.AutoActiveEnabled, func(enabled bool) error {
+		if err := updateAutoActiveConfig(func(cfg *model.AppConfig) { cfg.AutoActiveEnabled = enabled }); err != nil {
+			log.Printf("warning: failed to save auto active setting: %v", err)
+			return err
+		}
+		if enabled {
+			autoActiveWatcher.Start()
+		} else {
+			autoActiveWatcher.Stop()
+		}
+		return nil
+	})
+
+	currentAutoActiveProcessName := autoactive.ResolveProcessName(appConfig.AutoActiveProcessName)
+	trayIcon.AddAutoActiveProcessItem(
+		func() string { return currentAutoActiveProcessName },
+		func(processName string) error {
+			resolvedName := autoactive.ResolveProcessName(processName)
+			if err := updateAutoActiveConfig(func(cfg *model.AppConfig) { cfg.AutoActiveProcessName = resolvedName }); err != nil {
+				log.Printf("warning: failed to save auto active process: %v", err)
+				return err
+			}
+			currentAutoActiveProcessName = resolvedName
+			autoActiveWatcher.SetProcessName(resolvedName)
+			return nil
+		},
+	)
+
 	// Run the Walk message loop (blocks until window closed)
 	mainWindow.Run()
+	autoActiveWatcher.Stop()
 
 	if !scriptStore.FlushSaves(2 * time.Second) {
 		log.Println("warning: pending script saves not flushed before exit")
