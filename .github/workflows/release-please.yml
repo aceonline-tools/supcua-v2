@@ -30,7 +30,7 @@ jobs:
       sha: ${{ steps.rp.outputs.sha }}
     steps:
       - id: rp
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -51,12 +51,12 @@ jobs:
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid tag: $TAG"; exit 1; }
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
           submodules: false
       - name: Checkout workflow revision (for the shared build action)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: _wf
