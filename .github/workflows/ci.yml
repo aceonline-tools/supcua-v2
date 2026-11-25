@@ -237,16 +237,42 @@ jobs:
               if ($text.Contains("frontend mounted")) { break }
             }
           }
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -Namespace W -Name U -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+[StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; }
+[DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+[DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+'@
+          $paint = "not sampled"; $distinct = 0
+          if (-not $p.HasExited) {
+            Start-Sleep -Seconds 3
+            $p.Refresh(); $h = $p.MainWindowHandle
+            if ($h -ne [IntPtr]::Zero) {
+              $r = New-Object W.U+RECT; [void][W.U]::GetClientRect($h, [ref]$r)
+              $pt = New-Object W.U+PT; [void][W.U]::ClientToScreen($h, [ref]$pt)
+              $w = $r.R - $r.L; $ht = $r.B - $r.T
+              $bmp = New-Object System.Drawing.Bitmap $w, $ht
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
+              $seen = @{}
+              for ($y = 0; $y -lt $ht; $y += 5) { for ($x = 0; $x -lt $w; $x += 5) { $seen[$bmp.GetPixel($x, $y).ToArgb()] = 1 } }
+              $distinct = $seen.Count; $paint = "client=${w}x${ht} distinct=$distinct"
+            } else { $paint = "no main window handle" }
+          }
+          Write-Host "window pixels (default dark theme): $paint"
           $exited = $p.HasExited
           if (-not $exited) { $p.Kill($true) }
           New-Item -ItemType Directory -Force -Path out/results | Out-Null
-          Set-Content -LiteralPath out/results/garble-noflags.log -Value $text
+          Set-Content -LiteralPath out/results/garble-noflags.log -Value ($text + "`n" + $paint)
           Write-Host $text
           $fail = 0
           if ($exited) { Write-Host "::error::app exited early (code $($p.ExitCode))"; $fail = 1 }
           foreach ($line in "not licensed", "frontend mounted") {
             if (-not $text.Contains($line)) { Write-Host "::error::no-flags log lacks '$line'"; $fail = 1 }
           }
+          if ($distinct -lt 4) { Write-Host "::error::no-flags window client area is blank (white surface): $paint"; $fail = 1 }
           exit $fail
       - uses: actions/upload-artifact@v7
         if: always()
