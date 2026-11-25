@@ -1,5 +1,4 @@
 import type { ApiErrorBody, EventName, Events, MethodName, Methods } from './types';
-import { MockBackend, seedFromQuery } from './mock';
 import { validEventPayload } from './validate';
 
 export class ApiError extends Error {
@@ -124,10 +123,40 @@ function createWebViewTransport(host: WebViewHost): Transport {
   };
 }
 
+export const BRIDGE_WAIT_MS = 3000;
+const BRIDGE_POLL_MS = 100;
+
+// The native bridge is injected by the host; a late one is awaited (bounded) per call, never replaced by a mock.
+function createBridgeTransport(): Transport {
+  let inner: Transport | null = null;
+  let handler: ((name: string, payload: unknown) => void) | null = null;
+  const connect = (): Transport | null => {
+    if (inner) return inner;
+    const host = typeof window !== 'undefined' ? window.chrome?.webview : undefined;
+    if (!host) return null;
+    inner = createWebViewTransport(host);
+    if (handler) inner.subscribe(handler);
+    return inner;
+  };
+  const unavailable = () => new ApiError({ code: 'INTERNAL', message: 'Disconnected from the application. Restart it and try again.' });
+  connect();
+  return {
+    async call(method, params) {
+      let t = connect();
+      for (let waited = 0; !t && waited < BRIDGE_WAIT_MS; waited += BRIDGE_POLL_MS) {
+        await new Promise((r) => setTimeout(r, BRIDGE_POLL_MS));
+        t = connect();
+      }
+      if (!t) throw unavailable();
+      return t.call(method, params);
+    },
+    subscribe(h) {
+      handler = h;
+      inner?.subscribe(h);
+    },
+  };
+}
+
 export function createDefaultClient(): Client {
-  const host = typeof window !== 'undefined' ? window.chrome?.webview : undefined;
-  if (host) return createClient(createWebViewTransport(host));
-  const mock = new MockBackend(seedFromQuery(typeof location !== 'undefined' ? location.search : ''));
-  if (typeof window !== 'undefined') (window as unknown as { __mock: MockBackend }).__mock = mock; // browser-only dev/screenshot hook
-  return createClient(mock);
+  return createClient(createBridgeTransport());
 }
