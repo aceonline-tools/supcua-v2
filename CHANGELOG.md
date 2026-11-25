@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.1...v1.2.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* re-assert WebView2 controller visibility and bounds when the host window is shown ([#11](https://github.com/aceonline-tools/supcua-v2/issues/11)) ([ec20cbb](https://github.com/aceonline-tools/supcua-v2/commit/ec20cbb5a4654dff236e1b2aa7adc12c31c24d15))
+
 ## [1.2.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.0...v1.2.1) (2026-11-25)
 
 
