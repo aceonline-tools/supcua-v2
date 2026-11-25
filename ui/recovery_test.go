@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -54,3 +55,102 @@ func TestDeadlineExpiresWhenWorkIsStuck(t *testing.T) {
 		t.Fatal("expiry fired twice")
 	}
 }
+
+type recFixture struct {
+	rec     *Recovery
+	fatal   chan string
+	armed   chan struct{}
+	reloads int
+	reloadE error
+	posts   []func()
+}
+
+func newRecFixture(bound time.Duration) *recFixture {
+	f := &recFixture{fatal: make(chan string, 4), armed: make(chan struct{}, 4)}
+	f.rec = &Recovery{
+		Bound:    bound,
+		Arm:      func() { f.armed <- struct{}{} },
+		Fatal:    func(why string) { f.fatal <- why },
+		Post:     func(fn func()) { fn() },
+		Shutting: func() bool { return false },
+		Enqueue:  func(job func()) bool { job(); return true },
+		Reload:   func() error { f.reloads++; return f.reloadE },
+	}
+	return f
+}
+
+func (f *recFixture) expectFatal(t *testing.T, want bool) {
+	t.Helper()
+	select {
+	case why := <-f.fatal:
+		if !want {
+			t.Fatalf("unexpected fatal: %s", why)
+		}
+	case <-time.After(300 * time.Millisecond):
+		if want {
+			t.Fatal("deadline did not expire into fatal")
+		}
+	}
+}
+
+func TestRecoveryReloadOKButNeverLoadsExpiresIntoFatal(t *testing.T) {
+	f := newRecFixture(50 * time.Millisecond)
+	f.rec.Failed(KindRenderProcessExited)
+	if f.reloads != 1 {
+		t.Fatalf("reloads = %d", f.reloads)
+	}
+	f.expectFatal(t, true)
+}
+
+func TestRecoveryFailedNavigationDoesNotComplete(t *testing.T) {
+	f := newRecFixture(50 * time.Millisecond)
+	f.rec.Failed(KindRenderProcessExited)
+	f.rec.Navigated(false)
+	f.rec.Ready()
+	f.expectFatal(t, true)
+}
+
+func TestRecoveryNavigationWithoutReadyDoesNotComplete(t *testing.T) {
+	f := newRecFixture(50 * time.Millisecond)
+	f.rec.Failed(KindRenderProcessExited)
+	f.rec.Navigated(true)
+	f.expectFatal(t, true)
+}
+
+func TestRecoverySuccessfulLoadAndReadyCompletes(t *testing.T) {
+	for _, readyFirst := range []bool{false, true} {
+		f := newRecFixture(80 * time.Millisecond)
+		f.rec.Failed(KindRenderProcessExited)
+		if readyFirst {
+			f.rec.Ready()
+			f.rec.Navigated(true)
+		} else {
+			f.rec.Navigated(true)
+			f.rec.Ready()
+		}
+		f.expectFatal(t, false)
+	}
+}
+
+func TestRecoveryReloadErrorIsFatalAtOnce(t *testing.T) {
+	f := newRecFixture(time.Minute)
+	f.reloadE = errors.New("closed")
+	f.rec.Failed(KindRenderProcessExited)
+	f.expectFatal(t, true)
+}
+
+func TestRecoveryBrowserExitAndRepeatedFailuresAreFatal(t *testing.T) {
+	f := newRecFixture(time.Minute)
+	f.rec.Failed(KindBrowserProcessExited)
+	f.expectFatal(t, true)
+	f = newRecFixture(time.Minute)
+	for i := 0; i < 4; i++ {
+		f.rec.Failed(KindRenderProcessExited)
+	}
+	f.expectFatal(t, true)
+	f = newRecFixture(time.Minute)
+	f.rec.Failed(KindUtilityIgnored)
+	f.expectFatal(t, false)
+}
+
+const KindUtilityIgnored int32 = 4

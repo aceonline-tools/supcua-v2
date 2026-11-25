@@ -234,17 +234,45 @@ func main() {
 	if !licensed {
 		host.Mode = "notLicensed"
 		var u *webview.UI
+		var exiting, fatalLicense atomic.Bool
 		quit := func() {
+			exiting.Store(true)
 			watchdog.Arm(normalExitBound, 0, "exit")
 			u.Quit()
 		}
 		host.OnExit = quit
+		licenseFatal := func(why string) { // UI thread
+			watchdog.Arm(fatalExitBound, 5, "fatal exit")
+			fatalLicense.Store(true)
+			log.Printf("license window failure: %s: leaving the app", why)
+			u.Quarantine()
+			u.Post(u.Quit)
+		}
+		recovery := &ui.Recovery{
+			Bound:    10 * time.Second,
+			Arm:      func() { watchdog.Arm(fatalExitBound, 5, "fatal exit") },
+			Fatal:    licenseFatal,
+			Post:     func(f func()) { u.Post(f) },
+			Shutting: exiting.Load,
+			Enqueue:  func(job func()) bool { return u.EnqueueRPCJob(job) },
+			Reload:   func() error { return u.Reload() },
+			Logf:     log.Printf,
+		}
+		methods := ui.NotLicensedMethods(host)
+		baseReady := methods["app.ready"]
+		methods["app.ready"] = func(p json.RawMessage) (any, error) {
+			recovery.Ready()
+			return baseReady(p)
+		}
 		u, err = webview.New(webview.Config{
-			Title: title, Methods: ui.NotLicensedMethods(host), Assets: assets.FS(),
+			Title: title, Methods: methods, Assets: assets.FS(),
 			DarkTitleBar: systemPrefersDark(), MinW: 480, MinH: 360,
-			OnClose: quit,
+			OnClose:               quit,
+			OnProcessFailed:       recovery.Failed,
+			OnNavigationCompleted: recovery.Navigated,
 			OnFatal: func(error) { // the host quarantines right after this returns; nothing to flush
 				watchdog.Arm(fatalExitBound, 5, "fatal exit")
+				fatalLicense.Store(true)
 				u.Post(u.Quit)
 			},
 		})
@@ -255,6 +283,12 @@ func main() {
 		}
 		host.UI = u
 		u.Run()
+		if fatalLicense.Load() {
+			log.Println("supcua-v2 exiting: WebView2 failed")
+			watchdog.Disarm()
+			webview.ShowStartupFailure()
+			os.Exit(5)
+		}
 		return
 	}
 
@@ -423,68 +457,31 @@ func main() {
 		late.Post(quitApp)
 	}
 
-	// Process failure (ui.ProcessFailureAction): only a render-process exit is recovered. The
-	// crashed renderer can send nothing more, so a reset job queued on the RPC worker runs after
-	// every call it already sent (queued or in flight) and before any call of the reloaded
-	// document, which only exists once the job has posted the host Reload. Reset + Reload must
-	// finish within recoveryBound, else fatal. Browser exit, an unresponsive renderer and
-	// repeated failures are fatal; auxiliary processes are only logged. UI thread, inside a
-	// WebView2 event: only arm, post and enqueue.
-	const recoveryBound = 10 * time.Second
-	var failTimes []time.Time // UI thread only
-	pageFailed := func(kind int32) {
-		u := late.p.Load()
-		if u == nil || shutting.Load() {
-			return
-		}
-		action := ui.ProcessFailureAction(kind)
-		log.Printf("webview: process failed (kind %d, action %d)", kind, action)
-		switch action {
-		case ui.FailureIgnore:
-			return
-		case ui.FailureFatal:
-			watchdog.Arm(fatalExitBound, 5, "fatal exit")
-			late.Post(func() { fatal("process failed") })
-			return
-		}
-		now := time.Now()
-		keep := failTimes[:0]
-		for _, t := range failTimes {
-			if now.Sub(t) < time.Minute {
-				keep = append(keep, t)
+	// Process failure policy: ui.Recovery (shared with the licence window). Only a render-process
+	// exit is recovered; the deadline completes only when the reloaded page loaded successfully
+	// and called app.ready, else fatal. Browser exit, an unresponsive renderer and repeated
+	// failures are fatal; auxiliary processes are only logged.
+	recovery := &ui.Recovery{
+		Bound:    10 * time.Second,
+		Arm:      func() { watchdog.Arm(fatalExitBound, 5, "fatal exit") },
+		Fatal:    fatal,
+		Post:     late.Post,
+		Shutting: shutting.Load,
+		Enqueue: func(job func()) bool {
+			u := late.p.Load()
+			return u != nil && u.EnqueueRPCJob(job)
+		},
+		Reset: func() { br.ResetSession("processFailed") },
+		Reload: func() error {
+			u := late.p.Load()
+			if u == nil {
+				return errors.New("webview not ready")
 			}
-		}
-		failTimes = append(keep, now)
-		if len(failTimes) > 3 {
-			watchdog.Arm(fatalExitBound, 5, "fatal exit")
-			late.Post(func() { fatal("repeated renderer failures") })
-			return
-		}
-		deadline := ui.StartDeadline(recoveryBound, func() {
-			watchdog.Arm(fatalExitBound, 5, "fatal exit") // here, not only in fatal: the UI thread may be stuck
-			late.Post(func() { fatal("renderer recovery did not finish") })
-		})
-		queued := u.EnqueueRPCJob(func() {
-			br.ResetSession("processFailed")
-			late.Post(func() {
-				if shutting.Load() { // exit already began: never reload
-					deadline.Done()
-					return
-				}
-				err := u.Reload()
-				if !deadline.Done() { // too late: the fatal path is already posted
-					return
-				}
-				if err != nil {
-					fatal("reload: " + err.Error())
-				}
-			})
-		})
-		if !queued {
-			deadline.Done()
-			log.Println("webview: renderer failed after the RPC dispatcher closed; not reloading")
-		}
+			return u.Reload()
+		},
+		Logf: log.Printf,
 	}
+	pageFailed := recovery.Failed
 	host.OnExit = quitApp
 	host.Rebind = fixed.rebind
 
@@ -507,6 +504,7 @@ func main() {
 	baseReady := methods["app.ready"]
 	methods["app.ready"] = func(p json.RawMessage) (any, error) {
 		out, err := baseReady(p)
+		recovery.Ready()
 		readyOnce.Do(func() { close(ready) })
 		return out, err
 	}
@@ -531,15 +529,16 @@ func main() {
 	}
 	pos := appConfig.MainWindowPos
 	webUI, err := webview.New(webview.Config{
-		Title:           title,
-		Methods:         methods,
-		Assets:          assets.FS(),
-		DarkTitleBar:    wantDark(appConfig.Theme),
-		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
-		MinW:            640,
-		MinH:            420,
-		OnClose:         quitApp, // X exits for real (as before); minimize hides to the tray
-		OnProcessFailed: pageFailed,
+		Title:                 title,
+		Methods:               methods,
+		Assets:                assets.FS(),
+		DarkTitleBar:          wantDark(appConfig.Theme),
+		Initial:               webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
+		MinW:                  640,
+		MinH:                  420,
+		OnClose:               quitApp, // X exits for real (as before); minimize hides to the tray
+		OnProcessFailed:       pageFailed,
+		OnNavigationCompleted: recovery.Navigated,
 		OnFatal: func(err error) { // a security handler failed; the host quarantines right after this returns
 			watchdog.Arm(fatalExitBound, 5, "fatal exit")
 			fatalPage.Store(true)

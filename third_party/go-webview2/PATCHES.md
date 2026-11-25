@@ -16,3 +16,6 @@ Rule: every COM vtable is a package-level `var`; no `NewCallback` outside packag
 - `ProcessFailed` handler + `ProcessFailedCallback`; `Reload`, `NavigateChecked`, checked `AddDocumentCreatedScript`.
 - Refcounts: the extra AddRef on the webview (its out-param already carries one) is gone; `Close` releases controller, webview and environment once each.
 - `EmbedTimeout` abandons on any failure: sets `cancelled`, closes what exists, and late completions are ignored/closed.
+
+## NavigationCompleted result (go-fixes)
+- patch_navargs.go: `ICoreWebView2NavigationCompletedEventArgs.NavigationResult()` (IsSuccess + WebErrorStatus via the existing vtable; fails closed). No new `NewComProc`/`NewCallback` site: the callback count (40) is unchanged.

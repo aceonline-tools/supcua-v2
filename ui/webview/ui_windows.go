@@ -52,6 +52,8 @@ type Config struct {
 	OnBounds     func(Bounds)      // after a move/resize ended and before close
 	OnActivate   func(active bool) // host window (de)activated
 	OnPageLoaded func()
+	// OnNavigationCompleted runs on the UI thread for every NavigationCompleted, with its IsSuccess.
+	OnNavigationCompleted func(success bool)
 	// OnProcessFailed runs on the UI thread (inside a WebView2 event: post work, never block or
 	// open a modal loop) when a browser/renderer process fails; kind is COREWEBVIEW2_PROCESS_FAILED_KIND.
 	// The callee recovers with EnqueueRPCJob (reset) followed by a posted Reload.
@@ -133,11 +135,27 @@ func New(cfg Config) (*UI, error) {
 	b.ProcessFailedCallback = func(kind int32) {
 		if cfg.OnProcessFailed != nil {
 			cfg.OnProcessFailed(kind)
+			return
 		}
+		// Never ignore a process failure silently: without a handler a dead or hung browser or
+		// renderer (kinds 0-2) leaves an unusable window, so take the fatal path. Auxiliary
+		// processes recover on their own and are only logged.
+		if kind >= 0 && kind <= 2 {
+			b.FatalCallback(fmt.Errorf("process failed (kind %d) with no handler", kind))
+			return
+		}
+		log.Printf("webview: auxiliary process failed (kind %d)", kind)
 	}
 	b.WebResourceRequestedCallback = u.serveRequest
-	b.NavigationCompletedCallback = func(*edge.ICoreWebView2, *edge.ICoreWebView2NavigationCompletedEventArgs) {
+	b.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
+		success, status := args.NavigationResult()
+		if !success {
+			log.Printf("webview: navigation failed (web error status %d)", status)
+		}
 		u.nav.completed()
+		if cfg.OnNavigationCompleted != nil {
+			cfg.OnNavigationCompleted(success)
+		}
 		u.loadedOnce.Do(func() {
 			close(u.loaded)
 			if cfg.OnPageLoaded != nil {
