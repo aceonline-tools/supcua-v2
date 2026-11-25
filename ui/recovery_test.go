@@ -154,3 +154,22 @@ func TestRecoveryBrowserExitAndRepeatedFailuresAreFatal(t *testing.T) {
 }
 
 const KindUtilityIgnored int32 = 4
+
+func TestRecoveryOverlappingFailuresSucceedWithoutOrphanFatal(t *testing.T) {
+	f := newRecFixture(60 * time.Millisecond)
+	f.rec.Failed(KindRenderProcessExited) // A
+	f.rec.Failed(KindRenderProcessExited) // B before A completed
+	f.rec.Navigated(true)
+	f.rec.Ready()
+	time.Sleep(150 * time.Millisecond) // well past A's deadline
+	f.expectFatal(t, false)
+}
+
+func TestRecoveryOverlappingFailuresThatNeverLoadFireFatalOnce(t *testing.T) {
+	f := newRecFixture(40 * time.Millisecond)
+	f.rec.Failed(KindRenderProcessExited)
+	f.rec.Failed(KindRenderProcessExited)
+	f.expectFatal(t, true)
+	time.Sleep(150 * time.Millisecond)
+	f.expectFatal(t, false) // no second fatal
+}

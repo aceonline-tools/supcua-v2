@@ -76,6 +76,8 @@ type Recovery struct {
 	Logf     func(format string, args ...any)
 
 	failTimes []time.Time // UI thread only
+	cur       *Deadline   // the in-progress recovery's deadline; UI thread only
+	fatalOnce sync.Once
 
 	mu     sync.Mutex
 	dl     *Deadline
@@ -123,10 +125,11 @@ func (r *Recovery) Failed(kind int32) {
 		r.fatalNow("repeated renderer failures")
 		return
 	}
-	deadline := StartDeadline(r.Bound, func() {
-		r.Arm()
-		r.Post(func() { r.Fatal("renderer recovery did not finish") })
-	})
+	if r.cur != nil {
+		r.cur.Done() // supersede: the previous attempt's deadline can never fire fatal later
+	}
+	deadline := StartDeadline(r.Bound, func() { r.fatalNow("renderer recovery did not finish") })
+	r.cur = deadline
 	queued := r.Enqueue(func() {
 		if r.Reset != nil {
 			r.Reset()
@@ -139,7 +142,7 @@ func (r *Recovery) Failed(kind int32) {
 			r.begin(deadline)
 			if err := r.Reload(); err != nil {
 				if deadline.Done() {
-					r.Fatal("reload: " + err.Error())
+					r.fatalOnce.Do(func() { r.Fatal("reload: " + err.Error()) })
 				}
 			}
 		})
@@ -152,7 +155,7 @@ func (r *Recovery) Failed(kind int32) {
 
 func (r *Recovery) fatalNow(why string) {
 	r.Arm()
-	r.Post(func() { r.Fatal(why) })
+	r.Post(func() { r.fatalOnce.Do(func() { r.Fatal(why) }) })
 }
 
 func (r *Recovery) begin(dl *Deadline) {
