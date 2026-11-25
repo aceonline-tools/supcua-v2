@@ -457,12 +457,16 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 			return 0
 		case win.WM_GETMINMAXINFO:
 			mm := (*win.MINMAXINFO)(ptrFrom(lp))
-			dpi := windowDPI(hwnd)
+			aw, ah := 0, 0
+			if wk, ok := workArea(hwnd); ok {
+				aw, ah = wk.R-wk.L, wk.B-wk.T
+			}
+			mw, mh := scaledMin(windowDPI(hwnd), u.cfg.MinW, u.cfg.MinH, aw, ah)
 			if u.cfg.MinW > 0 {
-				mm.PtMinTrackSize.X = int32(scaleDPI(u.cfg.MinW, dpi))
+				mm.PtMinTrackSize.X = int32(mw)
 			}
 			if u.cfg.MinH > 0 {
-				mm.PtMinTrackSize.Y = int32(scaleDPI(u.cfg.MinH, dpi))
+				mm.PtMinTrackSize.Y = int32(mh)
 			}
 			return 0
 		case win.WM_SYSCOMMAND:
@@ -511,8 +515,10 @@ func createHostWindow(title string, b Bounds, minW, minH int, iconIDs []int) (wi
 		return 0, hostClassErr
 	}
 	x, y, w, h := int32(win.CW_USEDEFAULT), int32(win.CW_USEDEFAULT), int32(1000), int32(700)
-	if !isDefaultSize(b.W, b.H) {
-		w, h = int32(b.W), int32(b.H)
+	if b.W > 0 && b.H > 0 {
+		if !isDefaultSize(b.W, b.H) {
+			w, h = int32(b.W), int32(b.H)
+		}
 		r := win.RECT{Left: int32(b.X), Top: int32(b.Y), Right: int32(b.X + b.W), Bottom: int32(b.Y + b.H)}
 		if b.X > -1000 && b.Y > -1000 && onSomeMonitor(&r) {
 			x, y = int32(b.X), int32(b.Y)
@@ -543,20 +549,27 @@ func windowDPI(hwnd win.HWND) int {
 // designed for ~1000x700 CSS px too small at 125-200% scaling.
 func fitDefaultSize(hwnd win.HWND, minW, minH int) {
 	dpi := windowDPI(hwnd)
-	var aw, ah int
-	if m := win.MonitorFromWindow(hwnd, win.MONITOR_DEFAULTTONEAREST); m != 0 {
-		mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
-		if win.GetMonitorInfo(m, &mi) {
-			aw, ah = int(mi.RcWork.Right-mi.RcWork.Left), int(mi.RcWork.Bottom-mi.RcWork.Top)
-		}
-	}
-	w, h := fitSize(dpi, aw, ah, minW, minH)
 	var r win.RECT
 	win.GetWindowRect(hwnd, &r)
-	if int(r.Right-r.Left) == w && int(r.Bottom-r.Top) == h {
+	work, _ := workArea(hwnd)
+	x, y, w, h := fitRect(dpi, work, int(r.Left), int(r.Top), minW, minH)
+	if int(r.Left) == x && int(r.Top) == y && int(r.Right-r.Left) == w && int(r.Bottom-r.Top) == h {
 		return
 	}
-	win.SetWindowPos(hwnd, 0, r.Left, r.Top, int32(w), int32(h), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+	win.SetWindowPos(hwnd, 0, int32(x), int32(y), int32(w), int32(h), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+}
+
+// workArea is the work area of the monitor nearest to the window (zero rect when unavailable).
+func workArea(hwnd win.HWND) (rect, bool) {
+	m := win.MonitorFromWindow(hwnd, win.MONITOR_DEFAULTTONEAREST)
+	if m == 0 {
+		return rect{}, false
+	}
+	mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
+	if !win.GetMonitorInfo(m, &mi) {
+		return rect{}, false
+	}
+	return rect{int(mi.RcWork.Left), int(mi.RcWork.Top), int(mi.RcWork.Right), int(mi.RcWork.Bottom)}, true
 }
 
 var procMonitorFromRect = user32.NewProc("MonitorFromRect")
