@@ -82,19 +82,19 @@ Scripts are stored as JSON files in the `scripts/` directory. Each script contai
 ### Prerequisites
 
 - Go 1.25.x (required for garble compatibility)
+- Node.js 26.x and npm (builds the `frontend/` UI embedded in the exe)
+- Microsoft Edge WebView2 Runtime to run the app (preinstalled on Windows 11)
 - [garble](https://github.com/burrowers/garble) — `go install mvdan.cc/garble@latest`
 - [rsrc](https://github.com/akavel/rsrc) — `go install github.com/akavel/rsrc@latest`
 
 ### Local build
 
 ```bash
-rsrc -ico app.ico -manifest main.manifest -o rsrc.syso
-GOROOT=$(go1.25.0 env GOROOT) PATH="$(go1.25.0 env GOROOT)/bin:$PATH" \
-  GOGARBLE="github.com/yanmad27/supcua-v2" \
-  garble -literals build -trimpath \
-  -ldflags="-H windowsgui -s -w -X github.com/yanmad27/supcua-v2/version.Version=dev" \
-  -o supcua-v2.exe .
+scripts/build.sh --version dev          # frontend + rsrc + garble -literals -> ./supcua-v2.exe
+scripts/build.sh --plain --out /tmp/x   # plain go build, no garble
 ```
+
+`scripts/build.sh` copies `frontend/dist` into `ui/webview/assets/dist` for the build only and restores the committed placeholder afterwards.
 
 ### Release
 

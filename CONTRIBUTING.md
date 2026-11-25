@@ -15,7 +15,7 @@ PR titles should follow the same format (squash merges use the title as the comm
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every PR and push to `main` on `windows-latest`: `build`, `vet`, `test`, and `release-build`. `release-build` runs the exact release build (`.github/actions/release-build`: `rsrc` + `garble -literals build` on Go 1.25.0) and uploads `supcua-v2.exe` as a workflow artifact with its SHA-256.
+`.github/workflows/ci.yml` runs on every PR and push to `main` on `windows-latest`: `build`, `vet`, `test`, `race-macos`, `frontend` (check, test, build), `build-script` (shellcheck and a no-publish test of `release.sh`), `release-build` and `app-selftest` (`-selftest` and `-selftest-noruntime` on a plain and a garble exe). `release-build` runs the exact release build (`.github/actions/release-build` → `scripts/build.sh`: frontend build, `rsrc`, `garble -literals build` on Go 1.25.0) and uploads `supcua-v2.exe` as a workflow artifact with its SHA-256.
 
 ## Releases (release-please)
 

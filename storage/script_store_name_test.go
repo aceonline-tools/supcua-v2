@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,62 @@ func TestCloneDoesNotOverwriteSanitizedCollision(t *testing.T) {
 	}
 }
 
+func TestNameOrFileTakenSeesPendingQueue(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	beforeQueuedWrite = func(string) {
+		once.Do(func() { close(started) })
+		<-release
+	}
+	defer func() { beforeQueuedWrite = nil }()
+
+	scriptStore.QueueSave(model.Script{ID: "a", Name: "Blocker"})
+	<-started
+	scriptStore.QueueSave(model.Script{ID: "b", Name: "Farm (copy)"})
+
+	if scriptStore.NameExists("Farm (copy)", "") {
+		t.Fatal("precondition: pending script must not be on disk yet")
+	}
+	if !scriptStore.NameOrFileTaken("farm (COPY)") {
+		t.Error("expected case-insensitive match against the pending queue")
+	}
+	if !scriptStore.NameOrFileTaken("Farm copy") {
+		t.Error("expected sanitized-file collision against the pending queue")
+	}
+	if scriptStore.NameOrFileTaken("Farm (copy 2)") {
+		t.Error("unrelated name must be free")
+	}
+	close(release)
+	scriptStore.FlushSaves(2 * time.Second)
+}
+
+func TestOnSaveErrorHookReportsFailedQueuedWrite(t *testing.T) {
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "scripts")
+	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	scriptStore := NewScriptStore(blocked)
+	got := make(chan string, 1)
+	scriptStore.SetOnSaveError(func(s model.Script, err error) {
+		if err != nil {
+			got <- s.ID
+		}
+	})
+	scriptStore.QueueSave(model.Script{ID: "x1", Name: "X"})
+	scriptStore.FlushSaves(2 * time.Second)
+	select {
+	case id := <-got:
+		if id != "x1" {
+			t.Errorf("hook got id %q", id)
+		}
+	default:
+		t.Fatal("expected OnSaveError to fire")
+	}
+}
+
 func TestNameOrFileTakenCountsQueuedSave(t *testing.T) {
 	scriptStore := NewScriptStore(t.TempDir())
 	popped, release := stallWorker(t, "q0")
@@ -94,5 +151,53 @@ func TestNameOrFileTakenCountsInFlightSave(t *testing.T) {
 	}
 	if !scriptStore.NameOrFileTaken("Farm (copy)") {
 		t.Error("expected written file to keep name taken")
+	}
+}
+
+func TestNameOrFileTakenExceptIgnoresOwnFileButNotOthers(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	if err := scriptStore.Save(model.Script{ID: "a", Name: "Alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scriptStore.Save(model.Script{ID: "b", Name: "Beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if scriptStore.NameOrFileTakenExcept("Alpha", "a") {
+		t.Error("own name must not be taken")
+	}
+	if !scriptStore.NameOrFileTakenExcept("Alpha", "b") || !scriptStore.NameOrFileTakenExcept("alpha", "b") {
+		t.Error("another script's name must be taken")
+	}
+	if scriptStore.NameOrFileTakenExcept("Gamma", "a") {
+		t.Error("free name reported taken")
+	}
+	popped, release := stallWorker(t, "q")
+	scriptStore.QueueSave(model.Script{ID: "q", Name: "Stall"})
+	<-popped
+	scriptStore.QueueSave(model.Script{ID: "c", Name: "Queued Name"})
+	if !scriptStore.NameOrFileTakenExcept("queued_name", "a") || scriptStore.NameOrFileTakenExcept("Queued Name", "c") {
+		t.Error("pending write must count for others only")
+	}
+	if !scriptStore.NameOrFileTakenExcept("Stall", "a") || scriptStore.NameOrFileTakenExcept("Stall", "q") {
+		t.Error("in-flight write must count for others only")
+	}
+	release()
+	scriptStore.FlushSaves(5 * time.Second)
+}
+
+func TestSaveRefusesToOverwriteAnotherScriptsFile(t *testing.T) {
+	scriptStore := NewScriptStore(t.TempDir())
+	if err := scriptStore.Save(model.Script{ID: "a", Name: "Alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scriptStore.Save(model.Script{ID: "b", Name: "Beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scriptStore.Save(model.Script{ID: "b", Name: "alpha"}); err == nil {
+		t.Fatal("renaming b onto a's file must fail")
+	}
+	list, _ := scriptStore.List()
+	if len(list) != 2 {
+		t.Fatalf("both scripts must survive, got %d", len(list))
 	}
 }

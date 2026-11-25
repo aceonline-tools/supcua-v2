@@ -3,5 +3,6 @@
 *.log
 rsrc.syso
 config.json
-scripts/
 .env
+ui/webview/assets/dist/*
+!ui/webview/assets/dist/index.html

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -487,5 +488,302 @@ func TestCheckUpdate_StoresAssetMetadata(t *testing.T) {
 	v, ok := expected.Load(u)
 	if !ok || v.(asset).Size != 42 || v.(asset).Digest != "sha256:ab" {
 		t.Fatalf("%v %v", v, ok)
+	}
+}
+
+func TestDownload_UnpredictableExclusiveNameAndRecordedHash(t *testing.T) {
+	payload := mz(4096)
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, payload) })
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "supcua-v2.exe")
+	os.WriteFile(exe, []byte("MZcurrent"), 0o755)
+	d1, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1.Path == d2.Path || filepath.Dir(d1.Path) != dir || !strings.HasPrefix(filepath.Base(d1.Path), UpdateTempPrefix) {
+		t.Fatalf("names must be random and next to the exe: %q %q", d1.Path, d2.Path)
+	}
+	if _, serr := os.Stat(d1.Path); serr != nil {
+		t.Fatal("a fresh earlier download must not be swept by a later Download")
+	}
+	sum := sha256.Sum256([]byte(payload))
+	if d2.Size != int64(len(payload)) || d2.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("recorded size/hash wrong: %+v", d2)
+	}
+	if b, _ := os.ReadFile(d2.Path); string(b) != payload {
+		t.Fatal("content mismatch")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+		t.Fatal("Download must not modify the running executable")
+	}
+}
+
+func TestDownloadTo_RefusesExistingFile(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(512)) })
+	dst := filepath.Join(t.TempDir(), "planted.exe")
+	os.WriteFile(dst, []byte("attacker"), 0o600)
+	if err := downloadTo(srv.URL, dst); err == nil {
+		t.Fatal("O_EXCL: an existing (pre-planted) file must not be reused")
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "attacker" {
+		t.Fatal("planted file must be left alone")
+	}
+}
+
+func TestDownload_RejectsUntrustedAndNonPE(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "supcua-v2.exe")
+	if _, err := Download("https://evil.example/x.exe", exe); !errors.Is(err, ErrUntrustedURL) {
+		t.Fatalf("untrusted URL: %v", err)
+	}
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>not an exe</html>") })
+	if _, err := Download(srv.URL, exe); err == nil {
+		t.Fatal("non-PE download must fail")
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, UpdateTempPrefix+"*")); len(m) != 0 {
+		t.Fatalf("failed download must leave no temp file: %v", m)
+	}
+}
+
+func downloaded(t *testing.T) (Downloaded, string) {
+	t.Helper()
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(2048)) })
+	exe := filepath.Join(t.TempDir(), "supcua-v2.exe")
+	os.WriteFile(exe, []byte("MZcurrent"), 0o755)
+	d, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, exe
+}
+
+func downloadedIn(t *testing.T, exe string) Downloaded {
+	t.Helper()
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(2048)) })
+	d, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func TestReplace_RefusesTamperedDownloadBeforeTouchingExe(t *testing.T) {
+	for name, mutate := range map[string]func(string){
+		"same size, other bytes": func(p string) { os.WriteFile(p, []byte(mz(2048)[:2]+strings.Repeat("y", 2046)), 0o600) },
+		"truncated":              func(p string) { os.WriteFile(p, []byte("MZ"), 0o600) },
+		"not PE":                 func(p string) { os.WriteFile(p, []byte(strings.Repeat("z", 2048)), 0o600) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, exe := downloaded(t)
+			mutate(d.Path)
+			if err := Replace(d, exe); !errors.Is(err, ErrUpdateChanged) {
+				t.Fatalf("want ErrUpdateChanged, got %v", err)
+			}
+			if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+				t.Fatal("running executable must be untouched")
+			}
+			if _, err := os.Stat(exe + ".old"); !os.IsNotExist(err) {
+				t.Fatal("no rename may happen before verification")
+			}
+			if _, err := os.Stat(d.Path); !os.IsNotExist(err) {
+				t.Fatal("tampered file must be deleted")
+			}
+		})
+	}
+}
+
+func TestReplace_RejectedPathIsNotDeleted(t *testing.T) {
+	d, exe := downloaded(t)
+	other := filepath.Join(t.TempDir(), filepath.Base(d.Path))
+	os.WriteFile(other, []byte(mz(2048)), 0o600)
+	if err := Replace(Downloaded{Path: other, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdatePath) {
+		t.Fatalf("outside dir: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatal("a path rejected for its directory must not be deleted")
+	}
+	renamed := filepath.Join(filepath.Dir(exe), "evil.exe")
+	os.Rename(d.Path, renamed)
+	if err := Replace(Downloaded{Path: renamed, Size: d.Size, SHA256: d.SHA256}, exe); !errors.Is(err, ErrUpdatePath) {
+		t.Fatalf("wrong name: %v", err)
+	}
+	if _, err := os.Stat(renamed); err != nil {
+		t.Fatal("a path rejected for its name must not be deleted")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+		t.Fatal("running executable must be untouched")
+	}
+}
+
+func TestSweepStale_OnlyOldRandomNamesAreDeleted(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name string, age time.Duration) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte("x"), 0o600)
+		old := time.Now().Add(-age)
+		os.Chtimes(p, old, old)
+		return p
+	}
+	oldRandom := mk(UpdateTempPrefix+"0123456789abcdef.exe", 48*time.Hour)
+	freshRandom := mk(UpdateTempPrefix+"fedcba9876543210.exe", time.Hour)
+	oldLegacy := mk("supcua-v2-update.exe", 48*time.Hour)
+	oldOther := mk("notes-update-0123456789abcdef.exe", 48*time.Hour)
+	oldBadHex := mk(UpdateTempPrefix+"zzzzzzzzzzzzzzzz.exe", 48*time.Hour)
+	sweepStale(dir, time.Now())
+	if _, err := os.Stat(oldRandom); !os.IsNotExist(err) {
+		t.Error("an old file with the random pattern must be swept")
+	}
+	for name, p := range map[string]string{"fresh": freshRandom, "legacy name": oldLegacy, "other name": oldOther, "bad hex": oldBadHex} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s file must be left alone", name)
+		}
+	}
+}
+
+func TestDownload_DoesNotDeleteAFreshFileOfAnotherInstance(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, mz(1024)) })
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "supcua-v2.exe")
+	d1, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := Download(srv.URL, exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []Downloaded{d1, d2} {
+		if _, err := os.Stat(d.Path); err != nil {
+			t.Fatalf("fresh download %s must survive another Download: %v", d.Path, err)
+		}
+	}
+}
+
+func TestBuildBatch_FailedMoveRestoresOldAndNeverDeletesIt(t *testing.T) {
+	b, err := buildBatch(42, "new.exe", "app.exe", "app.exe.old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	move := strings.Index(b, `move /y "new.exe" "app.exe"`)
+	fail := strings.Index(b, "if errorlevel 1 (")
+	restore := strings.Index(b, `move /y "app.exe.old" "app.exe"`)
+	closeFail := strings.Index(b, "exit /b 1")
+	delOld := strings.Index(b, `del "app.exe.old"`)
+	if !(move >= 0 && fail > move && restore > fail && closeFail > restore && delOld > closeFail) {
+		t.Fatalf("unexpected script:\n%s", b)
+	}
+	if strings.Count(b, `del "app.exe.old"`) != 1 {
+		t.Fatal(".old may only be deleted once, after the success path")
+	}
+}
+
+func TestReplace_LaunchFailureRestoresExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("would launch the real batch script")
+	}
+	d, exe := downloaded(t)
+	if err := Replace(d, exe); err == nil { // no cmd.exe off Windows: launch fails after verification
+		t.Fatal("expected launch failure")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+		t.Fatalf("executable not restored: %q", b)
+	}
+	if _, err := os.Stat(exe + ".old"); !os.IsNotExist(err) {
+		t.Fatal(".old must not remain after a restore")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), "update.bat")); !os.IsNotExist(err) {
+		t.Fatal("update.bat must be removed after a failed launch")
+	}
+}
+
+func TestDiscardRemovesFile(t *testing.T) {
+	d, _ := downloaded(t)
+	Discard(d)
+	if _, err := os.Stat(d.Path); !os.IsNotExist(err) {
+		t.Fatal("Discard must delete the download")
+	}
+}
+
+func TestBuildBatch_EmbedsHostilePathsLiterally(t *testing.T) {
+	dir := `C:\Users\A B\%TEMP%\!x!\R&D (1)^`
+	b, err := buildBatch(7, dir+`\.supcua-update-1.exe`, dir+`\app.exe`, dir+`\app.exe.old`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	esc := `C:\Users\A B\%%TEMP%%\!x!\R&D (1)^`
+	want := strings.Join([]string{
+		"@echo off",
+		"setlocal DisableDelayedExpansion",
+		"taskkill /pid 7 /f >nul 2>&1",
+		"timeout /t 2 /nobreak >nul",
+		`move /y "` + esc + `\.supcua-update-1.exe" "` + esc + `\app.exe"`,
+		"if errorlevel 1 (",
+		`  move /y "` + esc + `\app.exe.old" "` + esc + `\app.exe"`,
+		`  start "" "` + esc + `\app.exe"`,
+		`  del "%~f0"`,
+		"  exit /b 1",
+		")",
+		`start "" "` + esc + `\app.exe"`,
+		"timeout /t 3 /nobreak >nul",
+		`del "` + esc + `\app.exe.old"`,
+		`del "%~f0"`,
+	}, "\r\n") + "\r\n"
+	if b != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", b, want)
+	}
+	if strings.Contains(b, "EnableDelayedExpansion") || strings.Contains(strings.ReplaceAll(b, "%%", ""), "%TEMP") {
+		t.Fatal("paths must not be expandable")
+	}
+}
+
+func TestBuildBatch_RefusesUnquotablePaths(t *testing.T) {
+	for _, bad := range []string{`C:\a"b\app.exe`, "C:\\a\nb\\app.exe", "C:\\a\rb\\app.exe", "C:\\a\x00b\\app.exe", ""} {
+		if _, err := buildBatch(1, `C:\x\new.exe`, bad, `C:\x\old`); !errors.Is(err, ErrUpdateBatchPath) {
+			t.Errorf("%q: want ErrUpdateBatchPath, got %v", bad, err)
+		}
+	}
+}
+
+func TestReplace_UnquotablePathRefusedBeforeTouchingExe(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, `bad"dir`)
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Skip("filesystem rejects the name")
+	}
+	exe := filepath.Join(dir, "app.exe")
+	if err := os.WriteFile(exe, []byte("MZcurrent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := downloadedIn(t, exe)
+	if err := Replace(d, exe); !errors.Is(err, ErrUpdateBatchPath) {
+		t.Fatalf("want ErrUpdateBatchPath, got %v", err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "MZcurrent" {
+		t.Fatalf("executable touched: %q", b)
+	}
+	if _, err := os.Stat(exe + ".old"); !os.IsNotExist(err) {
+		t.Fatal("no .old may be created")
+	}
+}
+
+func TestBatchCommand_RelativeConstantScript(t *testing.T) {
+	dir := `C:\Program Files\%TEMP%\R&D`
+	c := batchCommand(dir)
+	want := []string{"cmd", "/c", "start", "/b", "cmd", "/c", `.\update.bat`}
+	if strings.Join(c.Args, "|") != strings.Join(want, "|") {
+		t.Fatalf("argv %q", c.Args)
+	}
+	if c.Dir != dir {
+		t.Fatalf("dir %q", c.Dir)
+	}
+	for _, a := range c.Args {
+		if strings.Contains(a, dir) || strings.ContainsAny(a, "\" %!&") {
+			t.Fatalf("argument %q carries a path or needs quoting", a)
+		}
 	}
 }

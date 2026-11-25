@@ -39,12 +39,24 @@ type ScriptStore struct {
 	pendingOrd []string
 	draining   bool
 	idle       chan struct{} // closed when the worker drains
+	onSaveErr  func(script model.Script, err error)
 }
 
 // NewScriptStore creates a ScriptStore for the given directory.
 func NewScriptStore(scriptsDirectory string) *ScriptStore {
 	return &ScriptStore{scriptsDirectory: scriptsDirectory}
 }
+
+// SetOnSaveError registers a hook called from the save worker when a queued write fails.
+// The hook runs without any store lock held and must not block.
+func (scriptStore *ScriptStore) SetOnSaveError(hook func(script model.Script, err error)) {
+	scriptStore.queueMu.Lock()
+	scriptStore.onSaveErr = hook
+	scriptStore.queueMu.Unlock()
+}
+
+// SanitizeName returns the file-name stem a script name maps to.
+func SanitizeName(name string) string { return sanitizeName(name) }
 
 // sanitizeName converts a script name to a safe filename (lowercase, underscores).
 func sanitizeName(name string) string {
@@ -109,6 +121,41 @@ func (scriptStore *ScriptStore) NameOrFileTaken(name string) bool {
 	}
 	_, err := os.Stat(scriptStore.scriptFilePath(name))
 	return err == nil
+}
+
+// NameOrFileTakenExcept is NameOrFileTaken for a script that already exists: a name, a queued or
+// in-flight write, or a file owned by excludeID itself does not count as taken. The final guard is
+// writeLocked, which refuses to overwrite a file owned by a different script.
+func (scriptStore *ScriptStore) NameOrFileTakenExcept(name, excludeID string) bool {
+	if scriptStore.NameExists(name, excludeID) {
+		return true
+	}
+	target := sanitizeName(name)
+	clash := func(item queuedSave) bool {
+		return item.script.ID != excludeID &&
+			(strings.EqualFold(item.script.Name, name) || sanitizeName(item.script.Name) == target)
+	}
+	scriptStore.queueMu.Lock()
+	for _, item := range scriptStore.pending {
+		if clash(item) {
+			scriptStore.queueMu.Unlock()
+			return true
+		}
+	}
+	for _, item := range scriptStore.inflight {
+		if clash(item) {
+			scriptStore.queueMu.Unlock()
+			return true
+		}
+	}
+	scriptStore.queueMu.Unlock()
+	path := scriptStore.scriptFilePath(name)
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	scriptStore.mu.Lock()
+	defer scriptStore.mu.Unlock()
+	return scriptStore.indexLocked()[excludeID] != path
 }
 
 // indexLocked returns the ID->path index, scanning the directory once if needed. Caller holds mu.
@@ -190,6 +237,11 @@ func (scriptStore *ScriptStore) writeLocked(script model.Script) error {
 		return fmt.Errorf("marshal script: %w", err)
 	}
 	newPath := scriptStore.scriptFilePath(script.Name)
+	for otherID, otherPath := range index {
+		if otherID != script.ID && otherPath == newPath {
+			return fmt.Errorf("script file %s belongs to another script", filepath.Base(newPath))
+		}
+	}
 	tmpPath := newPath + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return err
@@ -257,14 +309,28 @@ func (scriptStore *ScriptStore) FlushSaves(timeout time.Duration) bool {
 
 // writeQueued writes a queued snapshot only if it is still the latest for its ID.
 func (scriptStore *ScriptStore) writeQueued(item queuedSave) {
+	err := scriptStore.writeQueuedLocked(item)
+	if err == nil {
+		return
+	}
+	scriptStore.queueMu.Lock()
+	hook := scriptStore.onSaveErr
+	scriptStore.queueMu.Unlock()
+	if hook != nil {
+		hook(item.script, err)
+	}
+}
+
+func (scriptStore *ScriptStore) writeQueuedLocked(item queuedSave) error {
 	scriptStore.mu.Lock()
 	defer scriptStore.mu.Unlock()
 	scriptStore.queueMu.Lock()
 	current := scriptStore.gen[item.script.ID] == item.token
 	scriptStore.queueMu.Unlock()
-	if current {
-		scriptStore.writeLocked(item.script)
+	if !current {
+		return nil
 	}
+	return scriptStore.writeLocked(item.script)
 }
 
 func (scriptStore *ScriptStore) drainQueue() {

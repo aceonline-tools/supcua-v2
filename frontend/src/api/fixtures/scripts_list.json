@@ -1,0 +1,1 @@
+{"rev":3,"scripts":[{"id":"s1","name":"Defense buff","group":"Buffs","run_mode":"once","hotkey_mode":"toggle","hotkey_label":"F5","enabled":true,"running":false}],"groups":[{"name":"Buffs","count":1,"all_enabled":true,"collapsed":false}]}

@@ -1,0 +1,30 @@
+{
+  "viewport": "1280x800",
+  "browser": "157.0.8103.52",
+  "screens": [
+    {
+      "name": "main-dark",
+      "overflow": []
+    },
+    {
+      "name": "main-light",
+      "overflow": []
+    },
+    {
+      "name": "script-editor-dark",
+      "overflow": []
+    },
+    {
+      "name": "settings-dark",
+      "overflow": []
+    },
+    {
+      "name": "settings-light",
+      "overflow": []
+    },
+    {
+      "name": "surfaces-dark",
+      "overflow": []
+    }
+  ]
+}

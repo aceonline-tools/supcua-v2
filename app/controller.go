@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/yanmad27/supcua-v2/app/status"
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	"github.com/yanmad27/supcua-v2/model"
@@ -32,6 +33,9 @@ type Controller struct {
 	scriptStore    *storage.ScriptStore
 	configStore    *storage.ConfigStore
 
+	hub status.Hub
+
+	// OnStatusChange is kept as an adapter for existing callers; new code subscribes via Subscribe.
 	OnStatusChange StatusChangeCallback
 }
 
@@ -70,6 +74,50 @@ func (appController *Controller) ToggleGlobalStatus() {
 		appController.StopRunningScript()
 	}
 
+	appController.notify()
+}
+
+// SetGlobalActive sets the global active state; going inactive cancels any running script.
+func (appController *Controller) SetGlobalActive(active bool) {
+	appController.stateMutex.Lock()
+	changed := appController.globalActive != active
+	appController.globalActive = active
+	appController.stateMutex.Unlock()
+	if !changed {
+		return
+	}
+	if !active {
+		appController.StopRunningScript()
+	}
+	appController.notify()
+}
+
+// Snapshot returns the current status.
+func (appController *Controller) Snapshot() status.Snapshot {
+	appController.stateMutex.RLock()
+	defer appController.stateMutex.RUnlock()
+	return status.Snapshot{
+		GlobalActive:      appController.globalActive,
+		RunningScriptID:   appController.runningScriptID,
+		RunningScriptName: appController.runningScriptName,
+		EditDialogOpen:    appController.editDialogOpen,
+		QueueLength:       len(appController.scriptQueue),
+	}
+}
+
+// Subscribe registers a status subscriber; the latest snapshot is replayed. fn must not block.
+func (appController *Controller) Subscribe(fn func(status.Snapshot)) {
+	appController.hub.Subscribe(fn)
+}
+
+// publish sends the current snapshot to the hub. Must be called without stateMutex held.
+func (appController *Controller) publish() {
+	appController.hub.PublishFunc(appController.Snapshot)
+}
+
+// notify publishes to the hub and invokes the legacy OnStatusChange callback.
+func (appController *Controller) notify() {
+	appController.publish()
 	if appController.OnStatusChange != nil {
 		appController.OnStatusChange()
 	}
@@ -91,6 +139,7 @@ func (appController *Controller) SetEditDialogOpen(open bool) {
 	if open {
 		appController.StopRunningScript()
 	}
+	appController.publish()
 }
 
 // GetRunningScriptID returns the ID of the currently running script, or empty.
@@ -171,9 +220,7 @@ func (appController *Controller) dequeueNext() {
 		}
 	}
 	appController.stateMutex.Unlock()
-	if appController.OnStatusChange != nil {
-		appController.OnStatusChange()
-	}
+	appController.notify()
 }
 
 // enqueueLocked appends script unless one with the same ID is already queued.
@@ -222,9 +269,7 @@ func (appController *Controller) StartScript(script model.Script) {
 	appController.launchLocked(script)
 	appController.stateMutex.Unlock()
 
-	if appController.OnStatusChange != nil {
-		appController.OnStatusChange()
-	}
+	appController.notify()
 }
 
 // StopRunningScript cancels the currently running script and clears the queue.
@@ -235,4 +280,5 @@ func (appController *Controller) StopRunningScript() {
 		appController.cancelRunningScript()
 	}
 	appController.stateMutex.Unlock()
+	appController.publish()
 }
