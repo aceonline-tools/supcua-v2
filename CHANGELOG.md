@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.1.0...v1.2.0) (2026-11-25)
+
+
+### Features
+
+* **ui:** replace Win32 UI with WebView2 + Svelte frontend ([#7](https://github.com/aceonline-tools/supcua-v2/issues/7)) ([84a8844](https://github.com/aceonline-tools/supcua-v2/commit/84a88449a9b3cd55b3071c613b0818a4215f2c1f))
+
 ## [1.1.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.0.28...v1.1.0) (2026-11-16)
 
 
