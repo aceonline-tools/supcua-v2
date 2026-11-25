@@ -52,16 +52,17 @@ func SampleClient(hwnd uintptr) (SurfaceSample, error) {
 	}
 	defer win.DeleteObject(win.HGDIOBJ(bmp))
 	old := win.SelectObject(mem, win.HGDIOBJ(bmp))
-	defer win.SelectObject(mem, old)
 	const captureBlt = 0x40000000
-	if !win.BitBlt(mem, 0, 0, int32(w), int32(ht), screen, pt.X, pt.Y, win.SRCCOPY|captureBlt) {
+	blt := win.BitBlt(mem, 0, 0, int32(w), int32(ht), screen, pt.X, pt.Y, win.SRCCOPY|captureBlt)
+	win.SelectObject(mem, old) // GetDIBits requires the bitmap not to be selected into a DC
+	if !blt {
 		return s, errors.New("BitBlt failed")
 	}
 	bi := win.BITMAPINFOHEADER{BiWidth: int32(w), BiHeight: -int32(ht), BiPlanes: 1, BiBitCount: 32, BiCompression: win.BI_RGB}
 	bi.BiSize = uint32(unsafe.Sizeof(bi))
 	buf := make([]byte, w*ht*4)
-	if win.GetDIBits(mem, bmp, 0, uint32(ht), &buf[0], (*win.BITMAPINFO)(unsafe.Pointer(&bi)), win.DIB_RGB_COLORS) == 0 {
-		return s, errors.New("GetDIBits failed")
+	if n := win.GetDIBits(mem, bmp, 0, uint32(ht), &buf[0], (*win.BITMAPINFO)(unsafe.Pointer(&bi)), win.DIB_RGB_COLORS); int(n) != ht {
+		return s, fmt.Errorf("GetDIBits copied %d of %d scan lines", n, ht)
 	}
 	counts := map[uint32]int{}
 	for i := 0; i+3 < len(buf); i += 4 * 3 {

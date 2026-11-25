@@ -241,21 +241,30 @@ jobs:
           $sig = '[StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; } [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);'
           Add-Type -Namespace W -Name U -MemberDefinition $sig
           $paint = "not sampled"; $distinct = 0
-          if (-not $p.HasExited) {
-            Start-Sleep -Seconds 3
+          Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);' -Namespace W -Name F
+          $deadline2 = (Get-Date).AddSeconds(20)
+          while (-not $p.HasExited) {
             $p.Refresh(); $h = $p.MainWindowHandle
             if ($h -ne [IntPtr]::Zero) {
+              [void][W.F]::SetWindowPos($h, [IntPtr]::new(-1), 0, 0, 0, 0, 0x53)
+              [void][W.F]::SetForegroundWindow($h)
               $r = New-Object W.U+RECT; [void][W.U]::GetClientRect($h, [ref]$r)
               $pt = New-Object W.U+PT; [void][W.U]::ClientToScreen($h, [ref]$pt)
               $w = $r.R - $r.L; $ht = $r.B - $r.T
-              $bmp = New-Object System.Drawing.Bitmap $w, $ht
-              $g = [System.Drawing.Graphics]::FromImage($bmp)
-              $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
-              $seen = @{}
-              for ($y = 0; $y -lt $ht; $y += 5) { for ($x = 0; $x -lt $w; $x += 5) { $seen[$bmp.GetPixel($x, $y).ToArgb()] = 1 } }
-              $distinct = $seen.Count; $paint = "client=${w}x${ht} distinct=$distinct"
+              if ($w -gt 0 -and $ht -gt 0) {
+                $bmp = New-Object System.Drawing.Bitmap $w, $ht
+                $g = [System.Drawing.Graphics]::FromImage($bmp)
+                $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
+                $seen = @{}
+                for ($y = 0; $y -lt $ht; $y += 5) { for ($x = 0; $x -lt $w; $x += 5) { $seen[$bmp.GetPixel($x, $y).ToArgb()] = 1 } }
+                $distinct = $seen.Count; $paint = "client=${w}x${ht} distinct=$distinct"
+                if ($distinct -ge 4) { break }
+              }
             } else { $paint = "no main window handle" }
+            if ((Get-Date) -gt $deadline2) { break }
+            Start-Sleep -Milliseconds 500
           }
+          if ($distinct -lt 4 -and $bmp) { New-Item -ItemType Directory -Force -Path out/blank | Out-Null; $bmp.Save((Join-Path $PWD "out/blank/noflags-window.png")) }
           Write-Host "window pixels (default dark theme): $paint"
           $exited = $p.HasExited
           if (-not $exited) { $p.Kill($true) }
@@ -275,4 +284,11 @@ jobs:
           name: app-selftest-results
           path: out/results/
           if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: app-selftest-blank-window
+          path: out/blank/
+          if-no-files-found: ignore
           retention-days: 7

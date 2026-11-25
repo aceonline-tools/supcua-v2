@@ -34,7 +34,8 @@ func (e *Chromium) Surface() (SurfaceState, error) {
 }
 
 // Reassert re-applies the controller's visibility and bounds from the host window's current
-// state. A controller created under a hidden parent window can stay non-presenting (the
+// state. The put_IsVisible and NotifyParentWindowPositionChanged HRESULTs are checked; the
+// bounds update goes through Resize, whose results are not. A controller created under a hidden parent window can stay non-presenting (the
 // default white background) after the parent is shown unless it is told to present.
 func (e *Chromium) Reassert() error {
 	if e.controller == nil {

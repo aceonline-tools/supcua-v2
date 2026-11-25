@@ -19,4 +19,4 @@ Rule: every COM vtable is a package-level `var`; no `NewCallback` outside packag
 
 ## NavigationCompleted result (go-fixes)
 - patch_navargs.go: `ICoreWebView2NavigationCompletedEventArgs.NavigationResult()` (IsSuccess + WebErrorStatus via the existing vtable; fails closed). No new `NewComProc`/`NewCallback` site: the callback count (40) is unchanged.
-- patch_surface.go: `Surface()` (IsVisible + Bounds read-back) and `Reassert()` (put_IsVisible(true) + bounds + NotifyParentWindowPositionChanged), HRESULT-checked. No new NewComProc site.
+- patch_surface.go: `Surface()` (IsVisible + Bounds read-back) and `Reassert()` (put_IsVisible(true) + Resize + NotifyParentWindowPositionChanged); Surface and the put_IsVisible/Notify calls are HRESULT-checked, the Resize bounds update is not. No new NewComProc site.
