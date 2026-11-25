@@ -2,7 +2,7 @@ package hotkey
 
 import (
 	"errors"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -21,34 +21,48 @@ type regReply struct {
 	err error
 }
 
-// regRequest is one registration. mu makes "the listener executes it" and "the caller gives up"
-// mutually exclusive: a request is either executed (and its reply is then visible to the caller
-// that timed out) or cancelled before the listener starts it. A timed-out caller can therefore
-// never leave an untracked OS registration behind, and no helper goroutine is needed.
+// Request states. The caller and the listener race only through compare-and-swap; no lock is
+// held while the listener executes, so the caller's deadline is always honoured.
+const (
+	reqPending   int32 = iota // queued, not started
+	reqExecuting              // the listener is running RegisterHotKey
+	reqDone                   // finished and result published (res)
+	reqCancelled              // caller gave up before the listener started: never executed
+	reqAbandoned              // caller gave up while executing: the listener releases the result
+)
+
 type regRequest struct {
 	hotkey   model.Hotkey
 	callback HotkeyCallback
-	reply    chan regReply
 
-	mu        sync.Mutex
-	cancelled bool
+	state atomic.Int32
+	res   regReply      // written by the listener before the CAS to reqDone
+	done  chan struct{} // closed by the listener on reqDone
 }
 
 func newRegRequest(hk model.Hotkey, cb HotkeyCallback) *regRequest {
-	return &regRequest{hotkey: hk, callback: cb, reply: make(chan regReply, 1)}
+	return &regRequest{hotkey: hk, callback: cb, done: make(chan struct{})}
 }
 
-// serve runs on the listener thread: it executes the request unless the caller already gave up.
-func (r *regRequest) serve(exec func(model.Hotkey, HotkeyCallback) regReply) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.cancelled {
+// serve runs on the listener thread. A cancelled request is skipped. If the caller abandoned the
+// request while it executed, the listener itself releases a successful registration (it owns it
+// and drops its callback), so nothing is orphaned and no helper goroutine exists.
+func (r *regRequest) serve(exec func(model.Hotkey, HotkeyCallback) regReply, release func(id int)) {
+	if !r.state.CompareAndSwap(reqPending, reqExecuting) {
 		return
 	}
-	r.reply <- exec(r.hotkey, r.callback)
+	res := exec(r.hotkey, r.callback)
+	r.res = res
+	if r.state.CompareAndSwap(reqExecuting, reqDone) {
+		close(r.done)
+		return
+	}
+	if res.err == nil && res.id != 0 && release != nil {
+		release(res.id)
+	}
 }
 
-// registerBounded queues a registration for the listener and waits at most d for the answer.
+// registerBounded queues a registration for the listener and returns within d in all cases.
 func registerBounded(ch chan<- *regRequest, hk model.Hotkey, cb HotkeyCallback, d time.Duration) (int, error) {
 	req := newRegRequest(hk, cb)
 	timer := time.NewTimer(d)
@@ -59,17 +73,13 @@ func registerBounded(ch chan<- *regRequest, hk model.Hotkey, cb HotkeyCallback, 
 		return 0, ErrRegisterTimeout
 	}
 	select {
-	case r := <-req.reply:
-		return r.id, r.err
+	case <-req.done:
+		return req.res.id, req.res.err
 	case <-timer.C:
 	}
-	req.mu.Lock() // waits out an execution already in flight (RegisterHotKey is fast)
-	defer req.mu.Unlock()
-	select {
-	case r := <-req.reply:
-		return r.id, r.err
-	default:
-		req.cancelled = true
+	if req.state.CompareAndSwap(reqPending, reqCancelled) || req.state.CompareAndSwap(reqExecuting, reqAbandoned) {
 		return 0, ErrRegisterTimeout
 	}
+	<-req.done // state is reqDone: the listener closes it immediately after the CAS
+	return req.res.id, req.res.err
 }

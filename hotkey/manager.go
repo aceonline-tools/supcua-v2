@@ -206,6 +206,31 @@ func (m *Manager) registerOnListener(hk model.Hotkey, cb HotkeyCallback) regRepl
 	return regReply{id, nil}
 }
 
+// unregisterOnListener releases one registration (listener thread only): it drops the callback
+// first, so a released hotkey can never fire it.
+func (m *Manager) unregisterOnListener(id int) error {
+	m.pollMu.Lock()
+	found := false
+	for i, pk := range m.pollKeys {
+		if pk.id == id {
+			m.pollKeys = append(m.pollKeys[:i], m.pollKeys[i+1:]...)
+			found = true
+			break
+		}
+	}
+	m.pollMu.Unlock()
+	if found {
+		return nil
+	}
+	return removeRegistration(&m.mu, m.callbacks, id, func(id int) error {
+		ret, _, err := procUnregisterHotKey.Call(0, uintptr(id))
+		if ret == 0 {
+			return err
+		}
+		return nil
+	})
+}
+
 // ListenForHotkeys starts the Windows message loop on a locked OS thread.
 // This blocks — run in a goroutine.
 func (m *Manager) ListenForHotkeys() {
@@ -228,31 +253,10 @@ func (m *Manager) ListenForHotkeys() {
 		for {
 			select {
 			case req := <-m.registerCh:
-				req.serve(m.registerOnListener)
+				req.serve(m.registerOnListener, func(id int) { _ = m.unregisterOnListener(id) })
 
 			case req := <-m.unregisterCh:
-				// Check poll keys first
-				m.pollMu.Lock()
-				found := false
-				for i, pk := range m.pollKeys {
-					if pk.id == req.id {
-						m.pollKeys = append(m.pollKeys[:i], m.pollKeys[i+1:]...)
-						found = true
-						break
-					}
-				}
-				m.pollMu.Unlock()
-				if found {
-					req.reply <- nil
-					continue
-				}
-				req.reply <- removeRegistration(&m.mu, m.callbacks, req.id, func(id int) error {
-					ret, _, err := procUnregisterHotKey.Call(0, uintptr(id))
-					if ret == 0 {
-						return err
-					}
-					return nil
-				})
+				req.reply <- m.unregisterOnListener(req.id)
 			default:
 				goto doneChannels
 			}

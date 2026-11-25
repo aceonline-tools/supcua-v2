@@ -129,6 +129,27 @@ func TestLoadWatchFiresWithStageAndIsDisarmedByMount(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 }
 
+func TestMountRacingTheDeadlineIsVisibleBeforeAnyWarningIsShown(t *testing.T) {
+	var s logSink
+	shown := false
+	var w *LoadWatch
+	w = &LoadWatch{Timeout: 10 * time.Millisecond, Stage: func() string { return "x" }, Logf: s.Logf,
+		OnTimeout: func(string) {
+			w.Mounted() // the page mounts after the deadline fired but before the box is created
+			if !w.IsMounted() {
+				t.Error("mount not visible")
+			}
+			if !w.IsMounted() { // what main does right before ShowLoadTimeout
+				shown = true
+			}
+		}}
+	w.Start()
+	time.Sleep(60 * time.Millisecond)
+	if shown || !w.IsMounted() {
+		t.Fatal("a warning would have been shown after the mount")
+	}
+}
+
 func TestStagesLogOneLinePerStage(t *testing.T) {
 	var s logSink
 	st := NewStages(s.Logf)

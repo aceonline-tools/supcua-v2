@@ -101,10 +101,13 @@ func newDiagKit(stages *ui.Stages, res *webview.Result, logPath string) *diagKit
 				res.Step("frontend mounted", false, "not mounted within "+initialLoadDeadline.String()+"; last stage: "+stage)
 				os.Exit(res.Finish(1))
 			}
+			if k.watch.IsMounted() { // mounted between the deadline and now: nothing to warn about
+				return
+			}
 			webview.ShowLoadTimeout(logPath, stage)
 		},
 	}
-	k.watch.OnLate = func(time.Duration) { webview.DismissLoadTimeout() }
+	k.watch.OnLate = func(time.Duration) { go webview.DismissLoadTimeout() }
 	k.diag = &ui.Diag{Logf: log.Printf, OnMounted: func(route string) {
 		stages.Mark("frontend mounted route=" + route)
 		k.watch.Mounted()

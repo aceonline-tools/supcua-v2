@@ -74,22 +74,29 @@ func SendHotkey(hk model.Hotkey) error {
 		}
 		return nil
 	}
+	var first error
+	keep := func(err error) {
+		if first == nil {
+			first = err
+		}
+	}
 	pressed := 0
-	release := func() {
+	release := func() { // attempt every key-up, newest first; never stop at the first failure
 		for i := pressed - 1; i >= 0; i-- {
-			_ = send(seq[i], keyEventKeyUp)
+			keep(send(seq[i], keyEventKeyUp))
 		}
 		pressed = 0
 	}
 	for _, vk := range seq {
 		if err := send(vk, 0); err != nil {
+			keep(err)
 			release() // never leave a modifier stuck down
-			return err
+			return first
 		}
 		pressed++
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(60 * time.Millisecond)
 	release()
-	return nil
+	return first
 }

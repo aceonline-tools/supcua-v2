@@ -50,6 +50,14 @@ func (w *LoadWatch) fire() {
 	}
 }
 
+// IsMounted reports whether the frontend already mounted. OnTimeout must check it immediately
+// before showing anything, so a mount that raced the deadline never produces a warning.
+func (w *LoadWatch) IsMounted() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.mounted
+}
+
 // Mounted disarms the deadline and reports whether the frontend arrived after it had fired.
 func (w *LoadWatch) Mounted() (late bool) {
 	w.mu.Lock()

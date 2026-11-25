@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 	"unsafe"
 
 	"github.com/jchv/go-webview2/webviewloader"
@@ -67,14 +68,47 @@ func ShowLoadTimeout(logPath, stage string) {
 	windows.MessageBox(0, t, loadTimeoutTitle, windows.MB_OK|windows.MB_ICONWARNING|windows.MB_TOPMOST)
 }
 
-var loadTimeoutTitle = func() *uint16 { p, _ := windows.UTF16PtrFromString("supcua-v2 is still loading"); return p }()
+const loadTimeoutTitleText = "supcua-v2 is still loading"
 
-// DismissLoadTimeout closes the ShowLoadTimeout box if it is open (the page mounted after all).
-func DismissLoadTimeout() {
+var loadTimeoutTitle = func() *uint16 { p, _ := windows.UTF16PtrFromString(loadTimeoutTitleText); return p }()
+
+var (
+	procFindWindowEx       = user32.NewProc("FindWindowExW")
+	procGetWindowThreadPID = user32.NewProc("GetWindowThreadProcessId")
+)
+
+// closeOurLoadBoxes posts WM_CLOSE to every top-level #32770 dialog of THIS process with the
+// load-timeout title. It walks the windows with FindWindowEx (no callback: the process's
+// NewCallback count is a self-test invariant).
+func closeOurLoadBoxes() {
 	const wmClose = 0x0010
 	class, _ := windows.UTF16PtrFromString("#32770")
-	if hwnd, _, _ := procFindWindow.Call(uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(loadTimeoutTitle))); hwnd != 0 {
-		procPostMessage.Call(hwnd, wmClose, 0, 0)
+	var prev uintptr
+	for i := 0; i < 16; i++ {
+		hwnd, _, _ := procFindWindowEx.Call(0, prev, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(loadTimeoutTitle)))
+		if hwnd == 0 {
+			return
+		}
+		var pid uint32
+		procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+		if pid == windows.GetCurrentProcessId() {
+			procPostMessage.Call(hwnd, wmClose, 0, 0)
+		}
+		prev = hwnd
+	}
+}
+
+// DismissLoadTimeout closes the ShowLoadTimeout box of this process if it is open (the page
+// mounted after all). It keeps looking for up to 2 s, so a box created just after the mount
+// (the deadline raced it) is still closed. Blocking and bounded: call it from a goroutine.
+func DismissLoadTimeout() {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		closeOurLoadBoxes()
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -92,7 +126,6 @@ func showInstallerBox(title, text string) {
 var (
 	user32            = windows.NewLazySystemDLL("user32.dll")
 	kernel32          = windows.NewLazySystemDLL("kernel32.dll")
-	procFindWindow    = user32.NewProc("FindWindowW")
 	procPostMessage   = user32.NewProc("PostMessageW")
 	procGuiResources  = user32.NewProc("GetGuiResources")
 	procHandleCount   = kernel32.NewProc("GetProcessHandleCount")
