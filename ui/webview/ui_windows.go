@@ -437,6 +437,10 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 		switch msg {
 		case win.WM_SIZE:
 			u.browser.Resize()
+		case win.WM_SHOWWINDOW:
+			if wp != 0 {
+				u.presentSurface("shown")
+			}
 		case win.WM_MOVE, win.WM_MOVING:
 			_ = u.browser.NotifyParentWindowPositionChanged()
 		case win.WM_SETFOCUS:
@@ -528,4 +532,32 @@ var procMonitorFromRect = user32.NewProc("MonitorFromRect")
 func onSomeMonitor(r *win.RECT) bool {
 	h, _, _ := procMonitorFromRect.Call(uintptr(unsafe.Pointer(r)), 0) // MONITOR_DEFAULTTONULL
 	return h != 0
+}
+
+var procGetDpiForWindow = user32.NewProc("GetDpiForWindow")
+
+// presentSurface makes the controller present after the host window is shown: the controller
+// is created while the host is still hidden and must be told to present once it is visible,
+// otherwise the client area keeps the WebView2 default (white) background. It logs the
+// controller's own IsVisible/Bounds next to the host client rect so a blank window is
+// diagnosable from the log. UI thread only.
+func (u *UI) presentSurface(reason string) {
+	b := u.browser
+	if b == nil {
+		return
+	}
+	if err := b.Reassert(); err != nil {
+		log.Printf("webview: surface %s: reassert failed: %v", reason, err)
+	}
+	var cr win.RECT
+	win.GetClientRect(u.hwnd, &cr)
+	dpi, _, _ := procGetDpiForWindow.Call(uintptr(u.hwnd))
+	st, err := b.Surface()
+	if err != nil {
+		log.Printf("webview: surface %s: state unavailable: %v", reason, err)
+		return
+	}
+	log.Printf("webview: surface %s: client=%dx%d controller=%dx%d@(%d,%d) visible=%v hostVisible=%v dpi=%d",
+		reason, cr.Right-cr.Left, cr.Bottom-cr.Top, st.Bounds.Right-st.Bounds.Left, st.Bounds.Bottom-st.Bounds.Top,
+		st.Bounds.Left, st.Bounds.Top, st.Visible, win.IsWindowVisible(u.hwnd), dpi)
 }
