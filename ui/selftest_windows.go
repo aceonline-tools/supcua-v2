@@ -299,6 +299,14 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 		_ = json.Unmarshal(r.V, &dom)
 	}
 	step("DOM rendered with the seeded script list", err == nil && dom.Children > 0 && dom.Rows > 0, fmt.Sprintf("err=%v %+v", err, dom))
+	var smp SurfaceSample
+	var smpErr error
+	painted := waitFor(10*time.Second, func() bool {
+		smp, smpErr = SampleClient(s.UI.HWND())
+		return smpErr == nil && !smp.WhiteRun && smp.Distinct >= 4
+	})
+	step("window client area is painted (screen pixels, not a blank/white surface)", painted,
+		fmt.Sprintf("err=%v size=%dx%d distinct=%d dominant=#%06X", smpErr, smp.W, smp.H, smp.Distinct, smp.Dominant))
 	// Fail loudly if the fixture config was not the one loaded (e.g. missing from the checkout):
 	// every expectation below is a literal from testdata/prod-fixture/config.json.
 	themeOK := step("seeded theme applied (fixture: light)", dom.Theme == "light", "theme="+dom.Theme)
