@@ -6,3 +6,4 @@ config.json
 .env
 ui/webview/assets/dist/*
 !ui/webview/assets/dist/index.html
+!testdata/prod-fixture/config.json

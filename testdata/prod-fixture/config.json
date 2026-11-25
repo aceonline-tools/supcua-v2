@@ -1,0 +1,45 @@
+{
+  "global_hotkey": {
+    "modifiers": [
+      "ctrl",
+      "alt",
+      "shift"
+    ],
+    "key": "f9"
+  },
+  "capture_hotkey": {
+    "modifiers": [],
+    "key": "p"
+  },
+  "overlay_hotkey": {
+    "modifiers": [
+      "ctrl",
+      "alt",
+      "shift"
+    ],
+    "key": "f10"
+  },
+  "overlay_enabled": true,
+  "overlay_position": {
+    "x": 120,
+    "y": 80
+  },
+  "main_window_pos": {
+    "x": 80,
+    "y": 60,
+    "width": 1000,
+    "height": 700
+  },
+  "edit_dialog_pos": {
+    "x": 100,
+    "y": 100
+  },
+  "scripts_dir": "./scripts",
+  "key_press_duration_ms": 25,
+  "auto_active_enabled": true,
+  "auto_active_process_name": "fixture-game.exe",
+  "theme": "light",
+  "collapsed_groups": [
+    "Utilities"
+  ]
+}

@@ -717,7 +717,7 @@ func main() {
 				FixedRegistered: fixed.count, ScriptHotkeyCount: scriptHotkeys.Count,
 				GlobalActive: appController.IsGlobalActive, RunningScriptID: appController.GetRunningScriptID,
 				GlobalHotkey: appConfig.GlobalHotkey, ProbeHotkey: probe, ProbeID: "fx-probe-1",
-				ExpectFixed: 2, ExpectTheme: appConfig.Theme, ExpectRow: "Fixture Farm",
+				ExpectFixed: 2, AutoActiveEnabled: appConfig.AutoActiveEnabled, ExpectRow: "Fixture Farm",
 			})
 		} else {
 			go selftest.Run()

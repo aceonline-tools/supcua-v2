@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"time"
 
@@ -236,12 +237,12 @@ type ProductionHooks struct {
 	GlobalActive      func() bool
 	RunningScriptID   func() string
 
-	GlobalHotkey model.Hotkey
-	ProbeHotkey  model.Hotkey // toggle hotkey of the fixture's input-free probe script
-	ProbeID      string
-	ExpectFixed  int
-	ExpectTheme  string
-	ExpectRow    string // a known script name in the list
+	GlobalHotkey      model.Hotkey
+	ProbeHotkey       model.Hotkey // toggle hotkey of the fixture's input-free probe script
+	ProbeID           string
+	ExpectFixed       int
+	AutoActiveEnabled bool   // the LOADED config's auto_active_enabled
+	ExpectRow         string // a known script name in the list
 }
 
 func waitFor(timeout time.Duration, cond func() bool) bool {
@@ -298,8 +299,16 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 		_ = json.Unmarshal(r.V, &dom)
 	}
 	step("DOM rendered with the seeded script list", err == nil && dom.Children > 0 && dom.Rows > 0, fmt.Sprintf("err=%v %+v", err, dom))
-	if h.ExpectTheme != "" {
-		step("seeded theme applied", dom.Theme == h.ExpectTheme, "theme="+dom.Theme)
+	// Fail loudly if the fixture config was not the one loaded (e.g. missing from the checkout):
+	// every expectation below is a literal from testdata/prod-fixture/config.json.
+	themeOK := step("seeded theme applied (fixture: light)", dom.Theme == "light", "theme="+dom.Theme)
+	want := model.Hotkey{Modifiers: []string{"ctrl", "alt", "shift"}, Key: "f9"}
+	hkOK := step("seeded global hotkey loaded (fixture: ctrl+alt+shift+f9)", reflect.DeepEqual(h.GlobalHotkey, want), fmt.Sprintf("%+v", h.GlobalHotkey))
+	aaOK := step("seeded auto-active enabled loaded (fixture: true)", h.AutoActiveEnabled, "")
+	if !themeOK || !hkOK || !aaOK {
+		step("fixture config loaded", false, "the production selftest ran on the default config; aborting before the hotkey steps")
+		done()
+		return
 	}
 	step("overlay window created", s.Overlay.Window() != nil, "")
 
