@@ -120,6 +120,21 @@ describe('editor lifecycle', () => {
     expect(await store.editor.close()).toBe('closed');
   });
 
+  it('an edit during a pending NAME_EMPTY save-on-close is never silently discarded', async () => {
+    await store.openNew();
+    let release!: () => void;
+    mock.holds.set('editor.save', new Promise<void>((r) => (release = r)));
+    const closing = store.editor.close();
+    await vi.waitFor(() => expect(count('editor.save')).toBe(1));
+    store.editor.script!.name = ''; store.editor.script!.actions = [...store.editor.script!.actions];
+    store.editor.markDirty();
+    mock.holds.delete('editor.save');
+    release();
+    expect(await closing).toBe('failed');
+    expect(store.editor.sessionId).not.toBeNull();
+    expect(store.editor.discardPrompt).toBeTruthy();
+  });
+
   it('an edit made during an in-flight save-on-close is saved, not overwritten', async () => {
     await store.openEditor('s3');
     store.editor.script!.name = 'First';

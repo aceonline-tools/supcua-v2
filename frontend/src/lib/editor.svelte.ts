@@ -368,6 +368,7 @@ export class EditorStore {
     } catch (e) {
       if (this.sessionId !== sid) return 'failed';
       if (e instanceof ApiError) {
+        if (gen !== this.gen) return 'stale'; // verdict on an outdated snapshot: re-save the newer draft
         if (e.code === 'HOTKEY_CONFLICT') { this.conflicts = e.body.conflicts ?? []; return 'conflict'; }
         if (e.code === 'NAME_EMPTY' || e.code === 'NAME_TAKEN') return 'name';
       }
@@ -398,8 +399,8 @@ export class EditorStore {
     this.closing = true;
     try {
       if (this.dirty) {
-        const untouched = this.gen === 0 && this.script?.id === '' && !this.script.name.trim();
         const r = await this.saveUntilClean();
+        const untouched = this.gen === 0 && this.script?.id === '' && !this.script.name.trim();
         if (!this.sessionId) return 'noop';
         if (r === 'conflict') return 'conflict';
         if (r === 'failed' || (r === 'name' && !untouched)) {
