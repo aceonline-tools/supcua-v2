@@ -438,7 +438,7 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 		case win.WM_SIZE:
 			u.browser.Resize()
 		case win.WM_SHOWWINDOW:
-			if wp != 0 && u.cfg.Debug && false {
+			if wp != 0 {
 				u.presentSurface("shown")
 			}
 		case win.WM_MOVE, win.WM_MOVING:
