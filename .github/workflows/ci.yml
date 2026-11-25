@@ -238,13 +238,8 @@ jobs:
             }
           }
           Add-Type -AssemblyName System.Drawing
-          Add-Type -Namespace W -Name U -MemberDefinition @'
-[StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
-[StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; }
-[DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
-[DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
-[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-'@
+          $sig = '[StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; } [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);'
+          Add-Type -Namespace W -Name U -MemberDefinition $sig
           $paint = "not sampled"; $distinct = 0
           if (-not $p.HasExited) {
             Start-Sleep -Seconds 3
