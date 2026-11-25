@@ -3,7 +3,8 @@ import type { Action, ActionSpec, CaptureEndReason, HotkeyConflict, HotkeyField,
 import type { AppStore } from './store.svelte';
 
 export type CloseResult = 'closed' | 'conflict' | 'failed' | 'noop';
-type SaveResult = 'ok' | 'conflict' | 'name' | 'failed';
+type SaveResult = 'ok' | 'stale' | 'conflict' | 'name' | 'failed';
+const MAX_SAVE_PASSES = 5;
 type CaptureEventName = 'hotkey' | 'key' | 'mouse' | 'ended';
 export type Capturing = HotkeyField | 'key' | null;
 
@@ -31,7 +32,8 @@ export class EditorStore {
   raw = $state<{ text: string; error: string } | null>(null);
   private closing = false;
   private closePromise: Promise<CloseResult> | null = null;
-  private warned = false;
+  private gen = 0;
+  discardPrompt = $state<string | null>(null);
   // Host-side capture is single-mode (bridge/capture.go). Every start returns a monotonic capture_id and
   // every capture event carries one; only events for the current capture are acted on. Transitions are
   // serialized on `chain`, and events that arrive while a start is in flight are buffered until its
@@ -93,6 +95,7 @@ export class EditorStore {
   }
 
   markDirty(): void {
+    this.gen++;
     this.dirty = true;
     this.saveFailed = false;
   }
@@ -345,16 +348,25 @@ export class EditorStore {
 
   private async save(opts: { override?: boolean; ignore?: boolean } = {}): Promise<SaveResult> {
     if (!this.script || !this.sessionId) return 'failed';
+    const sid = this.sessionId;
+    const gen = this.gen;
     try {
       const r = await this.api.call('editor.save', {
-        sessionId: this.sessionId, script: $state.snapshot(this.script),
+        sessionId: sid, script: $state.snapshot(this.script),
         ...(opts.override ? { overrideConflicts: true } : {}), ...(opts.ignore ? { ignore_conflicts: true } : {}),
       });
+      if (this.sessionId !== sid || !this.script) return 'failed';
+      this.saveFailed = false;
+      if (gen !== this.gen) {
+        // Edited while the save was in flight: keep the newer draft, adopt only the persisted identity.
+        this.script.id = r.script.id;
+        return 'stale';
+      }
       this.script = r.script;
       this.dirty = false;
-      this.saveFailed = false;
       return 'ok';
     } catch (e) {
+      if (this.sessionId !== sid) return 'failed';
       if (e instanceof ApiError) {
         if (e.code === 'HOTKEY_CONFLICT') { this.conflicts = e.body.conflicts ?? []; return 'conflict'; }
         if (e.code === 'NAME_EMPTY' || e.code === 'NAME_TAKEN') return 'name';
@@ -364,8 +376,16 @@ export class EditorStore {
     }
   }
 
-  // Parity with autoSave(): a name problem silently skips the save and still closes.
-  // Conflicts wait for the user; a hard save failure keeps the editor open once.
+  private async saveUntilClean(opts: { override?: boolean } = {}): Promise<SaveResult> {
+    for (let i = 0; i < MAX_SAVE_PASSES; i++) {
+      const r = await this.save(opts);
+      if (r !== 'stale') return r;
+    }
+    return 'failed';
+  }
+
+  // A failed or invalid save never discards the draft: the user must explicitly choose to discard.
+  // Conflicts wait for the user's override choice.
   close(): Promise<CloseResult> {
     if (this.closePromise) return this.closePromise;
     if (!this.sessionId) return Promise.resolve('noop');
@@ -378,10 +398,14 @@ export class EditorStore {
     this.closing = true;
     try {
       if (this.dirty) {
-        const r = await this.save();
+        const untouched = this.gen === 0 && this.script?.id === '' && !this.script.name.trim();
+        const r = await this.saveUntilClean();
+        if (!this.sessionId) return 'noop';
         if (r === 'conflict') return 'conflict';
-        if (r === 'failed' && !this.warned) { this.warned = true; return 'failed'; }
-        if (r === 'name' && !(this.script?.id === '' && !this.script.name.trim())) this.app.error = 'Script not saved: ' + this.indicator.text.replace('Not saved: ', '') + '.';
+        if (r === 'failed' || (r === 'name' && !untouched)) {
+          this.discardPrompt = r === 'name' ? 'Script not saved: ' + this.indicator.text.replace('Not saved: ', '') + '.' : 'Saving the script failed.';
+          return 'failed';
+        }
       }
       await this.finish();
       return 'closed';
@@ -396,11 +420,29 @@ export class EditorStore {
     if (!override || !this.sessionId) return 'noop';
     this.closing = true;
     try {
-      const r = await this.save({ override: true });
+      const r = await this.saveUntilClean({ override: true });
+      if (!this.sessionId) return 'noop';
       if (r === 'ok') { await this.finish(); return 'closed'; }
       this.closing = false;
+      if (r !== 'conflict') this.discardPrompt = r === 'name' ? 'Script not saved: ' + this.indicator.text.replace('Not saved: ', '') + '.' : 'Saving the script failed.';
       this.reconcile();
       return r === 'conflict' ? 'conflict' : 'failed';
+    } finally {
+      this.closing = false;
+    }
+  }
+
+  keepEditing(): void {
+    this.discardPrompt = null;
+    this.app.pendingRoute = null;
+    this.reconcile();
+  }
+
+  async discardAndClose(): Promise<void> {
+    if (!this.sessionId || this.discardPrompt === null) return;
+    this.closing = true;
+    try {
+      await this.finish();
     } finally {
       this.closing = false;
     }
@@ -455,7 +497,8 @@ export class EditorStore {
     this.conflicts = null;
     this.actionDialog = null;
     this.raw = null;
-    this.warned = false;
+    this.discardPrompt = null;
+    this.gen = 0;
   }
 
   async openRaw(): Promise<void> {

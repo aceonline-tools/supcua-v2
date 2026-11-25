@@ -62,26 +62,99 @@ describe('editor lifecycle', () => {
     expect(store.route.name).toBe('scripts');
   });
 
-  it('closes without saving when the name is empty (parity), and reports why', async () => {
+  it('keeps the draft when the name is invalid on close, until the user discards', async () => {
     await store.openEditor('s3');
     store.editor.script!.name = '  ';
     store.editor.markDirty();
     expect(store.editor.indicator.text).toBe('Not saved: name required');
-    await store.editor.close();
+    expect(await store.editor.close()).toBe('failed');
+    expect(count('editor.close')).toBe(0);
+    expect(store.editor.sessionId).not.toBeNull();
+    expect(store.editor.script!.name).toBe('  ');
+    expect(store.editor.discardPrompt).toContain('name required');
+    expect(await store.editor.close()).toBe('failed');
+    expect(count('editor.close')).toBe(0);
+    await store.editor.discardAndClose();
     expect(count('editor.close')).toBe(1);
-    expect(store.error).toContain('name required');
+    expect(store.route.name).toBe('scripts');
     expect(store.scripts.find((s) => s.id === 's3')?.name).toBe('Auto attack');
   });
 
-  it('keeps the editor open once on a hard save failure, then closes anyway', async () => {
+  it('repeated failed Close keeps the draft until an explicit discard', async () => {
+    await store.openEditor('s3');
+    mock.failSaveFor.add('s3');
+    store.editor.script!.name = 'Renamed';
+    store.editor.markDirty();
+    for (let i = 0; i < 3; i++) {
+      expect(await store.editor.close()).toBe('failed');
+      expect(store.editor.indicator.text).toBe('Not saved: save failed');
+      expect(store.editor.discardPrompt).not.toBeNull();
+      expect(count('editor.close')).toBe(0);
+      expect(store.editor.script!.name).toBe('Renamed');
+      store.editor.keepEditing();
+      expect(store.editor.discardPrompt).toBeNull();
+    }
+    await store.editor.close();
+    await store.editor.discardAndClose();
+    expect(count('editor.close')).toBe(1);
+    expect(store.editor.sessionId).toBeNull();
+  });
+
+  it('a failed save on navigate away keeps the pending route for discard and clears it on keep editing', async () => {
     await store.openEditor('s3');
     mock.failSaveFor.add('s3');
     store.editor.markDirty();
-    expect(await store.editor.close()).toBe('failed');
-    expect(store.editor.indicator.text).toBe('Not saved: save failed');
-    expect(count('editor.close')).toBe(0);
+    expect(await store.navigate({ name: 'settings' })).toBe(false);
+    expect(store.route.name).toBe('editor');
+    await store.editor.discardAndClose();
+    expect(store.route.name).toBe('settings');
+    await store.openEditor('s3');
+    store.editor.markDirty();
+    expect(await store.navigate({ name: 'settings' })).toBe(false);
+    store.editor.keepEditing();
+    expect(store.route.name).toBe('editor');
+  });
+
+  it('an untouched new script with no name still closes silently', async () => {
+    await store.openNew();
     expect(await store.editor.close()).toBe('closed');
-    expect(count('editor.close')).toBe(1);
+  });
+
+  it('an edit made during an in-flight save-on-close is saved, not overwritten', async () => {
+    await store.openEditor('s3');
+    store.editor.script!.name = 'First';
+    store.editor.markDirty();
+    let release!: () => void;
+    mock.holds.set('editor.save', new Promise<void>((r) => (release = r)));
+    const closing = store.editor.close();
+    await vi.waitFor(() => expect(count('editor.save')).toBe(1));
+    store.editor.script!.name = 'Second';
+    store.editor.markDirty();
+    mock.holds.delete('editor.save');
+    release();
+    expect(await closing).toBe('closed');
+    expect(count('editor.save')).toBe(2);
+    expect(mock.calls.filter((c) => c.method === 'editor.save').pop()?.params).toMatchObject({ script: { name: 'Second' } });
+    expect(store.scripts.find((s) => s.id === 's3')?.name).toBe('Second');
+  });
+
+  it('an edit during a save that then fails keeps the newer draft open', async () => {
+    await store.openEditor('s3');
+    store.editor.script!.name = 'First';
+    store.editor.markDirty();
+    let release!: () => void;
+    mock.holds.set('editor.save', new Promise<void>((r) => (release = r)));
+    const closing = store.editor.close();
+    await vi.waitFor(() => expect(count('editor.save')).toBe(1));
+    store.editor.script!.name = 'Second';
+    store.editor.markDirty();
+    mock.holds.delete('editor.save');
+    mock.failSaveFor.add('s3');
+    release();
+    expect(await closing).toBe('failed');
+    expect(store.editor.script!.name).toBe('Second');
+    expect(store.editor.dirty).toBe(true);
+    expect(count('editor.close')).toBe(0);
   });
 
   it('a second editor.open reports EDITOR_BUSY without changing the session', async () => {

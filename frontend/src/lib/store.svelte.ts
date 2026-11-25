@@ -151,7 +151,7 @@ export class AppStore {
     if (this.editor.sessionId) {
       this.pendingRoute = route;
       const r = await this.editor.close();
-      if (r === 'failed') this.pendingRoute = null;
+      if (r === 'failed' && this.editor.discardPrompt === null) this.pendingRoute = null;
       if (r !== 'closed') return false;
       return true;
     }

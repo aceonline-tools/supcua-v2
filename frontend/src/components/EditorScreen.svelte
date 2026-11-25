@@ -5,6 +5,7 @@
   import ActionDialog from './ActionDialog.svelte';
   import RawEditorDialog from './RawEditorDialog.svelte';
   import ConflictDialog from './ConflictDialog.svelte';
+  import DiscardDialog from './DiscardDialog.svelte';
   let { store }: { store: AppStore } = $props();
   const ed = $derived(store.editor);
   const sc = $derived(ed.script);
@@ -130,4 +131,5 @@
   <ActionDialog {ed} />
   <RawEditorDialog {ed} />
   <ConflictDialog {ed} />
+  <DiscardDialog {ed} />
 {/if}
