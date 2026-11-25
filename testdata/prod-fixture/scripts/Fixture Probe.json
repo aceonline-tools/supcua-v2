@@ -1,0 +1,10 @@
+{
+  "id": "fx-probe-1",
+  "name": "Fixture Probe",
+  "enabled": true,
+  "group": "Utilities",
+  "run_mode": "once",
+  "hotkey_mode": "toggle",
+  "toggle_hotkey": {"modifiers": ["ctrl", "alt", "shift"], "key": "f11"},
+  "actions": [{"type": "delay", "ms": 20000}]
+}

@@ -21,3 +21,10 @@ func NewPolicy(selftest bool) Policy {
 	}
 	return Policy{CheckLicense: true, RegisterHotkeys: true, CheckForUpdates: true, StartAutoActive: true, UseUserData: true}
 }
+
+// NewProductionSelfTestPolicy is -selftest-production: the production startup sequence (tray,
+// hotkey listener and real registrations, auto-active, overlay) against an isolated copy of a
+// fixture data directory. Still no licence capability, no update network and no user data.
+func NewProductionSelfTestPolicy() Policy {
+	return Policy{RegisterHotkeys: true, StartAutoActive: true, SelfTestMethods: true, ExitWhenDone: true}
+}

@@ -65,6 +65,13 @@ func (s *scriptHotkeySet) Reconcile() {
 	}
 }
 
+// Count is the number of currently registered script hotkeys.
+func (s *scriptHotkeySet) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.ids)
+}
+
 // SetScripts replaces the script list and re-registers if currently active.
 func (s *scriptHotkeySet) SetScripts(scripts []model.Script) {
 	s.mu.Lock()

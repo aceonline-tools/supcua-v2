@@ -1,0 +1,30 @@
+{
+  "id": "fx-farm-2",
+  "name": "Fixture Heal",
+  "enabled": true,
+  "group": "Farming",
+  "run_mode": "once",
+  "hotkey_mode": "separate",
+  "start_hotkey": {
+    "modifiers": [
+      "ctrl",
+      "alt",
+      "shift"
+    ],
+    "key": "f6"
+  },
+  "stop_hotkey": {
+    "modifiers": [
+      "ctrl",
+      "alt",
+      "shift"
+    ],
+    "key": "f7"
+  },
+  "actions": [
+    {
+      "type": "key_press",
+      "key": "2"
+    }
+  ]
+}

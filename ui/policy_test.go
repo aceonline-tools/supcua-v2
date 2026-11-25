@@ -34,3 +34,13 @@ func TestAPIOffersNoWayToRunScripts(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionSelfTestPolicyRunsTheProductionSequenceWithoutItsGates(t *testing.T) {
+	p := NewProductionSelfTestPolicy()
+	if !p.RegisterHotkeys || !p.StartAutoActive || !p.SelfTestMethods || !p.ExitWhenDone {
+		t.Fatalf("must run the production sequence and exit: %+v", p)
+	}
+	if p.CheckLicense || p.CheckForUpdates || p.UseUserData || p.ScriptsMayRun {
+		t.Fatalf("must not bypass licence, hit the network or touch user data: %+v", p)
+	}
+}

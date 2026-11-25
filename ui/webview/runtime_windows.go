@@ -60,6 +60,14 @@ func ShowRuntimeMissing() { showInstallerBox("WebView2 Runtime missing", Runtime
 // ShowStartupFailure is the same box for a runtime that failed or timed out.
 func ShowStartupFailure() { showInstallerBox("WebView2 failed to start", StartupFailureText()) }
 
+// ShowLoadTimeout tells the user the window never rendered the app, with where to look. It
+// blocks until dismissed (modal MessageBox); call it off the UI thread.
+func ShowLoadTimeout(logPath, stage string) {
+	t, _ := windows.UTF16PtrFromString("supcua-v2 did not finish loading its window.\n\nLast startup stage: " + stage + "\n\nDetails were written to:\n" + logPath + "\n\nClose and restart the app; if this repeats, send that log file.")
+	c, _ := windows.UTF16PtrFromString("supcua-v2 failed to load")
+	windows.MessageBox(0, t, c, windows.MB_OK|windows.MB_ICONERROR|windows.MB_TOPMOST)
+}
+
 func showInstallerBox(title, text string) {
 	t, _ := windows.UTF16PtrFromString(text)
 	c, _ := windows.UTF16PtrFromString(title)

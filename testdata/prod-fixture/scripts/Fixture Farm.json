@@ -1,0 +1,40 @@
+{
+  "id": "fx-farm-1",
+  "name": "Fixture Farm",
+  "enabled": true,
+  "group": "Farming",
+  "run_mode": "infinite",
+  "hotkey_mode": "toggle",
+  "toggle_hotkey": {
+    "modifiers": [
+      "ctrl",
+      "alt",
+      "shift"
+    ],
+    "key": "f5"
+  },
+  "actions": [
+    {
+      "type": "key_press",
+      "key": "1"
+    },
+    {
+      "type": "delay",
+      "ms": 150
+    },
+    {
+      "type": "loop",
+      "count": 3,
+      "actions": [
+        {
+          "type": "mouse_move",
+          "x": 400,
+          "y": 300
+        },
+        {
+          "type": "mouse_left_click"
+        }
+      ]
+    }
+  ]
+}

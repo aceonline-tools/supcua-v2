@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -138,6 +139,55 @@ func (f *fixedHotkeys) rebind(kind string, hk model.Hotkey) error {
 	return nil
 }
 
+func (f *fixedHotkeys) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, id := range f.ids {
+		if id != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// diagKit is the frontend diagnostics channel plus the initial-load deadline.
+type diagKit struct {
+	diag    *ui.Diag
+	watch   *ui.LoadWatch
+	mounted chan struct{}
+}
+
+const initialLoadDeadline = 20 * time.Second
+
+func newDiagKit(stages *ui.Stages, res *webview.Result, logPath string) *diagKit {
+	k := &diagKit{mounted: make(chan struct{})}
+	k.watch = &ui.LoadWatch{
+		Timeout: initialLoadDeadline, Stage: stages.Last, Logf: log.Printf,
+		OnTimeout: func(stage string) {
+			if res != nil {
+				res.Step("frontend mounted", false, "not mounted within "+initialLoadDeadline.String()+"; last stage: "+stage)
+				os.Exit(res.Finish(1))
+			}
+			webview.ShowLoadTimeout(logPath, stage)
+		},
+	}
+	k.diag = &ui.Diag{Logf: log.Printf, OnMounted: func(route string) {
+		stages.Mark("frontend mounted route=" + route)
+		if k.watch.Mounted() {
+			log.Println("frontend mounted after the load deadline had fired")
+		}
+		close(k.mounted)
+	}}
+	return k
+}
+
+func (k *diagKit) install(methods map[string]func(json.RawMessage) (any, error)) {
+	for name, h := range k.diag.Methods() {
+		methods[name] = h
+	}
+}
+
 // autoActiveProxy is the bridge's AutoActive: it forwards to the watcher and keeps the tray
 // checkbox in sync when the setting changes from the Settings page.
 type autoActiveProxy struct {
@@ -154,11 +204,13 @@ func (a *autoActiveProxy) SetProcessName(n string) {
 func main() {
 	selftestFlag := flag.Bool("selftest", false, "run the headless UI self-test and exit (0 = pass)")
 	noRuntimeFlag := flag.Bool("selftest-noruntime", false, "self-test the missing-WebView2-runtime path and exit")
+	prodFlag := flag.Bool("selftest-production", false, "run the production startup sequence against a fixture data dir and exit (0 = pass)")
+	fixtureDir := flag.String("fixture", "", "fixture data directory copied into the throw-away data dir (-selftest-production)")
 	label := flag.String("label", "plain", "build label echoed in the self-test result")
 	timeout := flag.Duration("timeout", 90*time.Second, "hard self-test timeout")
 	flag.Parse()
 
-	if *selftestFlag || *noRuntimeFlag {
+	if *selftestFlag || *noRuntimeFlag || *prodFlag {
 		webview.AttachParentConsole()
 	}
 	if *noRuntimeFlag {
@@ -166,7 +218,11 @@ func main() {
 	}
 	policy := ui.NewPolicy(*selftestFlag)
 	var res *webview.Result
-	if *selftestFlag {
+	if *prodFlag {
+		policy = ui.NewProductionSelfTestPolicy()
+		res = webview.NewResult(*label, "selftest-production")
+		res.ArmWatchdog(*timeout)
+	} else if *selftestFlag {
 		res = webview.NewResult(*label, "selftest")
 		res.ArmWatchdog(*timeout)
 	}
@@ -196,6 +252,8 @@ func main() {
 		defer logFile.Close()
 	}
 	log.Println("supcua-v2 starting...")
+	stages := ui.NewStages(log.Printf)
+	logPath := filepath.Join(applicationDirectory, "supcua-v2.log")
 
 	// WebView2 runtime: required for every screen (also the not-licensed one).
 	runtimeVersion, err := webview.CheckRuntime()
@@ -209,9 +267,12 @@ func main() {
 		os.Exit(3)
 	}
 
+	stages.Mark("webview2 runtime " + runtimeVersion)
+
 	// License check: production only. The self-test policy has no licence capability.
 	licensed, macs := true, []string(nil)
 	if policy.CheckLicense {
+		t0 := time.Now()
 		allowed, lerr := license.CheckLicense()
 		if lerr != nil {
 			log.Printf("license check error: %v", lerr)
@@ -220,6 +281,7 @@ func main() {
 			log.Println("not licensed, showing license screen")
 			licensed, macs = false, license.GetMacAddresses()
 		}
+		stages.Mark(fmt.Sprintf("licence check: licensed=%v (%dms)", licensed, time.Since(t0).Milliseconds()))
 	}
 
 	// Every exit path runs under a hard bound: a stuck lock in a shutdown step must never leave
@@ -259,17 +321,26 @@ func main() {
 			Logf:     log.Printf,
 		}
 		methods := ui.NotLicensedMethods(host)
+		kit := newDiagKit(stages, nil, logPath)
+		kit.install(methods)
 		baseReady := methods["app.ready"]
+		var readyLogged sync.Once
 		methods["app.ready"] = func(p json.RawMessage) (any, error) {
+			readyLogged.Do(func() { stages.Mark("app.ready received") })
 			recovery.Ready()
 			return baseReady(p)
 		}
+		var navLogged sync.Once
+		stages.Mark("creating webview (licence screen)")
 		u, err = webview.New(webview.Config{
 			Title: title, Methods: methods, Assets: assets.FS(),
 			DarkTitleBar: systemPrefersDark(), MinW: 480, MinH: 360,
-			OnClose:               quit,
-			OnProcessFailed:       recovery.Failed,
-			OnNavigationCompleted: recovery.Navigated,
+			OnClose:         quit,
+			OnProcessFailed: recovery.Failed,
+			OnNavigationCompleted: func(ok bool) {
+				navLogged.Do(func() { stages.Mark(fmt.Sprintf("first navigation completed success=%v", ok)) })
+				recovery.Navigated(ok)
+			},
 			OnFatal: func(error) { // the host quarantines right after this returns; nothing to flush
 				watchdog.Arm(fatalExitBound, 5, "fatal exit")
 				fatalLicense.Store(true)
@@ -282,6 +353,9 @@ func main() {
 			os.Exit(4)
 		}
 		host.UI = u
+		stages.Mark("webview created and shown")
+		kit.watch.Start()
+		stages.Mark("entering Run")
 		u.Run()
 		if fatalLicense.Load() {
 			log.Println("supcua-v2 exiting: WebView2 failed")
@@ -300,6 +374,12 @@ func main() {
 			os.Exit(res.Finish(1))
 		}
 		defer os.RemoveAll(dataDirectory)
+		if *fixtureDir != "" {
+			if err := ui.CopyTree(*fixtureDir, dataDirectory); err != nil {
+				res.Step("seed fixture", false, err.Error())
+				os.Exit(res.Finish(1))
+			}
+		}
 	}
 	configStore := storage.NewConfigStore(filepath.Join(dataDirectory, "config.json"))
 	configService, err := bridge.NewConfigService(configStore)
@@ -307,6 +387,7 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 	appConfig := configService.Get()
+	stages.Mark("config loaded")
 
 	scriptsDirectory := appConfig.ScriptsDir
 	if !filepath.IsAbs(scriptsDirectory) {
@@ -498,14 +579,22 @@ func main() {
 		Host:       host,
 	}, late)
 
+	initialScripts := br.InitialScripts()
+	stages.Mark(fmt.Sprintf("bridge ready (%d scripts)", len(initialScripts)))
+
 	methods := br.Methods()
+	kit := newDiagKit(stages, res, logPath)
+	kit.install(methods)
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	baseReady := methods["app.ready"]
 	methods["app.ready"] = func(p json.RawMessage) (any, error) {
 		out, err := baseReady(p)
 		recovery.Ready()
-		readyOnce.Do(func() { close(ready) })
+		readyOnce.Do(func() {
+			stages.Mark("app.ready received")
+			close(ready)
+		})
 		return out, err
 	}
 	var selftest *ui.SelfTest
@@ -528,17 +617,22 @@ func main() {
 		}
 	}
 	pos := appConfig.MainWindowPos
+	var navLogged sync.Once
+	stages.Mark("creating webview")
 	webUI, err := webview.New(webview.Config{
-		Title:                 title,
-		Methods:               methods,
-		Assets:                assets.FS(),
-		DarkTitleBar:          wantDark(appConfig.Theme),
-		Initial:               webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
-		MinW:                  640,
-		MinH:                  420,
-		OnClose:               quitApp, // X exits for real (as before); minimize hides to the tray
-		OnProcessFailed:       pageFailed,
-		OnNavigationCompleted: recovery.Navigated,
+		Title:           title,
+		Methods:         methods,
+		Assets:          assets.FS(),
+		DarkTitleBar:    wantDark(appConfig.Theme),
+		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
+		MinW:            640,
+		MinH:            420,
+		OnClose:         quitApp, // X exits for real (as before); minimize hides to the tray
+		OnProcessFailed: pageFailed,
+		OnNavigationCompleted: func(ok bool) {
+			navLogged.Do(func() { stages.Mark(fmt.Sprintf("first navigation completed success=%v", ok)) })
+			recovery.Navigated(ok)
+		},
 		OnFatal: func(err error) { // a security handler failed; the host quarantines right after this returns
 			watchdog.Arm(fatalExitBound, 5, "fatal exit")
 			fatalPage.Store(true)
@@ -570,6 +664,8 @@ func main() {
 	}
 	late.p.Store(webUI)
 	host.UI = webUI
+	stages.Mark("webview created and shown")
+	kit.watch.Start()
 	if fatalPage.Load() { // a security handler failed during startup, before Post could reach the UI
 		late.Post(func() { fatal("security handler failed during startup") })
 	}
@@ -584,6 +680,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer tray.Dispose()
+	stages.Mark("tray done")
 	tray.AddAutoActiveToggle(appConfig.AutoActiveEnabled, func(enabled bool) error {
 		if err := configService.Update(func(c *model.AppConfig) { c.AutoActiveEnabled = enabled }); err != nil {
 			log.Printf("warning: failed to save auto active setting: %v", err)
@@ -609,18 +706,32 @@ func main() {
 	})
 	tray.UpdateTooltip()
 
+	// RegisterHotKey itself always runs on the hotkey listener's locked OS thread
+	// (hotkey.Manager.ListenForHotkeys), which also receives WM_HOTKEY. Only the CALLER that waits
+	// for the answer moves off the UI thread: the registrations below run on their own goroutine,
+	// started once the pump runs, each wait bounded by hotkey.RegisterTimeout, so a stuck listener
+	// can no longer leave the window unpumped.
+	hotkeysDone := make(chan struct{})
 	if policy.RegisterHotkeys {
 		go hotkeyManager.ListenForHotkeys() // before any Register: it services the channel
-		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalStatus() })
-		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(int) {
-			late.Post(overlayCtl.ToggleVisibility)
-		})
-		if scripts, err := scriptStore.List(); err == nil {
-			scriptHotkeys.SetScripts(scripts)
+		stages.Mark("hotkey listener started")
+		registerStartupHotkeys := func() {
+			t0 := time.Now()
+			fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalStatus() })
+			fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(int) {
+				late.Post(overlayCtl.ToggleVisibility)
+			})
+			stages.Mark(fmt.Sprintf("fixed hotkeys registered (%d, %dms)", fixed.count(), time.Since(t0).Milliseconds()))
+			t1 := time.Now()
+			scriptHotkeys.SetScripts(initialScripts)
+			stages.Mark(fmt.Sprintf("script hotkeys set (%d scripts, %d registered, %dms)", len(initialScripts), scriptHotkeys.Count(), time.Since(t1).Milliseconds()))
+			close(hotkeysDone)
 		}
+		webUI.Post(func() { go registerStartupHotkeys() })
 	}
 	if policy.StartAutoActive && appConfig.AutoActiveEnabled {
 		watcher.Start()
+		stages.Mark("auto-active started")
 	}
 
 	if policy.CheckForUpdates {
@@ -647,9 +758,21 @@ func main() {
 
 	if selftest != nil {
 		selftest.UI, selftest.Tray = webUI, tray
-		go selftest.Run()
+		if *prodFlag {
+			probe := model.Hotkey{Modifiers: []string{"ctrl", "alt", "shift"}, Key: "f11"}
+			go selftest.RunProduction(ui.ProductionHooks{
+				Mounted: kit.mounted, HotkeysDone: hotkeysDone,
+				FixedRegistered: fixed.count, ScriptHotkeyCount: scriptHotkeys.Count,
+				GlobalActive: appController.IsGlobalActive, RunningScriptID: appController.GetRunningScriptID,
+				GlobalHotkey: appConfig.GlobalHotkey, ProbeHotkey: probe, ProbeID: "fx-probe-1",
+				ExpectFixed: 2, ExpectTheme: appConfig.Theme, ExpectRow: "Fixture Farm",
+			})
+		} else {
+			go selftest.Run()
+		}
 	}
 
+	stages.Mark("entering Run")
 	webUI.Run() // walk message loop: tray, Synchronize, WebView2
 	watcher.Stop()
 	if fatalPage.Load() {

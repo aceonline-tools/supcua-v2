@@ -1,0 +1,13 @@
+{
+  "id": "fx-plain-1",
+  "name": "Fixture Ungrouped",
+  "enabled": false,
+  "run_mode": "once",
+  "hotkey_mode": "toggle",
+  "actions": [
+    {
+      "type": "delay",
+      "ms": 10
+    }
+  ]
+}

@@ -783,3 +783,20 @@ func TestEditorSaveAcceptsRealSizeImageTemplateAndRejectsAbsurd(t *testing.T) {
 	}
 	wantCode(t, save(strings.Repeat("A", maxImageBytes+1)), CodeBadRequest)
 }
+
+func TestInitialScriptsIsTheSnapshotNewLoaded(t *testing.T) {
+	a, b := model.Script{ID: "a", Name: "A"}, model.Script{ID: "b", Name: "B"}
+	store := newFakeStore(a, b)
+	br := New(Deps{Store: store}, nil)
+	store.mu.Lock()
+	store.initial = nil // later changes on disk do not alter the startup snapshot
+	store.mu.Unlock()
+	got := br.InitialScripts()
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
+		t.Fatalf("InitialScripts = %+v", got)
+	}
+	got[0].ID = "mutated"
+	if br.InitialScripts()[0].ID != "a" {
+		t.Fatal("InitialScripts exposes internal state")
+	}
+}
