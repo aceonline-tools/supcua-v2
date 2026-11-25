@@ -4,9 +4,11 @@ package hotkey
 
 import (
 	"fmt"
+	"log"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -20,6 +22,7 @@ var (
 	procUnregisterHotKey = user32DLL.NewProc("UnregisterHotKey")
 	procPeekMessage      = user32DLL.NewProc("PeekMessageW")
 	procGetAsyncKeyState = user32DLL.NewProc("GetAsyncKeyState")
+	procGetCurrentThreadID = syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
 )
 
 const (
@@ -48,17 +51,6 @@ var bareModifierVKCodes = map[uint32]bool{
 // HotkeyCallback is invoked when a registered hotkey is pressed.
 type HotkeyCallback func(hotkeyID int)
 
-type regRequest struct {
-	hotkey   model.Hotkey
-	callback HotkeyCallback
-	reply    chan regReply
-}
-
-type regReply struct {
-	id  int
-	err error
-}
-
 type unregRequest struct {
 	id    int
 	reply chan error
@@ -77,19 +69,33 @@ type Manager struct {
 	mu           sync.RWMutex
 	callbacks    map[int]HotkeyCallback
 	nextID       int
-	registerCh   chan regRequest
+	registerCh   chan *regRequest
 	unregisterCh chan unregRequest
 
 	pollMu   sync.Mutex
 	pollKeys []pollKeyEntry
+
+	listenerTID atomic.Uint32
 }
+
+// registerThreadHook, when set (tests only), receives the OS thread id RegisterHotKey ran on.
+var registerThreadHook func(tid uint32)
+
+func currentThreadID() uint32 {
+	id, _, _ := procGetCurrentThreadID.Call()
+	return uint32(id)
+}
+
+// ListenerThreadID is the OS thread that owns every registration and receives WM_HOTKEY (0
+// until ListenForHotkeys has started).
+func (m *Manager) ListenerThreadID() uint32 { return m.listenerTID.Load() }
 
 // NewManager creates a hotkey Manager.
 func NewManager() *Manager {
 	return &Manager{
 		callbacks:    make(map[int]HotkeyCallback),
 		nextID:       1,
-		registerCh:   make(chan regRequest, 32),
+		registerCh:   make(chan *regRequest, 32),
 		unregisterCh: make(chan unregRequest, 32),
 	}
 }
@@ -149,10 +155,7 @@ func convertKeyNameToVirtualKeyCode(keyName string) uint32 {
 
 // Register sends a registration request to the listener goroutine (same OS thread as RegisterHotKey).
 func (m *Manager) Register(hotkey model.Hotkey, callback HotkeyCallback) (int, error) {
-	reply := make(chan regReply, 1)
-	m.registerCh <- regRequest{hotkey: hotkey, callback: callback, reply: reply}
-	r := <-reply
-	return r.id, r.err
+	return registerBounded(m.registerCh, hotkey, callback, RegisterTimeout)
 }
 
 // Unregister sends an unregistration request to the listener goroutine.
@@ -175,11 +178,65 @@ func (m *Manager) UnregisterAll() {
 	}
 }
 
+// registerOnListener performs one registration. It runs only on the ListenForHotkeys thread,
+// the thread that owns every RegisterHotKey/UnregisterHotKey and receives WM_HOTKEY.
+func (m *Manager) registerOnListener(hk model.Hotkey, cb HotkeyCallback) regReply {
+	id := m.nextID
+	m.nextID++
+	modFlags := convertModifiersToFlags(hk.Modifiers)
+	vk := convertKeyNameToVirtualKeyCode(hk.Key)
+
+	// Bare modifier keys can't use RegisterHotKey — use GetAsyncKeyState polling.
+	if modFlags == 0 && bareModifierVKCodes[vk] {
+		m.pollMu.Lock()
+		m.pollKeys = append(m.pollKeys, pollKeyEntry{id: id, vkCode: vk, callback: cb})
+		m.pollMu.Unlock()
+		return regReply{id, nil}
+	}
+	if registerThreadHook != nil {
+		registerThreadHook(currentThreadID())
+	}
+	ret, _, err := procRegisterHotKey.Call(0, uintptr(id), uintptr(modFlags), uintptr(vk))
+	if ret == 0 {
+		return regReply{0, fmt.Errorf("RegisterHotKey failed for %+v: %v", hk, err)}
+	}
+	m.mu.Lock()
+	m.callbacks[id] = cb
+	m.mu.Unlock()
+	return regReply{id, nil}
+}
+
+// unregisterOnListener releases one registration (listener thread only): it drops the callback
+// first, so a released hotkey can never fire it.
+func (m *Manager) unregisterOnListener(id int) error {
+	m.pollMu.Lock()
+	found := false
+	for i, pk := range m.pollKeys {
+		if pk.id == id {
+			m.pollKeys = append(m.pollKeys[:i], m.pollKeys[i+1:]...)
+			found = true
+			break
+		}
+	}
+	m.pollMu.Unlock()
+	if found {
+		return nil
+	}
+	return removeRegistration(&m.mu, m.callbacks, id, func(id int) error {
+		ret, _, err := procUnregisterHotKey.Call(0, uintptr(id))
+		if ret == 0 {
+			return err
+		}
+		return nil
+	})
+}
+
 // ListenForHotkeys starts the Windows message loop on a locked OS thread.
 // This blocks — run in a goroutine.
 func (m *Manager) ListenForHotkeys() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	m.listenerTID.Store(currentThreadID())
 
 	type msgStruct struct {
 		hwnd    uintptr
@@ -196,52 +253,10 @@ func (m *Manager) ListenForHotkeys() {
 		for {
 			select {
 			case req := <-m.registerCh:
-				id := m.nextID
-				m.nextID++
-				modFlags := convertModifiersToFlags(req.hotkey.Modifiers)
-				vk := convertKeyNameToVirtualKeyCode(req.hotkey.Key)
-
-				// Bare modifier keys can't use RegisterHotKey — use GetAsyncKeyState polling.
-				if modFlags == 0 && bareModifierVKCodes[vk] {
-					m.pollMu.Lock()
-					m.pollKeys = append(m.pollKeys, pollKeyEntry{id: id, vkCode: vk, callback: req.callback})
-					m.pollMu.Unlock()
-					req.reply <- regReply{id, nil}
-				} else {
-					ret, _, err := procRegisterHotKey.Call(0, uintptr(id), uintptr(modFlags), uintptr(vk))
-					if ret == 0 {
-						req.reply <- regReply{0, fmt.Errorf("RegisterHotKey failed for %+v: %v", req.hotkey, err)}
-					} else {
-						m.mu.Lock()
-						m.callbacks[id] = req.callback
-						m.mu.Unlock()
-						req.reply <- regReply{id, nil}
-					}
-				}
+				req.serve(m.registerOnListener, func(id int) { _ = m.unregisterOnListener(id) })
 
 			case req := <-m.unregisterCh:
-				// Check poll keys first
-				m.pollMu.Lock()
-				found := false
-				for i, pk := range m.pollKeys {
-					if pk.id == req.id {
-						m.pollKeys = append(m.pollKeys[:i], m.pollKeys[i+1:]...)
-						found = true
-						break
-					}
-				}
-				m.pollMu.Unlock()
-				if found {
-					req.reply <- nil
-					continue
-				}
-				req.reply <- removeRegistration(&m.mu, m.callbacks, req.id, func(id int) error {
-					ret, _, err := procUnregisterHotKey.Call(0, uintptr(id))
-					if ret == 0 {
-						return err
-					}
-					return nil
-				})
+				req.reply <- m.unregisterOnListener(req.id)
 			default:
 				goto doneChannels
 			}
@@ -259,6 +274,7 @@ func (m *Manager) ListenForHotkeys() {
 			cb, ok := m.callbacks[pressedID]
 			m.mu.RUnlock()
 			if ok {
+				log.Printf("hotkey fired: id=%d", pressedID)
 				go cb(pressedID)
 			}
 		}
@@ -272,6 +288,7 @@ func (m *Manager) ListenForHotkeys() {
 			if pk.wasDown && !isDown {
 				cb := pk.callback
 				id := pk.id
+				log.Printf("hotkey fired: id=%d", id)
 				go cb(id)
 			}
 			pk.wasDown = isDown

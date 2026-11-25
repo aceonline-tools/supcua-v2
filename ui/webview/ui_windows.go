@@ -90,7 +90,7 @@ func New(cfg Config) (*UI, error) {
 	if cfg.Assets == nil || cfg.Methods == nil {
 		return nil, errors.New("webview: Assets and Methods are required")
 	}
-	u := &UI{cfg: cfg, loaded: make(chan struct{}), server: &serve.Server{FS: cfg.Assets}, threadID: win.GetCurrentThreadId()}
+	u := &UI{cfg: cfg, loaded: make(chan struct{}), server: &serve.Server{FS: cfg.Assets, Logf: log.Printf}, threadID: win.GetCurrentThreadId()}
 	if !current.CompareAndSwap(nil, u) {
 		return nil, errors.New("webview: only one UI per process")
 	}

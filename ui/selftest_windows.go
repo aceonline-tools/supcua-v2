@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"time"
 
 	"github.com/lxn/win"
 
+	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 )
 
@@ -221,6 +223,118 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 		res.Step("tray created and removed", ok, "")
 	case <-time.After(5 * time.Second):
 		res.Step("tray created and removed", false, "UI thread did not respond")
+	}
+	done()
+}
+
+// ProductionHooks is what -selftest-production observes of the production startup sequence.
+type ProductionHooks struct {
+	Mounted     <-chan struct{} // closed on the frontend's app.mounted
+	HotkeysDone <-chan struct{} // closed when startup hotkey registration finished
+
+	FixedRegistered   func() int // global + overlay hotkeys actually registered
+	ScriptHotkeyCount func() int
+	GlobalActive      func() bool
+	RunningScriptID   func() string
+
+	GlobalHotkey      model.Hotkey
+	ProbeHotkey       model.Hotkey // toggle hotkey of the fixture's input-free probe script
+	ProbeID           string
+	ExpectFixed       int
+	AutoActiveEnabled bool   // the LOADED config's auto_active_enabled
+	ExpectRow         string // a known script name in the list
+}
+
+func waitFor(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return cond()
+}
+
+// RunProduction asserts that the production startup sequence produced a rendered, responsive
+// window with working hotkeys, then requests the ordered shutdown (which unregisters them).
+func (s *SelfTest) RunProduction(h ProductionHooks) {
+	res := s.Res
+	done := func() { s.UI.Post(s.Exit) }
+	step := func(name string, ok bool, detail string) bool { return res.Step(name, ok, detail) }
+
+	select {
+	case <-h.Mounted:
+		step("frontend mounted (app.mounted)", true, "")
+	case <-time.After(20 * time.Second):
+		step("frontend mounted (app.mounted)", false, "timeout 20s")
+		done()
+		return
+	}
+
+	pumped := make(chan struct{})
+	s.UI.Post(func() { close(pumped) })
+	select {
+	case <-pumped:
+		step("UI pump round-trip", true, "")
+	case <-time.After(2 * time.Second):
+		step("UI pump round-trip", false, "no response within 2s")
+		done()
+		return
+	}
+
+	s.UI.Eval(driverJS)
+	time.Sleep(200 * time.Millisecond)
+	expr := fmt.Sprintf(`await (async()=>{var want=%q;for(var i=0;i<80;i++){var a=document.querySelector('#app');
+var rows=[].slice.call(document.querySelectorAll('[role=row]')).filter(function(r){return r.textContent.indexOf(want)>=0}).length;
+if(a&&a.children.length>0&&rows>0)return{children:a.children.length,rows:rows,theme:document.documentElement.getAttribute('data-theme')};
+await __st.sleep(100)}return null})()`, h.ExpectRow)
+	r, err := s.drive("dom", expr, 15*time.Second)
+	var dom struct {
+		Children int    `json:"children"`
+		Rows     int    `json:"rows"`
+		Theme    string `json:"theme"`
+	}
+	if err == nil {
+		_ = json.Unmarshal(r.V, &dom)
+	}
+	step("DOM rendered with the seeded script list", err == nil && dom.Children > 0 && dom.Rows > 0, fmt.Sprintf("err=%v %+v", err, dom))
+	// Fail loudly if the fixture config was not the one loaded (e.g. missing from the checkout):
+	// every expectation below is a literal from testdata/prod-fixture/config.json.
+	themeOK := step("seeded theme applied (fixture: light)", dom.Theme == "light", "theme="+dom.Theme)
+	want := model.Hotkey{Modifiers: []string{"ctrl", "alt", "shift"}, Key: "f9"}
+	hkOK := step("seeded global hotkey loaded (fixture: ctrl+alt+shift+f9)", reflect.DeepEqual(h.GlobalHotkey, want), fmt.Sprintf("%+v", h.GlobalHotkey))
+	aaOK := step("seeded auto-active enabled loaded (fixture: true)", h.AutoActiveEnabled, "")
+	if !themeOK || !hkOK || !aaOK {
+		step("fixture config loaded", false, "the production selftest ran on the default config; aborting before the hotkey steps")
+		done()
+		return
+	}
+	step("overlay window created", s.Overlay.Window() != nil, "")
+
+	select {
+	case <-h.HotkeysDone:
+		step("startup hotkey registration finished", true, "")
+	case <-time.After(15 * time.Second):
+		step("startup hotkey registration finished", false, "timeout 15s")
+		done()
+		return
+	}
+	step("fixed hotkeys registered", h.FixedRegistered() == h.ExpectFixed, fmt.Sprintf("%d of %d", h.FixedRegistered(), h.ExpectFixed))
+
+	fire := func(hk model.Hotkey, name string, cond func() bool) bool {
+		if err := SendHotkey(hk); err != nil {
+			return step(name, false, "SendInput: "+err.Error())
+		}
+		return step(name, waitFor(4*time.Second, cond), "")
+	}
+	if fire(h.GlobalHotkey, "global hotkey (SendInput) turns global active on", h.GlobalActive) {
+		step("script hotkeys registered once active", waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() > 0 }), fmt.Sprintf("count=%d", h.ScriptHotkeyCount()))
+		if fire(h.ProbeHotkey, "script toggle hotkey (SendInput) starts the script", func() bool { return h.RunningScriptID() == h.ProbeID }) {
+			fire(h.ProbeHotkey, "script toggle hotkey (SendInput) stops the script", func() bool { return h.RunningScriptID() == "" })
+		}
+		fire(h.GlobalHotkey, "global hotkey (SendInput) turns global active off", func() bool { return !h.GlobalActive() })
+		step("script hotkeys unregistered when inactive", waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() == 0 }), fmt.Sprintf("count=%d", h.ScriptHotkeyCount()))
 	}
 	done()
 }

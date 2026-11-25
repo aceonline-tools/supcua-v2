@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -122,5 +123,38 @@ func TestHandle(t *testing.T) {
 	}
 	if r := s.Handle("GET", "https://evil.com/"); r.Status != 404 {
 		t.Errorf("foreign host must 404: %+v", r)
+	}
+}
+
+func TestLoggedURLsAreSanitisedAndCapped(t *testing.T) {
+	var lines []string
+	s := &Server{FS: fstest.MapFS{}, Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
+	s.Handle("GET", "https://app.local/x\r\nforged: line"+strings.Repeat("a", 5000))
+	if len(lines) != 1 || strings.ContainsAny(lines[0], "\r\n") || len(lines[0]) > maxLoggedURL+80 {
+		t.Fatalf("%d lines: %q", len(lines), lines)
+	}
+	for k := range s.logged {
+		if len(k) > maxLoggedURL+40 {
+			t.Fatalf("retained key too long: %d", len(k))
+		}
+	}
+}
+
+func TestMissesAreLoggedOnceEachAndBounded(t *testing.T) {
+	var lines []string
+	s := &Server{FS: fstest.MapFS{"index.html": {Data: []byte("x")}}, Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
+	for i := 0; i < 3; i++ {
+		s.Handle("GET", "https://app.local/assets/missing.js")
+	}
+	s.Handle("POST", "https://app.local/")
+	s.Handle("GET", "https://app.local/") // success: not logged
+	if len(lines) != 2 || !strings.Contains(lines[0], "GET https://app.local/assets/missing.js -> 404") || !strings.Contains(lines[1], "-> 405") {
+		t.Fatalf("lines = %q", lines)
+	}
+	for i := 0; i < 200; i++ {
+		s.Handle("GET", fmt.Sprintf("https://app.local/a%d.js", i))
+	}
+	if len(lines) > maxLoggedMisses {
+		t.Fatalf("%d lines, cap %d", len(lines), maxLoggedMisses)
 	}
 }

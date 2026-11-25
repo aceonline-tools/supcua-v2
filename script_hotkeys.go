@@ -27,6 +27,9 @@ type scriptHotkeySet struct {
 	ids        []int
 	scripts    []model.Script
 	active     bool
+	pending    bool // startup deferred: record state, register nothing until Start
+	stopped    bool // shutdown: never register again
+	touched    bool // SetScripts was called (the list is newer than any startup snapshot)
 	isActive   func() bool
 	register   func(scripts []model.Script) []int
 	unregister func(id int) error
@@ -54,15 +57,28 @@ func (s *scriptHotkeySet) clearLocked() {
 func (s *scriptHotkeySet) Reconcile() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopped {
+		return
+	}
 	active := s.isActive()
 	if active == s.active {
 		return
 	}
 	s.active = active
+	if s.pending {
+		return
+	}
 	s.clearLocked()
 	if active {
 		s.ids = s.register(s.scripts)
 	}
+}
+
+// Count is the number of currently registered script hotkeys.
+func (s *scriptHotkeySet) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.ids)
 }
 
 // SetScripts replaces the script list and re-registers if currently active.
@@ -70,11 +86,57 @@ func (s *scriptHotkeySet) SetScripts(scripts []model.Script) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scripts = append([]model.Script(nil), scripts...)
+	s.touched = true
+	if s.stopped || s.pending {
+		return
+	}
 	s.active = s.isActive()
 	s.clearLocked()
 	if s.active {
 		s.ids = s.register(s.scripts)
 	}
+}
+
+// Defer postpones every registration until Start, so construction on the UI thread never waits
+// on the hotkey listener.
+func (s *scriptHotkeySet) Defer() {
+	s.mu.Lock()
+	s.pending = true
+	s.mu.Unlock()
+}
+
+// Start ends the deferred phase and registers for the latest state. load supplies the startup
+// script list and is only used when no SetScripts (save/delete/sync) has already provided a
+// newer one; it runs outside the lock and may touch the filesystem.
+func (s *scriptHotkeySet) Start(load func() []model.Script) {
+	var loaded []model.Script
+	s.mu.Lock()
+	need := !s.touched
+	s.mu.Unlock()
+	if need && load != nil {
+		loaded = load()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending = false
+	if s.stopped {
+		return
+	}
+	if !s.touched {
+		s.scripts = append([]model.Script(nil), loaded...)
+	}
+	s.active = s.isActive()
+	s.clearLocked()
+	if s.active {
+		s.ids = s.register(s.scripts)
+	}
+}
+
+// Stop forbids further registrations (shutdown); it waits for one in flight.
+func (s *scriptHotkeySet) Stop() {
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
 }
 
 func registerScriptHotkeys(

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -782,4 +783,34 @@ func TestEditorSaveAcceptsRealSizeImageTemplateAndRejectsAbsurd(t *testing.T) {
 		t.Fatalf("real-size template rejected: %v", err)
 	}
 	wantCode(t, save(strings.Repeat("A", maxImageBytes+1)), CodeBadRequest)
+}
+
+func TestInitialScriptsIsTheSnapshotNewLoaded(t *testing.T) {
+	a, b := model.Script{ID: "a", Name: "A"}, model.Script{ID: "b", Name: "B"}
+	store := newFakeStore(a, b)
+	br := New(Deps{Store: store}, nil)
+	store.mu.Lock()
+	store.initial = nil // later changes on disk do not alter the startup snapshot
+	store.mu.Unlock()
+	got := br.InitialScripts()
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
+		t.Fatalf("InitialScripts = %+v", got)
+	}
+	got[0].ID = "mutated"
+	if br.InitialScripts()[0].ID != "a" {
+		t.Fatal("InitialScripts exposes internal state")
+	}
+}
+
+type failingListStore struct{ *fakeStore }
+
+func (failingListStore) List() ([]model.Script, error) { return nil, errors.New("disk error") }
+
+func TestInitialScriptsOKFalseWhenTheStartupListingFailed(t *testing.T) {
+	if New(Deps{Store: failingListStore{newFakeStore()}}, nil).InitialScriptsOK() {
+		t.Fatal("a failed initial listing must be reported so the host re-lists")
+	}
+	if !New(Deps{Store: newFakeStore(model.Script{ID: "a"})}, nil).InitialScriptsOK() {
+		t.Fatal("successful listing must be reported ok")
+	}
 }

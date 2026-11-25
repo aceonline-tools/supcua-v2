@@ -3,10 +3,12 @@
 package serve
 
 import (
+	"fmt"
 	"io/fs"
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 )
 
 const (
@@ -105,16 +107,65 @@ type Response struct {
 }
 
 // Server serves an fs.FS under the app origin.
-type Server struct{ FS fs.FS }
+type Server struct {
+	FS fs.FS
+	// Logf, when set, receives one line per distinct failing request (404/405, capped), so a
+	// missing asset is visible in the host log instead of only in the page console.
+	Logf func(format string, args ...any)
+
+	mu     sync.Mutex
+	logged map[string]struct{}
+}
+
+const (
+	maxLoggedMisses = 50
+	maxLoggedURL    = 200
+)
+
+// safeURL makes a request URL fit for a single log line and for retention in the dedupe set:
+// control characters are replaced and the length is capped.
+func safeURL(u string) string {
+	if len(u) > maxLoggedURL {
+		u = u[:maxLoggedURL] + "..."
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, u)
+}
+
+func (s *Server) logMiss(method, rawURL string, status int) {
+	if s.Logf == nil {
+		return
+	}
+	rawURL = safeURL(rawURL)
+	key := fmt.Sprintf("%s %s %d", method, rawURL, status)
+	s.mu.Lock()
+	if s.logged == nil {
+		s.logged = map[string]struct{}{}
+	}
+	_, seen := s.logged[key]
+	if seen || len(s.logged) >= maxLoggedMisses {
+		s.mu.Unlock()
+		return
+	}
+	s.logged[key] = struct{}{}
+	s.mu.Unlock()
+	s.Logf("webview: resource %s %s -> %d", method, rawURL, status)
+}
 
 // Handle answers one request. Unknown methods get 405, bad URLs 404, unknown paths with no
 // file extension fall back to index.html (client-side routes), other missing files 404.
 func (s *Server) Handle(method, rawURL string) Response {
 	if method != "GET" && method != "HEAD" {
+		s.logMiss(method, rawURL, 405)
 		return s.plain(405, "Method Not Allowed")
 	}
 	name, ok := CleanPath(rawURL)
 	if !ok {
+		s.logMiss(method, rawURL, 404)
 		return s.plain(404, "Not Found")
 	}
 	data, err := fs.ReadFile(s.FS, name)
@@ -123,6 +174,7 @@ func (s *Server) Handle(method, rawURL string) Response {
 		data, err = fs.ReadFile(s.FS, name)
 	}
 	if err != nil {
+		s.logMiss(method, rawURL, 404)
 		return s.plain(404, "Not Found")
 	}
 	resp := Response{Status: 200, Reason: "OK", Header: headers(MimeType(name)), Body: data}
