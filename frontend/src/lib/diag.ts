@@ -21,7 +21,7 @@ export function reportRendered(client: Client): void {
     try {
       const b = document.body.getBoundingClientRect();
       const bg = getComputedStyle(document.body).backgroundColor;
-      const msg = `rendered body=${Math.round(b.width)}x${Math.round(b.height)} inner=${innerWidth}x${innerHeight} dpr=${devicePixelRatio} elements=${document.querySelectorAll('#app *').length} visibility=${document.visibilityState} frames=${frames} bg=${bg}`;
+      const msg = `rendered body=${Math.round(b.width)}x${Math.round(b.height)} inner=${innerWidth}x${innerHeight} dpr=${devicePixelRatio} scroll=${document.documentElement.scrollWidth}x${document.documentElement.scrollHeight} main=${(document.querySelector('main') as HTMLElement | null)?.scrollHeight ?? 0}/${(document.querySelector('main') as HTMLElement | null)?.clientHeight ?? 0} elements=${document.querySelectorAll('#app *').length} visibility=${document.visibilityState} frames=${frames} bg=${bg}`;
       void call.call(client, 'app.log', { level: 'info', message: msg }).catch(() => {});
     } catch {
       // diagnostics must never break the app

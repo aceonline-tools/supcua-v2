@@ -109,7 +109,7 @@ func New(cfg Config) (*UI, error) {
 	if u.mw, err = walk.NewMainWindow(); err != nil { // hidden: message owner for tray + Synchronize
 		return nil, fmt.Errorf("webview: pump window: %w", err)
 	}
-	if u.hwnd, err = createHostWindow(cfg.Title, cfg.Initial, cfg.IconIDs); err != nil {
+	if u.hwnd, err = createHostWindow(cfg.Title, cfg.Initial, cfg.MinW, cfg.MinH, cfg.IconIDs); err != nil {
 		return nil, err
 	}
 	if cfg.DarkTitleBar {
@@ -457,11 +457,12 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 			return 0
 		case win.WM_GETMINMAXINFO:
 			mm := (*win.MINMAXINFO)(ptrFrom(lp))
+			dpi := windowDPI(hwnd)
 			if u.cfg.MinW > 0 {
-				mm.PtMinTrackSize.X = int32(u.cfg.MinW)
+				mm.PtMinTrackSize.X = int32(scaleDPI(u.cfg.MinW, dpi))
 			}
 			if u.cfg.MinH > 0 {
-				mm.PtMinTrackSize.Y = int32(u.cfg.MinH)
+				mm.PtMinTrackSize.Y = int32(scaleDPI(u.cfg.MinH, dpi))
 			}
 			return 0
 		case win.WM_SYSCOMMAND:
@@ -482,7 +483,7 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 }
 
 // createHostWindow registers the class once and creates a native-frame top-level window.
-func createHostWindow(title string, b Bounds, iconIDs []int) (win.HWND, error) {
+func createHostWindow(title string, b Bounds, minW, minH int, iconIDs []int) (win.HWND, error) {
 	inst := win.GetModuleHandle(nil)
 	hostClassOnce.Do(func() {
 		hostClassName, _ = syscall.UTF16PtrFromString("supcua_webview_host")
@@ -510,7 +511,7 @@ func createHostWindow(title string, b Bounds, iconIDs []int) (win.HWND, error) {
 		return 0, hostClassErr
 	}
 	x, y, w, h := int32(win.CW_USEDEFAULT), int32(win.CW_USEDEFAULT), int32(1000), int32(700)
-	if b.W > 0 && b.H > 0 {
+	if !isDefaultSize(b.W, b.H) {
 		w, h = int32(b.W), int32(b.H)
 		r := win.RECT{Left: int32(b.X), Top: int32(b.Y), Right: int32(b.X + b.W), Bottom: int32(b.Y + b.H)}
 		if b.X > -1000 && b.Y > -1000 && onSomeMonitor(&r) {
@@ -522,7 +523,40 @@ func createHostWindow(title string, b Bounds, iconIDs []int) (win.HWND, error) {
 	if hwnd == 0 {
 		return 0, errors.New("webview: create host window failed")
 	}
+	if isDefaultSize(b.W, b.H) {
+		fitDefaultSize(hwnd, minW, minH)
+	}
 	return hwnd, nil
+}
+
+// windowDPI is the window's DPI (96 when unavailable).
+func windowDPI(hwnd win.HWND) int {
+	d, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
+	if d == 0 {
+		return baseDPI
+	}
+	return int(d)
+}
+
+// fitDefaultSize resizes a default-sized window to the DPI of the monitor it was created on:
+// WebView2 lays out in CSS px = physical px * 96/DPI, so a fixed physical size leaves a UI
+// designed for ~1000x700 CSS px too small at 125-200% scaling.
+func fitDefaultSize(hwnd win.HWND, minW, minH int) {
+	dpi := windowDPI(hwnd)
+	var aw, ah int
+	if m := win.MonitorFromWindow(hwnd, win.MONITOR_DEFAULTTONEAREST); m != 0 {
+		mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
+		if win.GetMonitorInfo(m, &mi) {
+			aw, ah = int(mi.RcWork.Right-mi.RcWork.Left), int(mi.RcWork.Bottom-mi.RcWork.Top)
+		}
+	}
+	w, h := fitSize(dpi, aw, ah, minW, minH)
+	var r win.RECT
+	win.GetWindowRect(hwnd, &r)
+	if int(r.Right-r.Left) == w && int(r.Bottom-r.Top) == h {
+		return
+	}
+	win.SetWindowPos(hwnd, 0, r.Left, r.Top, int32(w), int32(h), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 }
 
 var procMonitorFromRect = user32.NewProc("MonitorFromRect")
