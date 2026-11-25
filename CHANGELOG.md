@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.0...v1.2.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* never leave a silent blank window at startup; production-path CI gate ([#9](https://github.com/aceonline-tools/supcua-v2/issues/9)) ([27c0432](https://github.com/aceonline-tools/supcua-v2/commit/27c043289ba376bcab13891d45882eea77a5ea1b))
+
 ## [1.2.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.1.0...v1.2.0) (2026-11-25)
 
 
