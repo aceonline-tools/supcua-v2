@@ -12,7 +12,8 @@ import (
 
 const (
 	maxDiagMessage = 500
-	maxDiagLogs    = 50 // per process: a crash loop must not flood the log
+	maxDiagParams  = 8 << 10 // raw params bound, checked before decoding
+	maxDiagLogs    = 50      // per process: a crash loop must not flood the log
 )
 
 // Diag serves the frontend's two diagnostics RPCs: app.mounted (the app rendered) and app.log
@@ -32,6 +33,9 @@ type handler = func(json.RawMessage) (any, error)
 func badRequest() error { return &bridge.Error{Code: "BAD_REQUEST", Message: "invalid request"} }
 
 func strictDecode(p json.RawMessage, v any) error {
+	if len(p) > maxDiagParams {
+		return errors.New("params too large")
+	}
 	d := json.NewDecoder(strings.NewReader(string(p)))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
@@ -43,15 +47,19 @@ func strictDecode(p json.RawMessage, v any) error {
 	return nil
 }
 
+// clip keeps at most n bytes without splitting a rune, in one pass.
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	r := []rune(s)
-	for len(string(r)) > n {
-		r = r[:len(r)-1]
+	cut := 0
+	for i := range s {
+		if i > n {
+			break
+		}
+		cut = i
 	}
-	return string(r) + "..."
+	return s[:cut] + "..."
 }
 
 func sanitize(s string) string {
@@ -106,7 +114,7 @@ func (d *Diag) handleLog(p json.RawMessage) (any, error) {
 	case n == maxDiagLogs+1:
 		d.Logf("frontend[log]: further frontend log messages suppressed")
 	case n <= maxDiagLogs:
-		d.Logf("frontend[%s]: %s", in.Level, clip(sanitize(in.Message), maxDiagMessage))
+		d.Logf("frontend[%s]: %s", in.Level, sanitize(clip(in.Message, maxDiagMessage)))
 	}
 	return struct{}{}, nil
 }

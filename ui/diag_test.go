@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type logSink struct {
@@ -74,6 +75,20 @@ func TestDiagLogValidatesBoundsAndSanitises(t *testing.T) {
 	}
 }
 
+func TestDiagRejectsOversizedParamsBeforeDecoding(t *testing.T) {
+	d := &Diag{Logf: (&logSink{}).Logf}
+	if call(t, d, "app.log", `{"level":"error","message":"`+strings.Repeat("x", maxDiagParams)+`"}`) == nil {
+		t.Fatal("oversized params accepted")
+	}
+}
+
+func TestClipIsRuneSafeAndBounded(t *testing.T) {
+	got := clip(strings.Repeat("é", 1000), 501)
+	if !utf8.ValidString(got) || len(got) > 501+3 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("len=%d valid=%v", len(got), utf8.ValidString(got))
+	}
+}
+
 func TestDiagLogIsRateBounded(t *testing.T) {
 	var s logSink
 	d := &Diag{Logf: s.Logf}
@@ -100,8 +115,10 @@ func TestLoadWatchFiresWithStageAndIsDisarmedByMount(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("deadline did not fire")
 	}
-	if !w.Mounted() {
-		t.Fatal("late mount not reported")
+	var lateAfter time.Duration
+	w.OnLate = func(d time.Duration) { lateAfter = d }
+	if !w.Mounted() || lateAfter <= 0 || !strings.Contains(s.all(), "frontend mounted late after") {
+		t.Fatalf("late mount not reported: %v %q", lateAfter, s.all())
 	}
 
 	w2 := &LoadWatch{Timeout: 30 * time.Millisecond, Stage: st.Last, Logf: s.Logf, OnTimeout: func(string) { t.Error("fired after mount") }}

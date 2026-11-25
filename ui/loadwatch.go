@@ -14,10 +14,13 @@ type LoadWatch struct {
 	Timeout   time.Duration
 	Stage     func() string
 	OnTimeout func(stage string)
-	Logf      func(format string, args ...any)
+	// OnLate runs when the frontend mounts after the deadline fired (retract any visible warning).
+	OnLate func(elapsed time.Duration)
+	Logf   func(format string, args ...any)
 
 	mu      sync.Mutex
 	timer   *time.Timer
+	started time.Time
 	mounted bool
 	fired   bool
 }
@@ -28,6 +31,7 @@ func (w *LoadWatch) Start() {
 	if w.timer != nil || w.mounted {
 		return
 	}
+	w.started = time.Now()
 	w.timer = time.AfterFunc(w.Timeout, w.fire)
 }
 
@@ -49,10 +53,17 @@ func (w *LoadWatch) fire() {
 // Mounted disarms the deadline and reports whether the frontend arrived after it had fired.
 func (w *LoadWatch) Mounted() (late bool) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.mounted = true
 	if w.timer != nil {
 		w.timer.Stop()
 	}
-	return w.fired
+	late, elapsed := w.fired, time.Since(w.started)
+	w.mu.Unlock()
+	if late {
+		w.Logf("frontend mounted late after %s", elapsed.Round(100*time.Millisecond))
+		if w.OnLate != nil {
+			w.OnLate(elapsed)
+		}
+	}
+	return late
 }

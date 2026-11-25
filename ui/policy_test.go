@@ -40,7 +40,7 @@ func TestProductionSelfTestPolicyRunsTheProductionSequenceWithoutItsGates(t *tes
 	if !p.RegisterHotkeys || !p.StartAutoActive || !p.SelfTestMethods || !p.ExitWhenDone {
 		t.Fatalf("must run the production sequence and exit: %+v", p)
 	}
-	if p.CheckLicense || p.CheckForUpdates || p.UseUserData || p.ScriptsMayRun {
+	if p.CheckLicense || p.CheckForUpdates || p.UseUserData {
 		t.Fatalf("must not bypass licence, hit the network or touch user data: %+v", p)
 	}
 }

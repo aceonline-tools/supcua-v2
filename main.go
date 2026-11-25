@@ -83,74 +83,6 @@ func wantDark(theme string) bool {
 	return systemPrefersDark()
 }
 
-// fixedHotkeys owns the global and overlay hotkey registrations and re-binds them with
-// restore-on-failure (bridge.Host.RebindHotkey).
-type fixedHotkeys struct {
-	mu  sync.Mutex
-	mgr *hotkey.Manager
-	on  bool
-	ids map[string]int
-	cur map[string]model.Hotkey
-	cb  map[string]hotkey.HotkeyCallback
-}
-
-func (f *fixedHotkeys) add(kind string, hk model.Hotkey, cb hotkey.HotkeyCallback) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.cur[kind], f.cb[kind] = hk, cb
-	if !f.on || hk.Key == "" {
-		return
-	}
-	id, err := f.mgr.Register(hk, cb)
-	if err != nil {
-		log.Printf("warning: failed to register %s hotkey: %v", kind, err)
-		return
-	}
-	f.ids[kind] = id
-}
-
-func (f *fixedHotkeys) rebind(kind string, hk model.Hotkey) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	old, cb := f.cur[kind], f.cb[kind]
-	if kind == bridge.HotkeyCapture || !f.on || cb == nil {
-		f.cur[kind] = hk
-		return nil
-	}
-	if id := f.ids[kind]; id != 0 {
-		_ = f.mgr.Unregister(id)
-		f.ids[kind] = 0
-	}
-	if hk.Key != "" {
-		id, err := f.mgr.Register(hk, cb)
-		if err != nil {
-			if old.Key != "" {
-				if rid, rerr := f.mgr.Register(old, cb); rerr == nil {
-					f.ids[kind] = rid
-				} else {
-					log.Printf("warning: could not restore %s hotkey: %v", kind, rerr)
-				}
-			}
-			return err
-		}
-		f.ids[kind] = id
-	}
-	f.cur[kind] = hk
-	return nil
-}
-
-func (f *fixedHotkeys) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n := 0
-	for _, id := range f.ids {
-		if id != 0 {
-			n++
-		}
-	}
-	return n
-}
-
 // diagKit is the frontend diagnostics channel plus the initial-load deadline.
 type diagKit struct {
 	diag    *ui.Diag
@@ -172,11 +104,10 @@ func newDiagKit(stages *ui.Stages, res *webview.Result, logPath string) *diagKit
 			webview.ShowLoadTimeout(logPath, stage)
 		},
 	}
+	k.watch.OnLate = func(time.Duration) { webview.DismissLoadTimeout() }
 	k.diag = &ui.Diag{Logf: log.Printf, OnMounted: func(route string) {
 		stages.Mark("frontend mounted route=" + route)
-		if k.watch.Mounted() {
-			log.Println("frontend mounted after the load deadline had fired")
-		}
+		k.watch.Mounted()
 		close(k.mounted)
 	}}
 	return k
@@ -421,9 +352,10 @@ func main() {
 			},
 			hotkeyManager.Unregister,
 		)
+		scriptHotkeys.Defer() // registered off the UI thread by startup, after the pump runs
 		hotkeySet = scriptHotkeys
 	}
-	fixed := &fixedHotkeys{mgr: hotkeyManager, on: policy.RegisterHotkeys, ids: map[string]int{}, cur: map[string]model.Hotkey{}, cb: map[string]hotkey.HotkeyCallback{}}
+	fixed := newFixedHotkeys(hotkeyManager, policy.RegisterHotkeys)
 
 	var tray *ui.TrayIcon
 	overlayCtl := &ui.OverlayController{Controller: appController, Config: configService}
@@ -487,7 +419,14 @@ func main() {
 				log.Printf("warning: %v", err)
 			}
 			unregistered := make(chan struct{}) // bounded: the hotkey thread answers each Unregister
-			go func() { hotkeyManager.UnregisterAll(); close(unregistered) }()
+			go func() {
+				fixed.stop() // nothing may register once teardown starts (also joins one in flight)
+				if scriptHotkeys != nil {
+					scriptHotkeys.Stop()
+				}
+				hotkeyManager.UnregisterAll()
+				close(unregistered)
+			}()
 			select {
 			case <-unregistered:
 			case <-time.After(time.Second):
@@ -715,16 +654,26 @@ func main() {
 	if policy.RegisterHotkeys {
 		go hotkeyManager.ListenForHotkeys() // before any Register: it services the channel
 		stages.Mark("hotkey listener started")
+		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalStatus() })
+		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(int) {
+			late.Post(overlayCtl.ToggleVisibility)
+		})
 		registerStartupHotkeys := func() {
 			t0 := time.Now()
-			fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalStatus() })
-			fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(int) {
-				late.Post(overlayCtl.ToggleVisibility)
-			})
+			fixed.start() // the LATEST desired hotkeys: rebinds made before this ran are honoured
 			stages.Mark(fmt.Sprintf("fixed hotkeys registered (%d, %dms)", fixed.count(), time.Since(t0).Milliseconds()))
 			t1 := time.Now()
-			scriptHotkeys.SetScripts(initialScripts)
-			stages.Mark(fmt.Sprintf("script hotkeys set (%d scripts, %d registered, %dms)", len(initialScripts), scriptHotkeys.Count(), time.Since(t1).Milliseconds()))
+			scriptHotkeys.Start(func() []model.Script {
+				if br.InitialScriptsOK() {
+					return initialScripts
+				}
+				scripts, err := scriptStore.List()
+				if err != nil {
+					log.Printf("warning: script list for hotkeys failed: %v", err)
+				}
+				return scripts
+			})
+			stages.Mark(fmt.Sprintf("script hotkeys set (%d registered, %dms)", scriptHotkeys.Count(), time.Since(t1).Milliseconds()))
 			close(hotkeysDone)
 		}
 		webUI.Post(func() { go registerStartupHotkeys() })

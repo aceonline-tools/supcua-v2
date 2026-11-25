@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -798,5 +799,18 @@ func TestInitialScriptsIsTheSnapshotNewLoaded(t *testing.T) {
 	got[0].ID = "mutated"
 	if br.InitialScripts()[0].ID != "a" {
 		t.Fatal("InitialScripts exposes internal state")
+	}
+}
+
+type failingListStore struct{ *fakeStore }
+
+func (failingListStore) List() ([]model.Script, error) { return nil, errors.New("disk error") }
+
+func TestInitialScriptsOKFalseWhenTheStartupListingFailed(t *testing.T) {
+	if New(Deps{Store: failingListStore{newFakeStore()}}, nil).InitialScriptsOK() {
+		t.Fatal("a failed initial listing must be reported so the host re-lists")
+	}
+	if !New(Deps{Store: newFakeStore(model.Script{ID: "a"})}, nil).InitialScriptsOK() {
+		t.Fatal("successful listing must be reported ok")
 	}
 }

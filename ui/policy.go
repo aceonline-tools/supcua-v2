@@ -6,7 +6,6 @@ package ui
 type Policy struct {
 	CheckLicense    bool // production: licence gate before any UI
 	RegisterHotkeys bool // global/overlay/script hotkeys (the only way scripts start)
-	ScriptsMayRun   bool
 	CheckForUpdates bool
 	StartAutoActive bool
 	UseUserData     bool // real config.json and scripts directory
@@ -24,7 +23,9 @@ func NewPolicy(selftest bool) Policy {
 
 // NewProductionSelfTestPolicy is -selftest-production: the production startup sequence (tray,
 // hotkey listener and real registrations, auto-active, overlay) against an isolated copy of a
-// fixture data directory. Still no licence capability, no update network and no user data.
+// fixture data directory (a temp dir that is deleted afterwards; the user's data is never used).
+// Still no licence capability and no update network. It exits after its bounded run (the hard
+// timeout flag plus the driver's own deadlines); it only starts the fixture's input-free probe script.
 func NewProductionSelfTestPolicy() Policy {
 	return Policy{RegisterHotkeys: true, StartAutoActive: true, SelfTestMethods: true, ExitWhenDone: true}
 }

@@ -117,12 +117,30 @@ type Server struct {
 	logged map[string]struct{}
 }
 
-const maxLoggedMisses = 50
+const (
+	maxLoggedMisses = 50
+	maxLoggedURL    = 200
+)
+
+// safeURL makes a request URL fit for a single log line and for retention in the dedupe set:
+// control characters are replaced and the length is capped.
+func safeURL(u string) string {
+	if len(u) > maxLoggedURL {
+		u = u[:maxLoggedURL] + "..."
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, u)
+}
 
 func (s *Server) logMiss(method, rawURL string, status int) {
 	if s.Logf == nil {
 		return
 	}
+	rawURL = safeURL(rawURL)
 	key := fmt.Sprintf("%s %s %d", method, rawURL, status)
 	s.mu.Lock()
 	if s.logged == nil {

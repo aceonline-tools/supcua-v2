@@ -126,6 +126,20 @@ func TestHandle(t *testing.T) {
 	}
 }
 
+func TestLoggedURLsAreSanitisedAndCapped(t *testing.T) {
+	var lines []string
+	s := &Server{FS: fstest.MapFS{}, Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
+	s.Handle("GET", "https://app.local/x\r\nforged: line"+strings.Repeat("a", 5000))
+	if len(lines) != 1 || strings.ContainsAny(lines[0], "\r\n") || len(lines[0]) > maxLoggedURL+80 {
+		t.Fatalf("%d lines: %q", len(lines), lines)
+	}
+	for k := range s.logged {
+		if len(k) > maxLoggedURL+40 {
+			t.Fatalf("retained key too long: %d", len(k))
+		}
+	}
+}
+
 func TestMissesAreLoggedOnceEachAndBounded(t *testing.T) {
 	var lines []string
 	s := &Server{FS: fstest.MapFS{"index.html": {Data: []byte("x")}}, Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}

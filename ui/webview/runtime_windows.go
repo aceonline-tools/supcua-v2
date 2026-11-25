@@ -63,9 +63,19 @@ func ShowStartupFailure() { showInstallerBox("WebView2 failed to start", Startup
 // ShowLoadTimeout tells the user the window never rendered the app, with where to look. It
 // blocks until dismissed (modal MessageBox); call it off the UI thread.
 func ShowLoadTimeout(logPath, stage string) {
-	t, _ := windows.UTF16PtrFromString("supcua-v2 did not finish loading its window.\n\nLast startup stage: " + stage + "\n\nDetails were written to:\n" + logPath + "\n\nClose and restart the app; if this repeats, send that log file.")
-	c, _ := windows.UTF16PtrFromString("supcua-v2 failed to load")
-	windows.MessageBox(0, t, c, windows.MB_OK|windows.MB_ICONERROR|windows.MB_TOPMOST)
+	t, _ := windows.UTF16PtrFromString("supcua-v2 is taking unusually long to load its window.\n\nIt keeps trying and this message closes by itself if it succeeds. Last startup stage: " + stage + "\n\nIf the window stays blank, close the app and send this log file:\n" + logPath)
+	windows.MessageBox(0, t, loadTimeoutTitle, windows.MB_OK|windows.MB_ICONWARNING|windows.MB_TOPMOST)
+}
+
+var loadTimeoutTitle = func() *uint16 { p, _ := windows.UTF16PtrFromString("supcua-v2 is still loading"); return p }()
+
+// DismissLoadTimeout closes the ShowLoadTimeout box if it is open (the page mounted after all).
+func DismissLoadTimeout() {
+	const wmClose = 0x0010
+	class, _ := windows.UTF16PtrFromString("#32770")
+	if hwnd, _, _ := procFindWindow.Call(uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(loadTimeoutTitle))); hwnd != 0 {
+		procPostMessage.Call(hwnd, wmClose, 0, 0)
+	}
 }
 
 func showInstallerBox(title, text string) {
@@ -82,6 +92,8 @@ func showInstallerBox(title, text string) {
 var (
 	user32            = windows.NewLazySystemDLL("user32.dll")
 	kernel32          = windows.NewLazySystemDLL("kernel32.dll")
+	procFindWindow    = user32.NewProc("FindWindowW")
+	procPostMessage   = user32.NewProc("PostMessageW")
 	procGuiResources  = user32.NewProc("GetGuiResources")
 	procHandleCount   = kernel32.NewProc("GetProcessHandleCount")
 	procAttachConsole = kernel32.NewProc("AttachConsole")

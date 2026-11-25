@@ -146,7 +146,8 @@ type Bridge struct {
 	closingReady chan struct{}
 	readyOnce    sync.Once
 
-	initial []model.Script // the list read once in New; immutable
+	initial   []model.Script // the list read once in New; immutable
+	initialOK bool           // false when that listing failed
 
 	mu      sync.Mutex
 	scripts []model.Script
@@ -182,6 +183,7 @@ func New(d Deps, e Emitter) *Bridge {
 		} else {
 			b.scripts = scripts
 			b.initial = append([]model.Script(nil), scripts...)
+			b.initialOK = true
 		}
 		d.Store.SetOnSaveError(b.onSaveError)
 	}
@@ -195,6 +197,9 @@ func New(d Deps, e Emitter) *Bridge {
 // InitialScripts is the script list New loaded. The host seeds script-hotkey registration from it
 // so startup lists the scripts directory exactly once.
 func (b *Bridge) InitialScripts() []model.Script { return append([]model.Script(nil), b.initial...) }
+
+// InitialScriptsOK reports whether New's listing succeeded; when it did not, the host re-lists.
+func (b *Bridge) InitialScriptsOK() bool { return b.initialOK }
 
 func (b *Bridge) at(stage string) {
 	if b.testHook != nil {
