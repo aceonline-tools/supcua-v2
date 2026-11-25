@@ -247,6 +247,8 @@ const (
 	maxNameLen    = 120
 	maxActions    = 5000
 	maxActionDeep = 16
+	maxImageBytes = 4 << 20
+	maxImageTotal = 32 << 20
 )
 
 func knownActionTypes() map[string]bool {
@@ -281,11 +283,11 @@ func validateScript(s *model.Script, known map[string]bool) *Error {
 	if s.Actions == nil {
 		s.Actions = []model.Action{}
 	}
-	count := 0
-	return validateActions(s.Actions, known, 0, &count)
+	count, imgTotal := 0, 0
+	return validateActions(s.Actions, known, 0, &count, &imgTotal)
 }
 
-func validateActions(actions []model.Action, known map[string]bool, depth int, count *int) *Error {
+func validateActions(actions []model.Action, known map[string]bool, depth int, count, imgTotal *int) *Error {
 	if depth > maxActionDeep {
 		return badRequest()
 	}
@@ -295,11 +297,15 @@ func validateActions(actions []model.Action, known map[string]bool, depth int, c
 			return badRequest()
 		}
 		if a.DelayMs < 0 || a.DelayMs > maxDelayMs || a.TimeoutMs < 0 || a.TimeoutMs > maxDelayMs ||
-			a.LoopCount < 0 || a.LoopCount > maxLoopCount || len(a.Key) > 32 || len(a.Image) > 1024 {
+			a.LoopCount < 0 || a.LoopCount > maxLoopCount || len(a.Key) > 32 || len(a.Image) > maxImageBytes {
+			return badRequest()
+		}
+		*imgTotal += len(a.Image)
+		if *imgTotal > maxImageTotal {
 			return badRequest()
 		}
 		for _, children := range [][]model.Action{a.Actions, a.ThenActions, a.ElseActions} {
-			if err := validateActions(children, known, depth+1, count); err != nil {
+			if err := validateActions(children, known, depth+1, count, imgTotal); err != nil {
 				return err
 			}
 		}

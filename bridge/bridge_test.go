@@ -2,8 +2,12 @@ package bridge
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -745,4 +749,37 @@ func TestUpdateApplyRunsOnceAndReportsProgressAndFailure(t *testing.T) {
 	if len(r.em.named(EvUpdateAvailable)) != 1 {
 		t.Error("update.available not emitted")
 	}
+}
+
+func noisyPNGBase64(t *testing.T) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 200, 200))
+	rng := rand.New(rand.NewSource(1))
+	for i := range img.Pix {
+		img.Pix[i] = byte(rng.Intn(256))
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func TestEditorSaveAcceptsRealSizeImageTemplateAndRejectsAbsurd(t *testing.T) {
+	r := newRig(t, script("s1", "Alpha", "", true))
+	sid, edit := openEditor(t, r, "s1")
+	save := func(img string) error {
+		edit["actions"] = []map[string]any{{"type": "wait_for_image", "image": img}}
+		body, _ := json.Marshal(map[string]any{"sessionId": sid, "script": edit})
+		_, err := r.call(t, "editor.save", string(body))
+		return err
+	}
+	real := noisyPNGBase64(t)
+	if len(real) <= 1024 {
+		t.Fatalf("test image too small: %d", len(real))
+	}
+	if err := save(real); err != nil {
+		t.Fatalf("real-size template rejected: %v", err)
+	}
+	wantCode(t, save(strings.Repeat("A", maxImageBytes+1)), CodeBadRequest)
 }
