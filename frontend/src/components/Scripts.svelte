@@ -51,11 +51,11 @@
     {#each store.rows as row (row.kind === 'group' ? 'g:' + row.group.name : row.script.id)}
       {#if row.kind === 'group'}
         <div class="tr group" role="row">
-          <span>
+          <label class="hit">
             <input class="cb" type="checkbox" aria-label={`Enable all in ${row.group.name}`}
               checked={row.checked} indeterminate={row.indeterminate}
               onchange={() => store.setGroupEnabled(row.group.name, !row.checked)} />
-          </span>
+          </label>
           <span>
             <button class="chev" aria-expanded={!row.collapsed} aria-label={`${row.collapsed ? 'Expand' : 'Collapse'} ${row.group.name}`}
               onclick={() => store.toggleCollapsed(row.group.name)}>{row.collapsed ? '▸' : '▾'}</button>{row.group.name}<small>{row.group.count} {row.group.count === 1 ? 'script' : 'scripts'}</small>
@@ -65,10 +65,10 @@
       {:else}
         {@const sc = row.script}
         <div class="tr row" class:selected={store.selectedId === sc.id} role="row" tabindex="0"
-          onclick={() => store.select(sc.id)} ondblclick={() => store.openEditor(sc.id)}
+          onclick={(e) => { if (!(e.target as Element).closest('.hit')) store.select(sc.id); }} ondblclick={() => store.openEditor(sc.id)}
           onkeydown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter') store.openEditor(sc.id); else if (e.key === ' ') { e.preventDefault(); store.select(sc.id); } }}>
-          <span><input class="cb" type="checkbox" aria-label={`Enable ${sc.name}`} checked={sc.enabled}
-            onclick={(e) => e.stopPropagation()} onchange={(e) => store.setEnabled(sc.id, e.currentTarget.checked)} /></span>
+          <label class="hit"><input class="cb" type="checkbox" aria-label={`Enable ${sc.name}`} checked={sc.enabled}
+            onclick={(e) => e.stopPropagation()} onchange={(e) => store.setEnabled(sc.id, e.currentTarget.checked)} /></label>
           <span class="name" class:tree={row.grouped}>
             {sc.name}
             {#if store.unsaved[sc.id]}
