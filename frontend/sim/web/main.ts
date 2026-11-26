@@ -4,6 +4,7 @@ import {
 } from '../src/sizing';
 
 declare const __SIM_PORTS__: Record<string, number>;
+declare const __SIM_STATIC__: boolean;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const verSel = $<HTMLSelectElement>('ver');
@@ -18,7 +19,7 @@ const taskbar = $('taskbar');
 const readout = $('readout');
 
 const q = new URLSearchParams(location.search);
-let version: VersionId = (VERSIONS as readonly string[]).includes(q.get('v') ?? '') ? (q.get('v') as VersionId) : 'v1.3.0';
+let version: VersionId = __SIM_STATIC__ ? 'v1.3.0' : (VERSIONS as readonly string[]).includes(q.get('v') ?? '') ? (q.get('v') as VersionId) : 'v1.3.0';
 let scaling: Scaling = (SCALINGS as readonly number[]).includes(Number(q.get('s'))) ? (Number(q.get('s')) as Scaling) : 100;
 let place: Placement = { x: 0, y: 0, w: 0, h: 0 };
 let k = 1;
@@ -26,6 +27,8 @@ let k = 1;
 for (const v of VERSIONS) verSel.add(new Option(v, v));
 for (const s of SCALINGS) sclSel.add(new Option(`${s}%`, String(s)));
 verSel.value = version;
+if (__SIM_STATIC__) verSel.closest('label')!.style.display = 'none';
+const label = () => (__SIM_STATIC__ ? 'main' : version);
 sclSel.value = String(scaling);
 
 const px = (n: number) => `${n}px`;
@@ -67,7 +70,7 @@ function render() {
   const ico = title.querySelector<HTMLElement>('.ico')!;
   ico.style.width = ico.style.height = px(Math.round(16 * (d / 96)));
   ico.style.marginRight = px(8 * (d / 96));
-  title.querySelector<HTMLElement>('.txt')!.textContent = `supcua-v2 ${version}`;
+  title.querySelector<HTMLElement>('.txt')!.textContent = `supcua-v2 ${label()}`;
   title.querySelectorAll<HTMLElement>('.g').forEach((g) => {
     g.style.width = px(Math.round(46 * (d / 96)));
     g.style.fontSize = px(11 * (d / 96));
@@ -75,7 +78,7 @@ function render() {
   Object.assign(client.style, { left: px(border), top: px(caption), width: px(c.w), height: px(c.h) });
   Object.assign(iframe.style, { width: px(css.w), height: px(css.h), transform: `scale(${d / 96})` });
   readout.innerHTML = [
-    ['version', version],
+    ['version', label()],
     ['scaling', `${scaling}% (${d} dpi)`],
     ['outer', `${place.w}x${place.h}`],
     ['client', `${c.w}x${c.h}`],
@@ -93,12 +96,12 @@ function fresh() {
 }
 
 function sync() {
-  const u = new URLSearchParams({ v: version, s: String(scaling) });
+  const u = new URLSearchParams(__SIM_STATIC__ ? { s: String(scaling) } : { v: version, s: String(scaling) });
   history.replaceState(null, '', `?${u}`);
 }
 
 function loadVersion() {
-  iframe.src = `http://127.0.0.1:${__SIM_PORTS__[version]}/`;
+  iframe.src = __SIM_STATIC__ ? './app/' : `http://127.0.0.1:${__SIM_PORTS__[version]}/`;
 }
 
 function addHandles() {

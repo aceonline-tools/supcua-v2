@@ -7,3 +7,6 @@ config.json
 ui/webview/assets/dist/*
 !ui/webview/assets/dist/index.html
 !testdata/prod-fixture/config.json
+
+# FHD simulator static build (Vercel)
+frontend/sim/dist-static/

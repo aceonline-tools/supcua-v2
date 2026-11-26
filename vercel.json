@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "cd frontend && npm ci --ignore-scripts --engine-strict=false",
+  "buildCommand": "cd frontend && npm run sim:build",
+  "outputDirectory": "frontend/sim/dist-static"
+}

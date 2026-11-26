@@ -31,3 +31,7 @@ On first run, for each tag: `git archive <tag> frontend` into `sim/.cache/<tag>/
 - The iframe lays out at the CSS viewport and is drawn at physical size with `transform: scale(dpi/96)`. The browser cannot set the iframe's `devicePixelRatio`, so it reports the browser's value; CSS px, width media queries and visual size match the real app, `resolution`/DPR-based queries do not.
 - Frame metrics are assumed Windows 11 values: border `round(8*dpi/96)`, caption `round(31*dpi/96)`; 1000x700 at 96 DPI gives the CI-logged 984x661 client. The first window is placed at the 60,60 cascade origin used by the Go tests.
 - Title-bar buttons are visual only. The window is not clamped to a maximum size.
+
+## Static build (Vercel)
+
+`npm run sim:build` writes a single-version simulator of the current `frontend/src` to `sim/dist-static/` (git-ignored): the shell at `/` and the app at `/app/`, no version switcher, v1.3.0+ window rules. The MockBackend is enabled by a build-time `define` of `import.meta.env.DEV` and the 18-script seed is applied by a transform plugin on `src/api/mock.ts` (`sim/build-static.mjs`); `frontend/src` and the shipped build are untouched. `vercel.json` at the repo root drives the deploy.

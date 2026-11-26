@@ -21,8 +21,8 @@ const ROWS = `
       s('d4','Anti-idle','Utility','Ctrl + Alt + A','infinite'),`;
 
 /** Rewrites the cached copy's mock seed only: 18 scripts in 4 groups, system theme, the tag as version. */
-export function seedMock(file, version) {
-  let t = fs.readFileSync(file, 'utf8');
+export function seedMockSource(source, version, file = 'mock.ts') {
+  let t = source;
   const steps = [
     [/scripts: \[\n[\s\S]*?\n    \],\n    settings/, `scripts: [${ROWS}\n    ],\n    settings`],
     ["theme: 'dark', global_hotkey", "theme: 'system', global_hotkey"],
@@ -35,5 +35,9 @@ export function seedMock(file, version) {
     if (next === t) throw new Error(`mock seed: pattern not found in ${file}: ${String(from).slice(0, 40)}`);
     t = next;
   }
-  fs.writeFileSync(file, t);
+  return t;
+}
+
+export function seedMock(file, version) {
+  fs.writeFileSync(file, seedMockSource(fs.readFileSync(file, 'utf8'), version, file));
 }
