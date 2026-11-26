@@ -49,29 +49,54 @@
     if (step) { listEl.scrollTop += step; updateGap(); }
     raf = requestAnimationFrame(tick);
   };
-  function onMove(e: PointerEvent) { pointerX = e.clientX; pointerY = e.clientY; updateGap(); }
-  function onUp(e: PointerEvent) { pointerX = e.clientX; pointerY = e.clientY; endDrag(inside()); }
+  let pointerId = -1;
+  let grip: HTMLElement | null = null;
+  const mine = (e: PointerEvent) => e.pointerId === pointerId;
+  function onMove(e: PointerEvent) { if (!drag || !mine(e)) return; pointerX = e.clientX; pointerY = e.clientY; updateGap(); }
+  function onUp(e: PointerEvent) {
+    if (!drag || !mine(e)) return;
+    pointerX = e.clientX; pointerY = e.clientY;
+    const ok = inside();
+    updateGap();
+    endDrag(ok);
+  }
+  function onPointerCancel(e: PointerEvent) { if (mine(e)) endDrag(false); }
+  const onAbort = () => endDrag(false);
+  const onHidden = () => { if (document.visibilityState === 'hidden') endDrag(false); };
   function startDrag(e: PointerEvent, i: number) {
     if (e.button !== 0 || drag) return;
     e.preventDefault();
     pointerX = e.clientX; pointerY = e.clientY;
+    pointerId = e.pointerId;
+    grip = e.currentTarget as HTMLElement;
+    try { grip.setPointerCapture?.(e.pointerId); } catch { /* pointer already gone */ }
     ed.selectAction(i);
     drag = { from: i, gap: i };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('blur', onAbort);
+    document.addEventListener('visibilitychange', onHidden);
+    grip.addEventListener('lostpointercapture', onAbort);
     raf = requestAnimationFrame(tick);
   }
-  function onCancel() { endDrag(false); }
   function endDrag(commit: boolean) {
     const d = drag;
     drag = null;
     cancelAnimationFrame(raf);
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('pointercancel', onPointerCancel);
+    window.removeEventListener('blur', onAbort);
+    document.removeEventListener('visibilitychange', onHidden);
+    if (grip) {
+      grip.removeEventListener('lostpointercapture', onAbort);
+      try { grip.releasePointerCapture?.(pointerId); } catch { /* already released */ }
+      grip = null;
+    }
     if (commit && d && dropIndex(d.from, d.gap) !== d.from) void ed.moveTo(d.from, d.gap);
   }
+  $effect(() => { void sc; return () => endDrag(false); });
   const indicatorTop = $derived.by(() => {
     if (!drag || dropIndex(drag.from, drag.gap) === drag.from || !listEl) return null;
     const rows = listEl.querySelectorAll<HTMLElement>('.action-row');
