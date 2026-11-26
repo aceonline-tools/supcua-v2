@@ -54,8 +54,7 @@ h2{font-size:15px;line-height:20px;font-weight:650;margin:0}
 .selected{background:var(--selected)}
 .row{cursor:default}
 .row .name{display:flex;align-items:center;gap:8px;min-width:0}
-.row .name.tree{padding-left:18px}
-.row .name.tree:before{content:'└';color:var(--muted);margin-right:4px}
+.row .name.tree{padding-left:44px}
 .badge-unsaved{font-size:11px;line-height:14px;color:var(--danger);border:1px solid var(--danger);border-radius:4px;padding:0 5px}
 .link{border:0;background:none;padding:0 4px;min-height:22px;font-size:11px;color:var(--accent);text-decoration:underline}
 .cb{appearance:none;margin:0;width:16px;height:16px;border:1px solid var(--muted);border-radius:4px;display:inline-grid;place-content:center;background:none;cursor:pointer}
