@@ -2,6 +2,7 @@
   import type { AppStore } from '../lib/store.svelte';
   import type { HotkeyField } from '../api/types';
   import { gapAt, dropIndex, scrollStep } from '../lib/reorder';
+  import GroupCombobox from './GroupCombobox.svelte';
   import HotkeyInput from './HotkeyInput.svelte';
   import ActionDialog from './ActionDialog.svelte';
   import RawEditorDialog from './RawEditorDialog.svelte';
@@ -135,7 +136,7 @@
         <div class="field"><label for="ed-name">Name:</label>
           <input id="ed-name" class="input full" bind:value={sc.name} oninput={() => ed.markDirty()} /></div>
         <div class="field"><label for="ed-group">Group:</label>
-          <input id="ed-group" class="input full" bind:value={sc.group} oninput={() => ed.markDirty()} /></div>
+          <GroupCombobox id="ed-group" bind:value={sc.group} options={store.groups.map((g) => g.name)} onchange={() => ed.markDirty()} /></div>
         <div class="field"><label for="ed-enabled">Enabled:</label>
           <label class="hit"><input id="ed-enabled" class="cb" type="checkbox" bind:checked={sc.enabled} onchange={() => ed.markDirty()} /></label></div>
         <div class="field"><span class="lbl" id="rm">Run Mode:</span>
