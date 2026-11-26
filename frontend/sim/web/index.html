@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>supcua FHD simulator</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 6px 12px; background: #1d1d20; border-bottom: 1px solid #333; }
+  #bar label { display: flex; gap: 6px; align-items: center; }
+  #bar select, #bar button { font: inherit; padding: 2px 8px; }
+  #badge { font-weight: 600; color: #ffb454; }
+  #readout { display: flex; flex-wrap: wrap; gap: 4px 14px; font-variant-numeric: tabular-nums; color: #aab; }
+  #readout b { color: #fff; font-weight: 600; }
+  #area { flex: 1; min-height: 0; display: grid; place-items: center; }
+  #frame { position: relative; overflow: hidden; box-shadow: 0 0 0 1px #000, 0 8px 40px #000a; }
+  #screen { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; overflow: hidden;
+    background: radial-gradient(1200px 700px at 30% 30%, #2f7fd6, transparent 60%), radial-gradient(1000px 800px at 80% 80%, #7a3fc2, transparent 60%), #14335c; font-family: 'Segoe UI', system-ui, sans-serif; }
+  #wm { position: absolute; right: 24px; top: 20px; color: #ffffffcc; font-size: 28px; text-shadow: 0 1px 4px #0008; pointer-events: none; }
+  #taskbar { position: absolute; left: 0; right: 0; bottom: 0; background: #1c1c1ce6; border-top: 1px solid #ffffff22; display: flex; align-items: center; justify-content: center; gap: 12px; color: #fff; }
+  #taskbar .ico { background: #ffffff26; border-radius: 6px; }
+  #taskbar .clock { position: absolute; right: 16px; text-align: right; line-height: 1.25; }
+  #win { position: absolute; background: #2b2b2e; box-shadow: 0 0 0 1px #000a, 0 12px 40px #000a; }
+  #win.inactive { background: #3a3a3d; }
+  #title { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; color: #fff; cursor: default; user-select: none; touch-action: none; }
+  #title .ico { background: #4aa3ff; border-radius: 3px; flex: none; }
+  #title .txt { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #title .g { height: 100%; display: grid; place-items: center; }
+  #title .g:last-child:hover { background: #e81123; }
+  #title .g:not(:last-child):hover { background: #ffffff22; }
+  #client { position: absolute; background: #fff; overflow: hidden; }
+  #client iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: #fff; }
+  .h { position: absolute; touch-action: none; }
+  body.dragging iframe { pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <span id="badge">Browser simulation — not WebView2</span>
+    <label>Version <select id="ver"></select></label>
+    <label>Scaling <select id="scl"></select></label>
+    <button id="reset" type="button">Reset to default window</button>
+    <div id="readout"></div>
+  </div>
+  <div id="area"><div id="frame"><div id="screen">
+    <div id="wm">Browser simulation — not WebView2</div>
+    <div id="win">
+      <div id="title"><div class="ico"></div><div class="txt"></div><div class="g">&#x2013;</div><div class="g">&#x25A1;</div><div class="g">&#x2715;</div></div>
+      <div id="client"><iframe id="app-frame" title="supcua UI"></iframe></div>
+    </div>
+    <div id="taskbar"></div>
+  </div></div></div>
+</div>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>
