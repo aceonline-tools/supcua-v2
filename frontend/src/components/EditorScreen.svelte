@@ -96,6 +96,18 @@
     }
     if (commit && d && dropIndex(d.from, d.gap) !== d.from) void ed.moveTo(d.from, d.gap);
   }
+  const caret = $derived(ed.insertAt);
+  let caretTop = $state(0);
+  let caretEl = $state<HTMLElement>();
+  $effect(() => {
+    const at = caret;
+    void sc?.actions.length;
+    if (!listEl || drag) return;
+    const rows = listEl.querySelectorAll<HTMLElement>('.action-row');
+    const last = rows[rows.length - 1];
+    caretTop = at < rows.length ? rows[at].offsetTop : last ? last.offsetTop + last.offsetHeight : 0;
+    queueMicrotask(() => caretEl?.scrollIntoView?.({ block: 'nearest' }));
+  });
   $effect(() => { void sc; return () => endDrag(false); });
   const indicatorTop = $derived.by(() => {
     if (!drag || dropIndex(drag.from, drag.gap) === drag.from || !listEl) return null;
@@ -193,6 +205,7 @@
               <span class="num">{num(i)}</span>{ed.labels[i] ?? a.type}
             </div>
           {/each}
+          {#if !drag}<div class="caret-line" data-index={caret} bind:this={caretEl} style="top:{caretTop}px"></div>{/if}
           {#if indicatorTop !== null}<div class="drop-line" style="top:{indicatorTop}px"></div>{/if}
         </div>
         <div class="action-tools">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dropIndex, gapAt, moveItem, scrollStep } from './reorder';
+import { dropIndex, gapAt, insertIndex, moveItem, scrollStep } from './reorder';
 
 const L = ['a', 'b', 'c', 'd'];
 
@@ -34,5 +34,15 @@ describe('gapAt / scrollStep', () => {
     expect(scrollStep(200, 100, 400)).toBe(0);
     expect(scrollStep(105, 100, 400)).toBeLessThan(0);
     expect(scrollStep(395, 100, 400)).toBeGreaterThan(0);
+  });
+});
+
+describe('insertIndex', () => {
+  it('inserts after the selection, or at the end with none/out-of-range', () => {
+    expect(insertIndex(0, 4)).toBe(1);
+    expect(insertIndex(3, 4)).toBe(4);
+    expect(insertIndex(-1, 4)).toBe(4);
+    expect(insertIndex(9, 4)).toBe(4);
+    expect(insertIndex(-1, 0)).toBe(0);
   });
 });

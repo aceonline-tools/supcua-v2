@@ -4,6 +4,7 @@ import { createClient } from '../api/client';
 import { MockBackend } from '../api/mock';
 import { AppStore } from '../lib/store.svelte';
 import EditorScreen from './EditorScreen.svelte';
+import css from '../app.css?inline';
 
 let mock: MockBackend;
 let store: AppStore;
@@ -175,5 +176,58 @@ describe('drag reorder', () => {
     window.dispatchEvent(ev('pointerup', 50, 24 * 5 + 2));
     await settle();
     expect(types()).toEqual([...before.slice(1, 5), before[0], ...before.slice(5)]);
+  });
+
+  const caretIdx = () => host.querySelector('.caret-line')?.getAttribute('data-index') ?? null;
+
+  it('caret index follows selection, move, insert, delete and drag-drop', async () => {
+    const ed = store.editor;
+    expect(caretIdx()).toBe(String(ed.script!.actions.length));
+    rows()[2].click();
+    flushSync();
+    expect(caretIdx()).toBe('3');
+    Array.from(host.querySelectorAll('button')).find((b) => b.textContent === 'Down')!.click();
+    await settle();
+    expect(caretIdx()).toBe(String(ed.insertAt));
+    expect(caretIdx()).toBe('4');
+    await ed.addSimple('mouse_left_click');
+    await settle();
+    expect(caretIdx()).toBe(String(ed.selected + 1));
+    await ed.deleteSelected();
+    await settle();
+    expect(caretIdx()).toBe(String(ed.selected + 1));
+    host.querySelectorAll<HTMLElement>('.grip')[0].dispatchEvent(ev('pointerdown', 5, 12));
+    window.dispatchEvent(ev('pointermove', 50, 24 * 3 + 2));
+    window.dispatchEvent(ev('pointerup', 50, 24 * 3 + 2));
+    await settle();
+    expect(caretIdx()).toBe(String(ed.insertAt));
+    expect(caretIdx()).toBe('3');
+  });
+
+  it('caret is hidden during a drag and restored after cancel', async () => {
+    host.querySelectorAll<HTMLElement>('.grip')[0].dispatchEvent(ev('pointerdown', 5, 12));
+    window.dispatchEvent(ev('pointermove', 50, 24 * 3 + 2));
+    flushSync();
+    expect(caretIdx()).toBeNull();
+    expect(host.querySelector('.drop-line')).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle();
+    expect(caretIdx()).not.toBeNull();
+    expect(host.querySelector('.drop-line')).toBeNull();
+  });
+
+  it('caret shows at the top for an empty list', async () => {
+    await unmount(app);
+    await store.editor.close();
+    await store.openNew();
+    host.replaceChildren();
+    app = mount(EditorScreen, { target: host, props: { store } });
+    flushSync();
+    expect(caretIdx()).toBe('0');
+  });
+
+  it('blinks, and is steady under prefers-reduced-motion', () => {
+    expect(css).toMatch(/\.caret-line\{[^}]*animation:caret-blink/);
+    expect(css).toMatch(/@media \(prefers-reduced-motion:reduce\)\{\.caret-line\{animation:none\}\}/);
   });
 });

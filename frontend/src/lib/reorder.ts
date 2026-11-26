@@ -22,3 +22,7 @@ export function scrollStep(y: number, top: number, bottom: number, zone = 24, ma
   if (y > bottom - zone) return Math.ceil((max * Math.min(zone, y - (bottom - zone))) / zone);
   return 0;
 }
+
+export function insertIndex(selected: number, length: number): number {
+  return selected >= 0 && selected < length ? selected + 1 : length;
+}

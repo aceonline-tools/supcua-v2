@@ -1,7 +1,7 @@
 import { ApiError, type Client } from '../api/client';
 import type { Action, ActionSpec, CaptureEndReason, HotkeyConflict, HotkeyField, Script } from '../api/types';
 import type { AppStore } from './store.svelte';
-import { dropIndex } from './reorder';
+import { dropIndex, insertIndex } from './reorder';
 
 export type CloseResult = 'closed' | 'conflict' | 'failed' | 'noop';
 type SaveResult = 'ok' | 'stale' | 'conflict' | 'name' | 'failed';
@@ -115,9 +115,11 @@ export class EditorStore {
     await this.refreshLabels();
   }
 
+  get insertAt(): number { return insertIndex(this.selected, this.script?.actions.length ?? 0); }
+
   async insert(action: Action): Promise<void> {
     if (!this.script) return;
-    const at = this.selected >= 0 && this.selected < this.script.actions.length ? this.selected + 1 : this.script.actions.length;
+    const at = this.insertAt;
     this.script.actions.splice(at, 0, action);
     this.selected = at;
     await this.changed();
