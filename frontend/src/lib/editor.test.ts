@@ -367,6 +367,38 @@ describe('close attempts that leave the editor open', () => {
   });
 });
 
+describe('insert caret', () => {
+  it('insertAt tracks the insert index after select, insert, delete, move, moveTo', async () => {
+    await store.openEditor('s3');
+    const ed = store.editor;
+    const n = () => ed.script!.actions.length;
+    expect(ed.selected).toBe(-1);
+    expect(ed.insertAt).toBe(n());
+    ed.selectAction(2);
+    expect(ed.insertAt).toBe(3);
+    await ed.move(1);
+    expect(ed.insertAt).toBe(4);
+    await ed.moveTo(3, 0);
+    expect(ed.insertAt).toBe(1);
+    const len = n();
+    await ed.addSimple('mouse_left_click');
+    expect(ed.script!.actions[1].type).toBe('mouse_left_click');
+    expect(n()).toBe(len + 1);
+    expect(ed.insertAt).toBe(ed.selected + 1);
+    await ed.deleteSelected();
+    expect(ed.insertAt).toBe(ed.selected + 1);
+    ed.selected = -1;
+    await ed.addSimple('mouse_right_click');
+    expect(ed.script!.actions[n() - 1].type).toBe('mouse_right_click');
+  });
+
+  it('is 0 for an empty list', async () => {
+    await store.openNew();
+    expect(store.editor.script!.actions).toHaveLength(0);
+    expect(store.editor.insertAt).toBe(0);
+  });
+});
+
 describe('actions', () => {
   it('reorder calls describeActions exactly once and swaps locally', async () => {
     await store.openEditor('s3');

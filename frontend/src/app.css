@@ -127,3 +127,26 @@ h2{font-size:15px;line-height:20px;font-weight:650;margin:0}
 .action-tools{display:flex;gap:4px;padding:8px 10px}
 .action-tools button{font-size:12px;padding:1px 10px}
 .editor-foot{display:flex;align-items:center;margin-top:8px}
+/* action drag reorder */
+.action-list .list{position:relative}
+.action-row .grip{flex:none;display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin:-3px -4px -3px -6px;border-radius:var(--radius);color:var(--muted);font-size:12px;letter-spacing:-2px;line-height:1;cursor:grab;touch-action:none;user-select:none}
+.action-row .grip:hover{color:var(--text);background:var(--raised)}
+.list.dragging,.list.dragging .grip{cursor:grabbing;user-select:none}
+.drop-line{position:absolute;left:0;right:0;height:3px;margin-top:-1px;background:var(--accent);pointer-events:none;z-index:1}
+/* end action drag reorder */
+/* insertion caret */
+.caret-line{position:absolute;left:10px;right:10px;height:2px;margin-top:-1px;background:var(--accent);pointer-events:none;z-index:1;animation:caret-blink 1s steps(1,end) infinite}
+.caret-line::before,.caret-line::after{content:"";position:absolute;top:-3px;width:2px;height:8px;background:inherit}
+.caret-line::before{left:0}
+.caret-line::after{right:0}
+@keyframes caret-blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.caret-line{animation:none}}
+.action-list .list.empty{min-height:var(--row-h)}
+/* end insertion caret */
+/* group combobox */
+.combo{position:relative}
+.combo-list{position:absolute;left:0;right:0;top:100%;margin:2px 0 0;padding:2px 0;list-style:none;max-height:168px;overflow-y:auto;background:var(--raised);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);z-index:10}
+.combo-list li{min-height:var(--row-h);padding:2px 10px;line-height:var(--lh);font-size:14px;cursor:default;display:flex;align-items:center}
+.combo-list li.active{background:var(--selected)}
+.combo-list li.create{color:var(--accent)}
+/* end group combobox */
