@@ -12,7 +12,7 @@
   const failed = $derived(Object.keys(store.unsaved).length);
 </script>
 
-<div class="page-head dense">
+<div class="page-head">
   <div><h1>Scripts</h1><p>Your routines, one hotkey away.</p></div>
   <button class="primary" onclick={() => store.openNew()}>+ New</button>
 </div>
