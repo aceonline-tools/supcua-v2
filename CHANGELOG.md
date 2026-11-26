@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.3.0...v1.4.0) (2026-11-26)
+
+
+### Features
+
+* editor drag-and-drop reorder, insertion caret and group combobox ([f450c67](https://github.com/aceonline-tools/supcua-v2/commit/f450c678db73cc563ffc9971278a2dc335aeedcb))
+
+
+### Bug Fixes
+
+* remove the tree connector before script names in the Scripts list ([3373fac](https://github.com/aceonline-tools/supcua-v2/commit/3373fac45a19ebb77319ae907949faa81fe2fe4c))
+
 ## [1.3.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.3...v1.3.0) (2026-11-26)
 
 
