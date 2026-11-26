@@ -27,7 +27,7 @@ let k = 1;
 for (const v of VERSIONS) verSel.add(new Option(v, v));
 for (const s of SCALINGS) sclSel.add(new Option(`${s}%`, String(s)));
 verSel.value = version;
-if (__SIM_STATIC__) verSel.closest('label')!.hidden = true;
+if (__SIM_STATIC__) verSel.closest('label')!.style.display = 'none';
 const label = () => (__SIM_STATIC__ ? 'main' : version);
 sclSel.value = String(scaling);
 
