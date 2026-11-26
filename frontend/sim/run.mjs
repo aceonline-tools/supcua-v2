@@ -37,8 +37,9 @@ function prepare(tag) {
   const app = path.join(dir, 'frontend');
   const marker = path.join(dir, '.ready');
   const seedHash = crypto.createHash('sha1').update(fs.readFileSync(path.join(simDir, 'seed.mjs'))).digest('hex').slice(0, 12);
-  const stamp = `${sha}:${seedHash}`;
-  if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === stamp) {
+  const stamp = `${sha}:${seedHash}:node${process.versions.node.split('.')[0]}:${process.platform}-${process.arch}`;
+  const required = ['package.json', 'src/api/mock.ts', 'node_modules/vite/bin/vite.js', 'node_modules/.bin/vite'];
+  if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === stamp && required.every((f) => fs.existsSync(path.join(app, f)))) {
     log(`${tag}: cached`);
     return app;
   }
@@ -56,24 +57,39 @@ function prepare(tag) {
   return app;
 }
 
+let stopping = false;
+function fail(err, reject, started) {
+  if (!started) return reject(err);
+  console.error(`[sim] ${err.message}\n[sim] stopping the simulator`);
+  shutdown();
+  process.exit(1);
+}
+
 function startVite(tag, app, port) {
   return new Promise((resolve, reject) => {
     const bin = path.join(app, 'node_modules/vite/bin/vite.js');
     const child = spawn(process.execPath, [bin, '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: app, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);
     let out = '';
+    let started = false;
     const timer = setTimeout(() => reject(new Error(`${tag}: vite did not start in 60s\n${out}`)), 60000);
     const onData = (d) => {
       out += d;
-      if (/Local:/.test(out)) { clearTimeout(timer); resolve(); }
+      if (!started && /Local:/.test(out)) { started = true; clearTimeout(timer); resolve(); }
     };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`${tag}: vite exited (${code})\n${out}`)); });
+    child.on('error', (e) => { clearTimeout(timer); fail(new Error(`${tag}: could not spawn vite (${e.message})`), reject, started); });
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (stopping) return;
+      fail(new Error(`${tag}: vite dev server exited with ${signal ? `signal ${signal}` : `code ${code}`}${started ? ' after startup' : ''}\n${out.slice(-1500)}`), reject, started);
+    });
   });
 }
 
 function shutdown() {
+  stopping = true;
   for (const c of children) c.kill();
 }
 process.on('SIGINT', () => { shutdown(); process.exit(130); });
@@ -85,7 +101,7 @@ try {
   const apps = VERSIONS.map(prepare);
   await Promise.all(VERSIONS.map((v, i) => startVite(v, apps[i], ports[v])));
   process.env.SIM_PORTS = JSON.stringify(ports);
-  const shell = await createServer({ configFile: path.join(simDir, 'vite.config.ts'), server: { port: SHELL_PORT, strictPort: true, host: '127.0.0.1' } });
+  const shell = await createServer({ configFile: path.join(simDir, 'vite.config.ts'), server: { port: SHELL_PORT, strictPort: true, host: '127.0.0.1', allowedHosts: ['localhost', '127.0.0.1'] } });
   await shell.listen();
   log(`ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   log(`open http://127.0.0.1:${SHELL_PORT}/  (Ctrl+C to stop)`);

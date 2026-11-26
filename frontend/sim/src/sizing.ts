@@ -116,10 +116,15 @@ export function cssViewport(outerW: number, outerH: number, dpi: number): { w: n
   return { w: Math.round((c.w * BASE_DPI) / dpi), h: Math.round((c.h * BASE_DPI) / dpi) };
 }
 
+/** A pointer delta in browser px converted to whole physical screen px at the page's fit scale. */
+export const physicalDelta = (clientDelta: number, fitScale: number): number => Math.round(clientDelta / fitScale);
+
 export type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
 /** Resizes from an edge or corner by (dx, dy), keeping the opposite edge fixed once the minimum is hit. */
 export function resizeRect(start: Placement, edge: Edge, dx: number, dy: number, minW: number, minH: number): Placement {
+  dx = Math.round(dx);
+  dy = Math.round(dy);
   let { x, y, w, h } = start;
   if (edge.includes('e')) w = Math.max(minW, start.w + dx);
   if (edge.includes('s')) h = Math.max(minH, start.h + dy);

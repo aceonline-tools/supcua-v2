@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  RULES, clientPhysical, cssViewport, fitRect, frameMetrics, isDefaultSize, resizeRect, scaleDPI, scaledMin,
+  RULES, clientPhysical, cssViewport, fitRect, frameMetrics, isDefaultSize, physicalDelta, resizeRect, scaleDPI, scaledMin,
   taskbarHeight, useDefaultSize, workArea, type Rect,
 } from './sizing';
 
@@ -123,5 +123,15 @@ describe('resizeRect', () => {
     expect(o).toEqual({ x: 460, y: 380, w: 640, h: 420 });
     expect(o.x + o.w).toBe(1100);
     expect(o.y + o.h).toBe(800);
+  });
+  it('rounds fractional deltas to whole px so sizes stay integer', () => {
+    const o = resizeRect(start, 'se', 10.6, -3.4, 640, 420);
+    expect(o).toEqual({ x: 100, y: 100, w: 1011, h: 697 });
+    expect(Object.values(resizeRect(start, 'nw', 7.5, 2.5, 640, 420)).every(Number.isInteger)).toBe(true);
+  });
+  it('physicalDelta divides by the fit scale and rounds', () => {
+    expect(physicalDelta(100, 0.75)).toBe(133);
+    expect(physicalDelta(-3, 0.7)).toBe(-4);
+    expect(Number.isInteger(physicalDelta(37, 0.913))).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import {
-  RULES, SCALINGS, SCREEN, VERSIONS, clientPhysical, cssViewport, dpiOf, frameMetrics, resizeRect, taskbarHeight, workArea,
+  RULES, SCALINGS, physicalDelta, SCREEN, VERSIONS, clientPhysical, cssViewport, dpiOf, frameMetrics, resizeRect, taskbarHeight, workArea,
   type Edge, type Placement, type Scaling, type VersionId,
 } from '../src/sizing';
 
@@ -141,18 +141,20 @@ function drag(el: HTMLElement, next: (start: Placement, dx: number, dy: number) 
     el.setPointerCapture(e.pointerId);
     document.body.classList.add('dragging');
     const move = (m: PointerEvent) => {
-      place = next(start, (m.clientX - ox) / k, (m.clientY - oy) / k);
+      place = next(start, physicalDelta(m.clientX - ox, k), physicalDelta(m.clientY - oy, k));
       render();
     };
     const up = () => {
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
+      el.removeEventListener('lostpointercapture', up);
       document.body.classList.remove('dragging');
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
+    el.addEventListener('lostpointercapture', up);
   });
 }
 
