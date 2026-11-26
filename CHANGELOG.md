@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.3](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.2...v1.2.3) (2026-11-26)
+
+
+### Bug Fixes
+
+* scale the default window and minimum size by the monitor DPI ([c37f3de](https://github.com/aceonline-tools/supcua-v2/commit/c37f3de2c6905ce770df91bb97b3b9b96fea83ee))
+
 ## [1.2.2](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.1...v1.2.2) (2026-11-25)
 
 
