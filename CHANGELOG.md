@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.3...v1.3.0) (2026-11-26)
+
+
+### Features
+
+* collapsible sidebar and a taller default window so all scripts fit without scrolling ([#15](https://github.com/aceonline-tools/supcua-v2/issues/15)) ([5abc707](https://github.com/aceonline-tools/supcua-v2/commit/5abc707867474da03e3321a956869551a69dc85d))
+
 ## [1.2.3](https://github.com/aceonline-tools/supcua-v2/compare/v1.2.2...v1.2.3) (2026-11-26)
 
 
