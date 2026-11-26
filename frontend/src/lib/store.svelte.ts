@@ -247,6 +247,22 @@ export class AppStore {
     }
   }
 
+  get sidebarCollapsed(): boolean {
+    return this.settings?.sidebar_collapsed ?? false;
+  }
+
+  async setSidebarCollapsed(collapsed: boolean): Promise<void> {
+    if (!this.settings) return;
+    const was = this.settings.sidebar_collapsed;
+    this.settings.sidebar_collapsed = collapsed;
+    try {
+      await this.api.call('settings.setSidebarCollapsed', { collapsed });
+    } catch (e) {
+      if (this.settings) this.settings.sidebar_collapsed = was;
+      this.error = errorText(e);
+    }
+  }
+
   async cloneSelected(): Promise<void> {
     const id = this.selectedId;
     if (!id) return;

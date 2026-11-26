@@ -646,6 +646,26 @@ func TestOverlayAutoActiveAndCollapsedGroups(t *testing.T) {
 	}
 }
 
+func TestSidebarCollapsedPersistsAndRoundTrips(t *testing.T) {
+	r := newRig(t, script("s1", "A", "", true))
+	if got := r.mustCall(t, "settings.get", "")["sidebar_collapsed"]; got != false {
+		t.Fatalf("default sidebar_collapsed = %v", got)
+	}
+	r.mustCall(t, "settings.setSidebarCollapsed", `{"collapsed":true}`)
+	if !r.cfg.Get().SidebarCollapsed {
+		t.Fatal("sidebar state not persisted")
+	}
+	if got := r.mustCall(t, "settings.get", "")["sidebar_collapsed"]; got != true {
+		t.Errorf("settings.get sidebar_collapsed = %v", got)
+	}
+	r.mustCall(t, "settings.setSidebarCollapsed", `{"collapsed":false}`)
+	if r.cfg.Get().SidebarCollapsed {
+		t.Error("sidebar state not cleared")
+	}
+	_, err := r.call(t, "settings.setSidebarCollapsed", `{}`)
+	wantCode(t, err, CodeBadRequest)
+}
+
 func TestListSortCloneDeleteAndLabels(t *testing.T) {
 	s1 := script("s1", "zeta", "", true)
 	s2 := script("s2", "Alpha", "Beta", true)

@@ -19,13 +19,13 @@ func TestFitRect(t *testing.T) {
 		wx, wy, ww, wh int
 	}
 	for _, k := range []c{
-		{"100% roomy", 96, rect{0, 0, 1920, 1040}, 100, 100, 100, 100, 1000, 700},
-		{"150% roomy", 144, rect{0, 0, 2560, 1400}, 50, 50, 50, 50, 1500, 1050},
+		{"100% roomy", 96, rect{0, 0, 1920, 1040}, 100, 100, 100, 80, 1000, 960},
+		{"150% roomy", 144, rect{0, 0, 2560, 1500}, 50, 50, 50, 50, 1500, 1440},
 		{"150% 1080p cascade origin", 144, rect{0, 0, 1920, 1040}, 60, 60, 60, 0, 1500, 1040},
 		{"200% on 1200x800", 192, rect{0, 0, 1200, 800}, 100, 100, 0, 0, 1200, 800},
 		{"positive origin near bottom/right", 144, rect{0, 0, 1920, 1040}, 1800, 900, 420, 0, 1500, 1040},
-		{"secondary monitor offset", 96, rect{1920, 0, 3840, 1040}, 3700, 600, 2840, 340, 1000, 700},
-		{"unknown work area", 144, rect{}, 10, 10, 10, 10, 1500, 1050},
+		{"secondary monitor offset", 96, rect{1920, 0, 3840, 1040}, 3700, 600, 2840, 80, 1000, 960},
+		{"unknown work area", 144, rect{}, 10, 10, 10, 10, 1500, 1440},
 	} {
 		x, y, w, h := fitRect(k.dpi, k.work, k.x, k.y, 640, 420)
 		if x != k.wx || y != k.wy || w != k.ww || h != k.wh {
@@ -49,5 +49,46 @@ func TestScaledMinCappedToWorkArea(t *testing.T) {
 func TestIsDefaultSize(t *testing.T) {
 	if !isDefaultSize(0, 0) || !isDefaultSize(1000, 700) || isDefaultSize(1000, 701) || isDefaultSize(1500, 1050) {
 		t.Error("isDefaultSize")
+	}
+}
+
+func TestUseDefaultSize(t *testing.T) {
+	for _, c := range []struct {
+		w, h  int
+		reset bool
+		want  bool
+	}{
+		{0, 0, false, true}, {1000, 700, false, true}, {1250, 875, false, false}, {1000, 960, false, false},
+		{1250, 875, true, true}, {1337, 811, true, true}, {1000, 960, true, true},
+	} {
+		if got := useDefaultSize(c.w, c.h, c.reset); got != c.want {
+			t.Errorf("useDefaultSize(%d,%d,%v)=%v want %v", c.w, c.h, c.reset, got, c.want)
+		}
+	}
+}
+
+// The default window must leave the Scripts screen (about 880 CSS px of content, measured) a margin
+// of at least 24 CSS px at 100% on a 1080p work area, and a saved 1000x700 migrates to exactly it.
+func TestDefaultHeightFitsScriptsContent(t *testing.T) {
+	const contentCSS, margin, caption, border = 879, 24, 31, 8
+	work := rect{0, 0, 1920, 1032}
+	for _, saved := range [][2]int{{1000, 700}, {1337, 811}} {
+		if !useDefaultSize(saved[0], saved[1], true) {
+			t.Fatalf("saved %v not reset", saved)
+		}
+		_, _, w, h := fitRect(96, work, 300, 200, 640, 420)
+		if w != 1000 || h != defaultH {
+			t.Fatalf("migrated size %dx%d", w, h)
+		}
+		if client := h - caption - border; client < contentCSS+margin {
+			t.Errorf("client height %d < content %d + margin %d", client, contentCSS, margin)
+		}
+	}
+	for _, dpi := range []int{120, 144} {
+		aw, ah := 1920, 1032-12*(dpi-96)/24
+		_, _, w, h := fitRect(dpi, rect{0, 0, aw, ah}, 0, 0, 640, 420)
+		if w > aw || h > ah || h != min(scaleDPI(defaultH, dpi), ah) {
+			t.Errorf("dpi %d: %dx%d not the capped default", dpi, w, h)
+		}
 	}
 }

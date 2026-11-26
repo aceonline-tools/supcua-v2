@@ -71,6 +71,7 @@ type SettingsDTO struct {
 	AutoActiveEnabled     bool     `json:"auto_active_enabled"`
 	AutoActiveProcessName string   `json:"auto_active_process_name"`
 	CollapsedGroups       []string `json:"collapsed_groups"`
+	SidebarCollapsed      bool     `json:"sidebar_collapsed"`
 }
 
 type SettingsPatch struct {

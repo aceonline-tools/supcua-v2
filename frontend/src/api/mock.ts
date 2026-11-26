@@ -30,7 +30,7 @@ export function defaultSeed(): MockSeed {
     settings: {
       theme: 'dark', global_hotkey: 'RCtrl', capture_hotkey: 'P', overlay_hotkey: 'Ctrl + O',
       overlay_enabled: true, key_press_duration_ms: 10, scripts_dir: './scripts',
-      auto_active_enabled: true, auto_active_process_name: 'game.exe', collapsed_groups: [],
+      auto_active_enabled: true, auto_active_process_name: 'game.exe', collapsed_groups: [], sidebar_collapsed: false,
     },
     state: {
       global_active: true, running_id: '', running_name: '', editor_open: false,
@@ -224,6 +224,10 @@ export class MockBackend implements Transport {
         if (p.collapsed) set.add(p.group); else set.delete(p.group);
         st.collapsed = [...set];
         st.settings.collapsed_groups = st.collapsed;
+        return {};
+      }
+      case 'settings.setSidebarCollapsed': {
+        st.settings.sidebar_collapsed = !!p.collapsed;
         return {};
       }
       case 'scripts.clone': {

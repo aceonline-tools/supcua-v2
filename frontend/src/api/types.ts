@@ -73,9 +73,10 @@ export interface SettingsDTO {
   auto_active_enabled: boolean;
   auto_active_process_name: string;
   collapsed_groups: string[];
+  sidebar_collapsed: boolean;
 }
 
-export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups'>>;
+export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed'>>;
 
 export interface SettingsUpdateResult {
   applied: string[];
@@ -190,6 +191,7 @@ export interface Methods {
   'scripts.setEnabled': { params: { id: string; enabled: boolean }; result: { rev: number } };
   'scripts.setGroupEnabled': { params: { group: string; enabled: boolean }; result: { rev: number; changed: number } };
   'scripts.setGroupCollapsed': { params: { group: string; collapsed: boolean }; result: Record<string, never> };
+  'settings.setSidebarCollapsed': { params: { collapsed: boolean }; result: Record<string, never> };
   'scripts.clone': { params: { id: string }; result: ScriptSummary };
   'scripts.delete': { params: { id: string }; result: { rev: number } };
   'editor.open': { params: { id: string | null }; result: EditorSession };

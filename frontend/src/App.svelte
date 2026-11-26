@@ -19,7 +19,7 @@
   <UpdateDialog {store} />
 {:else}
 <div class="app">
-  <div class="shell">
+  <div class="shell" class:collapsed={store.sidebarCollapsed}>
     <Sidebar {store} />
     <main>
       {#if store.error}
