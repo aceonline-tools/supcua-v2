@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppStore } from '../lib/store.svelte';
   import type { HotkeyField } from '../api/types';
+  import { gapAt, dropIndex, scrollStep } from '../lib/reorder';
   import HotkeyInput from './HotkeyInput.svelte';
   import ActionDialog from './ActionDialog.svelte';
   import RawEditorDialog from './RawEditorDialog.svelte';
@@ -22,11 +23,61 @@
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return;
+    if (drag) { e.preventDefault(); endDrag(false); return; }
     if (ed.capturing || ed.capturePending()) { e.preventDefault(); void ed.cancelCapture(); }
     else if (ed.conflicts) void ed.resolveConflict(false);
     else if (ed.actionDialog) ed.closeActionDialog();
     else if (ed.raw) ed.closeRaw();
   }
+
+  let listEl = $state<HTMLElement>();
+  let drag = $state<{ from: number; gap: number } | null>(null);
+  let pointerY = 0;
+  let pointerX = 0;
+  let raf = 0;
+
+  const rowRects = () => Array.from(listEl?.querySelectorAll('.action-row') ?? [], (r) => r.getBoundingClientRect());
+  const inside = () => {
+    const r = listEl?.getBoundingClientRect();
+    return !!r && pointerX >= r.left && pointerX <= r.right && pointerY >= r.top && pointerY <= r.bottom;
+  };
+  const updateGap = () => { if (drag) drag.gap = gapAt(pointerY, rowRects()); };
+  const tick = () => {
+    if (!drag || !listEl) return;
+    const r = listEl.getBoundingClientRect();
+    const step = scrollStep(pointerY, r.top, r.bottom);
+    if (step) { listEl.scrollTop += step; updateGap(); }
+    raf = requestAnimationFrame(tick);
+  };
+  function onMove(e: PointerEvent) { pointerX = e.clientX; pointerY = e.clientY; updateGap(); }
+  function onUp(e: PointerEvent) { pointerX = e.clientX; pointerY = e.clientY; endDrag(inside()); }
+  function startDrag(e: PointerEvent, i: number) {
+    if (e.button !== 0 || drag) return;
+    e.preventDefault();
+    pointerX = e.clientX; pointerY = e.clientY;
+    ed.selectAction(i);
+    drag = { from: i, gap: i };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    raf = requestAnimationFrame(tick);
+  }
+  function onCancel() { endDrag(false); }
+  function endDrag(commit: boolean) {
+    const d = drag;
+    drag = null;
+    cancelAnimationFrame(raf);
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+    if (commit && d && dropIndex(d.from, d.gap) !== d.from) void ed.moveTo(d.from, d.gap);
+  }
+  const indicatorTop = $derived.by(() => {
+    if (!drag || dropIndex(drag.from, drag.gap) === drag.from || !listEl) return null;
+    const rows = listEl.querySelectorAll<HTMLElement>('.action-row');
+    if (!rows.length) return null;
+    return drag.gap < rows.length ? rows[drag.gap].offsetTop : rows[rows.length - 1].offsetTop + rows[rows.length - 1].offsetHeight;
+  });
 </script>
 
 <svelte:window {onkeydown} />
@@ -107,14 +158,17 @@
 
       <div class="card action-list">
         <h3>Actions</h3>
-        <div class="list" role="listbox" aria-label="Actions">
+        <div class="list" class:dragging={drag !== null} role="listbox" aria-label="Actions" bind:this={listEl}>
           {#each sc.actions as a, i (i)}
             <div class="action-row" class:selected={ed.selected === i} role="option" aria-selected={ed.selected === i} tabindex="0"
               onclick={() => ed.selectAction(i)} ondblclick={() => ed.editSelected()}
               onkeydown={(e) => { if (e.key === 'Enter') ed.editSelected(); else if (e.key === ' ') { e.preventDefault(); ed.selectAction(i); } }}>
+              <span class="grip" role="button" tabindex="-1" aria-label="Drag to reorder" title="Drag to reorder"
+                onpointerdown={(e) => startDrag(e, i)} ondblclick={(e) => e.stopPropagation()}>⋮⋮</span>
               <span class="num">{num(i)}</span>{ed.labels[i] ?? a.type}
             </div>
           {/each}
+          {#if indicatorTop !== null}<div class="drop-line" style="top:{indicatorTop}px"></div>{/if}
         </div>
         <div class="action-tools">
           <button disabled={ed.selected < 0} onclick={() => ed.editSelected()}>Edit</button>

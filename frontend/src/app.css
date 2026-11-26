@@ -128,3 +128,10 @@ h2{font-size:15px;line-height:20px;font-weight:650;margin:0}
 .action-tools{display:flex;gap:4px;padding:8px 10px}
 .action-tools button{font-size:12px;padding:1px 10px}
 .editor-foot{display:flex;align-items:center;margin-top:8px}
+/* action drag reorder */
+.action-list .list{position:relative}
+.action-row .grip{flex:none;display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0 -4px 0 -6px;border-radius:var(--radius);color:var(--muted);font-size:12px;letter-spacing:-2px;line-height:1;cursor:grab;touch-action:none;user-select:none}
+.action-row .grip:hover{color:var(--text);background:var(--raised)}
+.list.dragging,.list.dragging .grip{cursor:grabbing;user-select:none}
+.drop-line{position:absolute;left:0;right:0;height:2px;margin-top:-1px;background:var(--accent);pointer-events:none;z-index:1}
+/* end action drag reorder */

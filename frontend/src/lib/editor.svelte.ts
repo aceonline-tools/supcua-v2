@@ -1,6 +1,7 @@
 import { ApiError, type Client } from '../api/client';
 import type { Action, ActionSpec, CaptureEndReason, HotkeyConflict, HotkeyField, Script } from '../api/types';
 import type { AppStore } from './store.svelte';
+import { dropIndex } from './reorder';
 
 export type CloseResult = 'closed' | 'conflict' | 'failed' | 'noop';
 type SaveResult = 'ok' | 'stale' | 'conflict' | 'name' | 'failed';
@@ -164,6 +165,17 @@ export class EditorStore {
     const to = from + delta;
     if (!sc || from < 0 || to < 0 || to >= sc.actions.length) return;
     [sc.actions[from], sc.actions[to]] = [sc.actions[to], sc.actions[from]];
+    this.selected = to;
+    await this.changed();
+  }
+
+  async moveTo(from: number, gap: number): Promise<void> {
+    const sc = this.script;
+    if (!sc || from < 0 || from >= sc.actions.length) return;
+    const to = dropIndex(from, Math.max(0, Math.min(sc.actions.length, gap)));
+    if (to === from) return;
+    const [a] = sc.actions.splice(from, 1);
+    sc.actions.splice(to, 0, a);
     this.selected = to;
     await this.changed();
   }
