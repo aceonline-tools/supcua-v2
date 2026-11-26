@@ -49,7 +49,7 @@
         <div class="field"><label for="ed-group">Group:</label>
           <input id="ed-group" class="input full" bind:value={sc.group} oninput={() => ed.markDirty()} /></div>
         <div class="field"><label for="ed-enabled">Enabled:</label>
-          <input id="ed-enabled" class="cb" type="checkbox" bind:checked={sc.enabled} onchange={() => ed.markDirty()} /></div>
+          <label class="hit"><input id="ed-enabled" class="cb" type="checkbox" bind:checked={sc.enabled} onchange={() => ed.markDirty()} /></label></div>
         <div class="field"><span class="lbl" id="rm">Run Mode:</span>
           <div class="radio-line" role="radiogroup" aria-labelledby="rm">
             <label><input type="radio" value="once" bind:group={sc.run_mode} onchange={() => ed.markDirty()} /> Once</label>

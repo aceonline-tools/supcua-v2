@@ -28,8 +28,8 @@
         {#each d.spec.params as p, i (p.name)}
           <div class="field"><label for={'ap-' + p.name}>{LABELS[p.name] ?? p.name}</label>
             {#if p.kind === 'bool'}
-              <input id={'ap-' + p.name} class="cb" type="checkbox" checked={!!rec(d.action)[p.name]}
-                onchange={(e) => (rec(d.action)[p.name] = e.currentTarget.checked)} />
+              <label class="hit"><input id={'ap-' + p.name} class="cb" type="checkbox" checked={!!rec(d.action)[p.name]}
+                onchange={(e) => (rec(d.action)[p.name] = e.currentTarget.checked)} /></label>
             {:else if p.name === 'key'}
               <button type="button" id={'ap-' + p.name} class="input hk-field full" class:capturing={ed.capturing === 'key'}
                 bind:this={first} onclick={() => ed.startKeyCapture()}>
