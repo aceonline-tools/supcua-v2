@@ -142,6 +142,7 @@ h2{font-size:15px;line-height:20px;font-weight:650;margin:0}
 .caret-line::after{right:0}
 @keyframes caret-blink{50%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.caret-line{animation:none}}
+.action-list .list.empty{min-height:var(--row-h)}
 /* end insertion caret */
 /* group combobox */
 .combo{position:relative}

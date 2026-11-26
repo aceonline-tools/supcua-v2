@@ -226,6 +226,20 @@ describe('drag reorder', () => {
     expect(caretIdx()).toBe('0');
   });
 
+  it('the stylesheet is loaded and an empty list keeps one row of height so the caret is visible', async () => {
+    expect(css).toContain('.drop-line');
+    expect(css).toMatch(/\.action-list \.list\.empty\{min-height:var\(--row-h\)\}/);
+    await unmount(app);
+    await store.editor.close();
+    await store.openNew();
+    host.replaceChildren();
+    app = mount(EditorScreen, { target: host, props: { store } });
+    flushSync();
+    expect(host.querySelector('.list')!.classList.contains('empty')).toBe(true);
+    expect(host.querySelector('.caret-line')).not.toBeNull();
+    expect(rows()).toHaveLength(0);
+  });
+
   it('blinks, and is steady under prefers-reduced-motion', () => {
     expect(css).toMatch(/\.caret-line\{[^}]*animation:caret-blink/);
     expect(css).toMatch(/@media \(prefers-reduced-motion:reduce\)\{\.caret-line\{animation:none\}\}/);

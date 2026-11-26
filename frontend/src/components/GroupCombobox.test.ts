@@ -14,7 +14,7 @@ const input = () => host.querySelector<HTMLInputElement>('#ed-group')!;
 const opts = () => Array.from(host.querySelectorAll('.combo-list [role=option]'), (o) => o.textContent!);
 const group = () => store.editor.script!.group;
 const type = (v: string) => { input().focus(); input().value = v; input().dispatchEvent(new Event('input', { bubbles: true })); flushSync(); };
-const key = (k: string) => { input().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); flushSync(); };
+const key = (k: string, init: KeyboardEventInit = {}) => { input().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...init })); flushSync(); };
 
 beforeEach(async () => {
   host = document.createElement('div');
@@ -78,6 +78,29 @@ describe('group combobox', () => {
     key('Enter');
     expect(group()).toBe('Raiders');
     expect(store.editor.dirty).toBe(true);
+  });
+
+  it('ignores keys during IME composition and works again after compositionend', () => {
+    type('Raid');
+    key('Enter', { isComposing: true });
+    key('ArrowDown', { keyCode: 229 });
+    key('Escape', { isComposing: true });
+    expect(group()).not.toBe('Raid');
+    expect(host.querySelector('.combo-list')).not.toBeNull();
+    input().dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    key('Enter');
+    expect(group()).not.toBe('Raid');
+    input().dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    key('Enter');
+    expect(group()).toBe('Raid');
+  });
+
+  it('reopening with ArrowDown activates the first option', () => {
+    type('');
+    key('ArrowDown');
+    key('Escape');
+    key('ArrowDown');
+    expect(host.querySelector('.combo-list [aria-selected=true]')!.textContent).toBe(opts()[0]);
   });
 
   it('typing "  buffs " selects the existing "Buffs" and offers no Create', () => {

@@ -106,7 +106,8 @@
     if (!listEl || drag) return;
     const rows = listEl.querySelectorAll<HTMLElement>('.action-row');
     const last = rows[rows.length - 1];
-    caretTop = at < rows.length ? rows[at].offsetTop : last ? last.offsetTop + last.offsetHeight : 0;
+    const raw = at < rows.length ? rows[at].offsetTop : last ? last.offsetTop + last.offsetHeight : 0;
+    caretTop = Math.max(3, Math.min(raw, listEl.scrollHeight - 5));
     queueMicrotask(() => caretEl?.scrollIntoView?.({ block: 'nearest' }));
   });
   $effect(() => { void sc; return () => endDrag(false); });
@@ -196,7 +197,7 @@
 
       <div class="card action-list">
         <h3>Actions</h3>
-        <div class="list" class:dragging={drag !== null} role="listbox" aria-label="Actions" bind:this={listEl}>
+        <div class="list" class:dragging={drag !== null} class:empty={sc.actions.length === 0} role="listbox" aria-label="Actions" bind:this={listEl}>
           {#each sc.actions as a, i (i)}
             <div class="action-row" class:selected={ed.selected === i} role="option" aria-selected={ed.selected === i} tabindex="0"
               onclick={() => ed.selectAction(i)} ondblclick={() => ed.editSelected()}

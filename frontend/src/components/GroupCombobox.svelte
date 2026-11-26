@@ -6,6 +6,7 @@
   let open = $state(false);
   let active = $state(-1);
   let listEl = $state<HTMLElement>();
+  let composing = false;
 
   $effect(() => { text = value ?? ''; });
 
@@ -31,10 +32,13 @@
     queueMicrotask(() => listEl?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' }));
   }
   function onkeydown(e: KeyboardEvent) {
+    if (composing || e.isComposing || e.keyCode === 229) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      if (!open) { open = true; active = text.trim() ? 0 : -1; }
-      if (items.length) active = e.key === 'ArrowDown' ? Math.min(items.length - 1, active + 1) : Math.max(0, active - 1);
+      if (!open) {
+        open = true;
+        active = items.length ? 0 : -1;
+      } else if (items.length) active = e.key === 'ArrowDown' ? Math.min(items.length - 1, active + 1) : Math.max(0, active - 1);
       scrollActive();
     } else if (e.key === 'Enter') {
       e.preventDefault();
@@ -56,7 +60,7 @@
 <div class="combo">
   <input {id} class="input full" role="combobox" aria-expanded={open} aria-controls={listId} aria-autocomplete="list" autocomplete="off"
     aria-activedescendant={open && active >= 0 && active < items.length ? `${id}-opt-${active}` : undefined}
-    bind:value={text} {oninput} {onkeydown} {onblur} onfocus={() => { open = false; }} />
+    bind:value={text} {oninput} oncompositionstart={() => { composing = true; }} oncompositionend={() => { composing = false; }} {onkeydown} {onblur} onfocus={() => { open = false; }} />
   {#if open && items.length}
     <ul class="combo-list" id={listId} role="listbox" aria-label="Groups" bind:this={listEl} onmousedown={(e) => e.preventDefault()}>
       {#each items as item, i (i)}
