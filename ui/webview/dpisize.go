@@ -6,10 +6,6 @@ const (
 	// defaultH is tall enough for the Scripts screen with all groups expanded (about 880 CSS px of
 	// content) at 100% on a 1080p work area; fitRect still caps it to the work area.
 	defaultH = 960
-
-	// legacyW/legacyH are the unscaled size earlier builds created and saved back on close.
-	legacyW = 1000
-	legacyH = 700
 )
 
 // scaleDPI converts a size in 96-DPI pixels to physical pixels for dpi.
@@ -20,17 +16,12 @@ func scaleDPI(v, dpi int) int {
 	return (v*dpi + baseDPI/2) / baseDPI
 }
 
-// isDefaultSize reports whether a saved size is the legacy unscaled default (or unset): earlier
-// builds created the window 1000x700 physical pixels at every DPI and saved it back on close.
-func isDefaultSize(w, h int) bool {
-	return w <= 0 || h <= 0 || (w == legacyW && h == legacyH)
-}
-
 // useDefaultSize reports whether the window starts at the DPI-scaled default size instead of the
-// saved one: when the saved size is unset or legacy, or when the persisted window layout is older
-// than the current one (reset, so a size saved by an older build does not hide the new default).
+// saved one: when no size was saved, or when reset is set because the persisted window layout is
+// older than the current one (that covers the legacy unscaled 1000x700 earlier builds saved back on
+// close). Once the layout is current a saved size is always respected, 1000x700 included.
 func useDefaultSize(w, h int, reset bool) bool {
-	return reset || isDefaultSize(w, h)
+	return reset || w <= 0 || h <= 0
 }
 
 // rect is a window or work-area rectangle in screen pixels.

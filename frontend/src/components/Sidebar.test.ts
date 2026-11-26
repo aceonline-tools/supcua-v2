@@ -87,3 +87,86 @@ describe('sidebar', () => {
     expect(store.error).not.toBe('');
   });
 });
+
+describe('sidebar toggle races', () => {
+  const failing = (fail: (n: number) => boolean) => {
+    const real = mock.call.bind(mock);
+    let n = 0;
+    const sent: boolean[] = [];
+    mock.call = async (method: string, params?: unknown) => {
+      if (method === 'settings.setSidebarCollapsed') {
+        sent.push((params as { collapsed: boolean }).collapsed);
+        if (fail(++n)) throw new Error('save failed');
+      }
+      return real(method, params);
+    };
+    return sent;
+  };
+
+  it('two rapid toggles that both fail roll back to the persisted value', async () => {
+    failing(() => true);
+    const a = store.setSidebarCollapsed(true);
+    const b = store.setSidebarCollapsed(false);
+    expect(store.sidebarCollapsed).toBe(false);
+    await Promise.all([a, b]);
+    expect(store.sidebarCollapsed).toBe(false);
+    expect((await createClient(mock).call('settings.get')).sidebar_collapsed).toBe(false);
+    const c = store.setSidebarCollapsed(true);
+    await c;
+    expect(store.sidebarCollapsed).toBe(false);
+  });
+
+  it('first fails and second succeeds: the second value stays and is persisted', async () => {
+    const sent = failing((n) => n === 1);
+    const a = store.setSidebarCollapsed(true);
+    const b = store.setSidebarCollapsed(false);
+    const c = store.setSidebarCollapsed(true);
+    await Promise.all([a, b, c]);
+    expect(sent).toEqual([true, false, true]);
+    expect(store.sidebarCollapsed).toBe(true);
+    expect((await createClient(mock).call('settings.get')).sidebar_collapsed).toBe(true);
+  });
+
+  it('a failing last toggle rolls back to the last confirmed value, not an unpersisted one', async () => {
+    failing((n) => n === 2);
+    const a = store.setSidebarCollapsed(true);
+    const b = store.setSidebarCollapsed(false);
+    await Promise.all([a, b]);
+    expect(store.sidebarCollapsed).toBe(true);
+    expect((await createClient(mock).call('settings.get')).sidebar_collapsed).toBe(true);
+  });
+
+  it('loadSettings during a pending toggle does not clobber the optimistic value', async () => {
+    const real = mock.call.bind(mock);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mock.call = async (method: string, params?: unknown) => {
+      if (method === 'settings.setSidebarCollapsed') await gate;
+      return real(method, params);
+    };
+    const toggling = store.setSidebarCollapsed(true);
+    await store.loadSettings();
+    expect(store.sidebarCollapsed).toBe(true);
+    release();
+    await toggling;
+    await store.loadSettings();
+    expect(store.sidebarCollapsed).toBe(true);
+  });
+
+  it('a loadSettings issued before a toggle and answered after it does not overwrite it', async () => {
+    const real = mock.call.bind(mock);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mock.call = async (method: string, params?: unknown) => {
+      if (method !== 'settings.get') return real(method, params);
+      const stale = await real(method, params);
+      await gate;
+      return stale;
+    };
+    const loading = store.loadSettings();
+    await store.setSidebarCollapsed(true);
+    release();
+    await loading;
+    expect(store.sidebarCollapsed).toBe(true);
+  });
+});

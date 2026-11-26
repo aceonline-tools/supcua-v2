@@ -46,23 +46,24 @@ func TestScaledMinCappedToWorkArea(t *testing.T) {
 	}
 }
 
-func TestIsDefaultSize(t *testing.T) {
-	if !isDefaultSize(0, 0) || !isDefaultSize(1000, 700) || isDefaultSize(1000, 701) || isDefaultSize(1500, 1050) {
-		t.Error("isDefaultSize")
-	}
-}
-
 func TestUseDefaultSize(t *testing.T) {
 	for _, c := range []struct {
+		name  string
 		w, h  int
 		reset bool
 		want  bool
 	}{
-		{0, 0, false, true}, {1000, 700, false, true}, {1250, 875, false, false}, {1000, 960, false, false},
-		{1250, 875, true, true}, {1337, 811, true, true}, {1000, 960, true, true},
+		{"no saved size", 0, 0, false, true},
+		{"no saved height", 1000, 0, false, true},
+		{"current layout keeps 1000x700", 1000, 700, false, false},
+		{"current layout keeps a scaled size", 1250, 875, false, false},
+		{"current layout keeps the new default", 1000, 960, false, false},
+		{"stale layout resets 1000x700", 1000, 700, true, true},
+		{"stale layout resets any size", 1337, 811, true, true},
+		{"stale layout resets the new default size", 1000, 960, true, true},
 	} {
 		if got := useDefaultSize(c.w, c.h, c.reset); got != c.want {
-			t.Errorf("useDefaultSize(%d,%d,%v)=%v want %v", c.w, c.h, c.reset, got, c.want)
+			t.Errorf("%s: useDefaultSize(%d,%d,%v)=%v want %v", c.name, c.w, c.h, c.reset, got, c.want)
 		}
 	}
 }

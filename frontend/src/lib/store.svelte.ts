@@ -33,6 +33,10 @@ export class AppStore {
   scripts = $state<ScriptSummary[]>([]);
   groups = $state<GroupDTO[]>([]);
   collapsed = $state<string[]>([]);
+  private sidebarSeq = 0;
+  private sidebarPending = 0;
+  private sidebarConfirmed = false;
+  private sidebarChain: Promise<void> = Promise.resolve();
   selectedId = $state<string | null>(null);
   route = $state<Route>({ name: 'scripts' });
   unsaved = $state<Record<string, string>>({});
@@ -143,7 +147,10 @@ export class AppStore {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = await this.api.call('settings.get');
+    const seq = this.sidebarSeq;
+    const next = await this.api.call('settings.get');
+    if (this.sidebarSeq !== seq || this.sidebarPending > 0) next.sidebar_collapsed = this.settings?.sidebar_collapsed ?? next.sidebar_collapsed;
+    this.settings = next;
   }
 
   // Every way out of the editor goes through the guarded autosave-and-close.
@@ -251,16 +258,28 @@ export class AppStore {
     return this.settings?.sidebar_collapsed ?? false;
   }
 
-  async setSidebarCollapsed(collapsed: boolean): Promise<void> {
-    if (!this.settings) return;
-    const was = this.settings.sidebar_collapsed;
+  // Toggles are applied optimistically and sent one at a time, so the backend ends on the last
+  // successful one; a failure rolls back only when no newer toggle is waiting, to the last value
+  // the backend confirmed.
+  setSidebarCollapsed(collapsed: boolean): Promise<void> {
+    if (!this.settings) return Promise.resolve();
+    if (this.sidebarPending === 0) this.sidebarConfirmed = this.settings.sidebar_collapsed;
+    const seq = ++this.sidebarSeq;
+    this.sidebarPending++;
     this.settings.sidebar_collapsed = collapsed;
-    try {
-      await this.api.call('settings.setSidebarCollapsed', { collapsed });
-    } catch (e) {
-      if (this.settings) this.settings.sidebar_collapsed = was;
-      this.error = errorText(e);
-    }
+    const run = async () => {
+      try {
+        await this.api.call('settings.setSidebarCollapsed', { collapsed });
+        this.sidebarConfirmed = collapsed;
+      } catch (e) {
+        if (seq === this.sidebarSeq && this.settings) this.settings.sidebar_collapsed = this.sidebarConfirmed;
+        this.error = errorText(e);
+      } finally {
+        this.sidebarPending--;
+      }
+    };
+    this.sidebarChain = this.sidebarChain.then(run);
+    return this.sidebarChain;
   }
 
   async cloneSelected(): Promise<void> {
