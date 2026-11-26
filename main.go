@@ -567,6 +567,7 @@ func main() {
 		Assets:          assets.FS(),
 		DarkTitleBar:    wantDark(appConfig.Theme),
 		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
+		ResetSize:       appConfig.WindowLayoutStale(),
 		MinW:            640,
 		MinH:            420,
 		OnClose:         quitApp, // X exits for real (as before); minimize hides to the tray
@@ -582,10 +583,13 @@ func main() {
 		},
 		OnBounds: func(b webview.Bounds) {
 			want := model.WindowPos{X: b.X, Y: b.Y, Width: b.W, Height: b.H}
-			if configService.Get().MainWindowPos == want {
+			if cur := configService.Get(); cur.MainWindowPos == want && !cur.WindowLayoutStale() {
 				return
 			}
-			if err := configService.Update(func(c *model.AppConfig) { c.MainWindowPos = want }); err != nil {
+			if err := configService.Update(func(c *model.AppConfig) {
+				c.MainWindowPos = want
+				c.WindowLayout = model.WindowLayoutVersion
+			}); err != nil {
 				log.Printf("warning: failed to save window position: %v", err)
 			}
 		},

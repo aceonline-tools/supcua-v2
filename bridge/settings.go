@@ -20,8 +20,22 @@ func settingsOf(c model.AppConfig) SettingsDTO {
 		OverlayHotkey: DisplayHotkey(c.OverlayHotkey), OverlayEnabled: c.OverlayEnabled,
 		KeyPressDurationMs: c.KeyPressDurationMs, ScriptsDir: c.ScriptsDir,
 		AutoActiveEnabled: c.AutoActiveEnabled, AutoActiveProcessName: c.AutoActiveProcessName,
-		CollapsedGroups: groups,
+		CollapsedGroups: groups, SidebarCollapsed: c.SidebarCollapsed,
 	}
+}
+
+func (b *Bridge) settingsSetSidebarCollapsed(p struct {
+	Collapsed bool `json:"collapsed"`
+}) (any, error) {
+	if b.d.Config.Get().SidebarCollapsed == p.Collapsed {
+		return empty{}, nil
+	}
+	if err := b.d.Config.Update(func(c *model.AppConfig) { c.SidebarCollapsed = p.Collapsed }); err != nil {
+		log.Printf("bridge: persist sidebar state failed: %v", err)
+		return nil, newErr(CodeSaveFailed)
+	}
+	b.emit(EvSettingsChanged, settingsChangedEvent{Fields: []string{"sidebar_collapsed"}})
+	return empty{}, nil
 }
 
 // validateScriptsDir accepts only a directory that exists or can be created and is writable.

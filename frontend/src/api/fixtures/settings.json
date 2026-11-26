@@ -1,1 +1,1 @@
-{"theme":"dark","global_hotkey":"RCtrl","capture_hotkey":"P","overlay_hotkey":"Ctrl + O","overlay_enabled":true,"key_press_duration_ms":10,"scripts_dir":"./scripts","auto_active_enabled":true,"auto_active_process_name":"game.exe","collapsed_groups":["Farming"]}
+{"theme":"dark","global_hotkey":"RCtrl","capture_hotkey":"P","overlay_hotkey":"Ctrl + O","overlay_enabled":true,"key_press_duration_ms":10,"scripts_dir":"./scripts","auto_active_enabled":true,"auto_active_process_name":"game.exe","collapsed_groups":["Farming"],"sidebar_collapsed":false}

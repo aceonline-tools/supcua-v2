@@ -494,7 +494,7 @@ var shutdownAllowed = map[string]bool{"editor.save": true, "editor.close": true,
 // once shutdown begins (hard-rejected, including editor.save/close, once Shutdown has run).
 var mutating = []string{
 	"app.setGlobalActive", "app.exit", "window.hide", "window.show", "window.reportBounds",
-	"scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed", "scripts.clone",
+	"scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed", "settings.setSidebarCollapsed", "scripts.clone",
 	"scripts.delete", "scripts.retrySave", "editor.open", "editor.save", "editor.close",
 	"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.stop", "capture.mouse.stop",
 	"settings.update", "overlay.set", "autoactive.set", "update.apply", "update.skip", "app.closingReady",
@@ -583,6 +583,7 @@ func (b *Bridge) Methods() map[string]Handler {
 	reg(m, "scripts.setEnabled", b.scriptsSetEnabled, "id", "enabled")
 	reg(m, "scripts.setGroupEnabled", b.scriptsSetGroupEnabled, "group", "enabled")
 	reg(m, "scripts.setGroupCollapsed", b.scriptsSetGroupCollapsed, "group", "collapsed")
+	reg(m, "settings.setSidebarCollapsed", b.settingsSetSidebarCollapsed, "collapsed")
 	reg(m, "scripts.clone", b.scriptsClone, "id")
 	reg(m, "scripts.delete", b.scriptsDelete, "id")
 	reg(m, "scripts.retrySave", b.scriptsRetrySave, "id")

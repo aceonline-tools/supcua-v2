@@ -42,6 +42,7 @@ type Config struct {
 	Debug          bool // DevTools, context menu and browser accelerators on
 	DarkTitleBar   bool
 	Initial        Bounds // zero value = default size/position
+	ResetSize      bool   // keep Initial's position but start at the DPI-scaled default size
 	MinW, MinH     int
 	StartHidden    bool
 	IconIDs        []int // rsrc icon resource ids to try (default 1,2,3,7 as ui/tray.go)
@@ -109,7 +110,7 @@ func New(cfg Config) (*UI, error) {
 	if u.mw, err = walk.NewMainWindow(); err != nil { // hidden: message owner for tray + Synchronize
 		return nil, fmt.Errorf("webview: pump window: %w", err)
 	}
-	if u.hwnd, err = createHostWindow(cfg.Title, cfg.Initial, cfg.MinW, cfg.MinH, cfg.IconIDs); err != nil {
+	if u.hwnd, err = createHostWindow(cfg.Title, cfg.Initial, cfg.ResetSize, cfg.MinW, cfg.MinH, cfg.IconIDs); err != nil {
 		return nil, err
 	}
 	if cfg.DarkTitleBar {
@@ -487,7 +488,7 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 }
 
 // createHostWindow registers the class once and creates a native-frame top-level window.
-func createHostWindow(title string, b Bounds, minW, minH int, iconIDs []int) (win.HWND, error) {
+func createHostWindow(title string, b Bounds, resetSize bool, minW, minH int, iconIDs []int) (win.HWND, error) {
 	inst := win.GetModuleHandle(nil)
 	hostClassOnce.Do(func() {
 		hostClassName, _ = syscall.UTF16PtrFromString("supcua_webview_host")
@@ -514,9 +515,10 @@ func createHostWindow(title string, b Bounds, minW, minH int, iconIDs []int) (wi
 	if hostClassErr != nil {
 		return 0, hostClassErr
 	}
-	x, y, w, h := int32(win.CW_USEDEFAULT), int32(win.CW_USEDEFAULT), int32(1000), int32(700)
+	x, y, w, h := int32(win.CW_USEDEFAULT), int32(win.CW_USEDEFAULT), int32(defaultW), int32(defaultH)
+	useDefault := useDefaultSize(b.W, b.H, resetSize)
 	if b.W > 0 && b.H > 0 {
-		if !isDefaultSize(b.W, b.H) {
+		if !useDefault {
 			w, h = int32(b.W), int32(b.H)
 		}
 		r := win.RECT{Left: int32(b.X), Top: int32(b.Y), Right: int32(b.X + b.W), Bottom: int32(b.Y + b.H)}
@@ -529,7 +531,7 @@ func createHostWindow(title string, b Bounds, minW, minH int, iconIDs []int) (wi
 	if hwnd == 0 {
 		return 0, errors.New("webview: create host window failed")
 	}
-	if isDefaultSize(b.W, b.H) {
+	if useDefault {
 		fitDefaultSize(hwnd, minW, minH)
 	}
 	return hwnd, nil

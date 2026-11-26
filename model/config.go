@@ -25,7 +25,18 @@ type AppConfig struct {
 
 	Theme           string   `json:"theme,omitempty"`
 	CollapsedGroups []string `json:"collapsed_groups,omitempty"`
+
+	SidebarCollapsed bool `json:"sidebar_collapsed,omitempty"`
+	// WindowLayout is the window-size layout version MainWindowPos was saved under (0 = before it existed).
+	WindowLayout int `json:"window_layout,omitempty"`
 }
+
+// WindowLayoutVersion is bumped when the default window size changes so a size saved by an older
+// build is replaced once by the new default (position kept) and user resizes are respected after.
+const WindowLayoutVersion = 2
+
+// WindowLayoutStale reports whether the saved window size predates the current layout version.
+func (c AppConfig) WindowLayoutStale() bool { return c.WindowLayout < WindowLayoutVersion }
 
 // DefaultConfig returns sensible defaults for a fresh install.
 func DefaultConfig() AppConfig {
