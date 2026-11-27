@@ -72,3 +72,24 @@ describe('licensed boot', () => {
     expect(store.error).toBe('');
   });
 });
+
+describe('unsaved notice route', () => {
+  it('shows only while the Scripts screen is rendered', async () => {
+    const store = new AppStore(createClient(new MockBackend(defaultSeed())));
+    const init = store.init();
+    cmp = mount(App, { target: host, props: { store, copy: async () => {} } });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await init;
+    const has = () => host.textContent?.includes('not saved to disk') ?? false;
+    expect(has()).toBe(false);
+    store.unsaved['a1'] = 'Could not write script file';
+    flushSync();
+    expect(has()).toBe(true);
+    store.go({ name: 'settings' });
+    flushSync();
+    expect(has()).toBe(false);
+    store.go({ name: 'scripts' });
+    flushSync();
+    expect(has()).toBe(true);
+  });
+});

@@ -20,11 +20,11 @@
 
 <div class="card status">
   <span class="dot" class:on={active}></span>
-  <div><strong>Global Active</strong><div class="muted hint">{sub}</div></div>
+  <div class="st-text"><strong>Global Active</strong><div class="muted hint ellip" title={sub}>{sub}</div></div>
   <Toggle checked={active} label="Global Active" onchange={(v) => store.setGlobalActive(v)} />
   <span class="spacer"></span>
-  <span class="muted">Mouse: {lock(store.state?.mouse_locked ?? false)}</span>
-  <span class="muted">Keyboard: {lock(store.state?.keyboard_locked ?? false)}</span>
+  <span class="muted lk-m">Mouse: {lock(store.state?.mouse_locked ?? false)}</span>
+  <span class="muted lk-k">Keyboard: {lock(store.state?.keyboard_locked ?? false)}</span>
   <kbd>{store.settings?.global_hotkey ?? ''}</kbd>
 </div>
 
@@ -36,9 +36,6 @@
   <button disabled={!store.selected} onclick={() => store.requestDelete()}><Icon name="trash-2" />Delete</button>
 </div>
 
-{#if failed > 0}
-  <div class="banner" role="alert">{failed} {failed === 1 ? 'change' : 'changes'} not saved to disk.</div>
-{/if}
 
 {#if store.scripts.length === 0}
   <div class="card empty">
@@ -87,7 +84,7 @@
   <div class="table-foot">
     <span>{store.scripts.length} {store.scripts.length === 1 ? 'script' : 'scripts'} · {store.enabledCount} enabled</span>
     <span class="spacer"></span>
-    {#if store.selected}<span>Selected: {store.selected.name}</span>{/if}
+    <span class="sel ellip" title={store.selected ? `Selected: ${store.selected.name}` : undefined}>{#if store.selected}Selected: {store.selected.name}{/if}</span>
     <span>Double-click to edit</span>
   </div>
 {/if}
