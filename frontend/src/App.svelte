@@ -12,6 +12,7 @@
   let { store, copy }: { store: AppStore; copy: (text: string) => Promise<void> } = $props();
   const failed = $derived(Object.keys(store.unsaved).length);
   let hideUnsaved = $state(false);
+  const showUnsaved = $derived(failed > 0 && !hideUnsaved && store.loaded && store.route.name === 'scripts');
   let seq = 0;
   let errSeq = $state(0);
   let unsSeq = $state(0);
@@ -53,9 +54,9 @@
       {/if}
     </main>
   </div>
-  {#if store.error || (failed > 0 && !hideUnsaved)}
+  {#if store.error || showUnsaved}
     <div class="notices" role="region" aria-label="Notifications" bind:this={notices}>
-      {#if failed > 0 && !hideUnsaved}
+      {#if showUnsaved}
         <div class="banner" role="alert" style:order={unsSeq}>{failed} {failed === 1 ? 'change' : 'changes'} not saved to disk.<button onclick={() => (hideUnsaved = true)}><Icon name="x" />Dismiss</button></div>
       {/if}
       {#if store.error}
