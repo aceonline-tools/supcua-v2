@@ -1,0 +1,342 @@
+package bridge
+
+import (
+	"bytes"
+	"encoding/json"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// stages blocks the first hit of each blocked stage until released and signals every notify stage.
+type stages struct {
+	in, release map[string]chan struct{}
+	hit         map[string]*atomic.Bool
+	reached     map[string]chan struct{}
+}
+
+func hookStages(e *edRig, block []string, notify []string) *stages {
+	s := &stages{in: map[string]chan struct{}{}, release: map[string]chan struct{}{}, hit: map[string]*atomic.Bool{}, reached: map[string]chan struct{}{}}
+	for _, b := range block {
+		s.in[b], s.release[b], s.hit[b] = make(chan struct{}), make(chan struct{}), &atomic.Bool{}
+	}
+	for _, n := range notify {
+		s.reached[n] = make(chan struct{})
+		s.hit["n:"+n] = &atomic.Bool{}
+	}
+	e.b.testHook = func(stage string) {
+		if ch, ok := s.reached[stage]; ok && s.hit["n:"+stage].CompareAndSwap(false, true) {
+			close(ch)
+		}
+		if h, ok := s.hit[stage]; ok && h.CompareAndSwap(false, true) {
+			close(s.in[stage])
+			<-s.release[stage]
+		}
+	}
+	return s
+}
+
+func recv(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func notClosed(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatalf("%s must not have happened yet", what)
+	case <-time.After(60 * time.Millisecond):
+	}
+}
+
+func queuedNames(e *edRig) []string {
+	var out []string
+	for _, c := range e.store.calls() {
+		for _, s := range c {
+			out = append(out, s.ID+"="+s.Name)
+		}
+	}
+	return out
+}
+
+func hasQueued(e *edRig, idName string) bool {
+	for _, n := range queuedNames(e) {
+		if n == idName {
+			return true
+		}
+	}
+	return false
+}
+
+func recoveryFiles(t *testing.T, dir string) []RecoveryEnvelope {
+	t.Helper()
+	ents, _ := os.ReadDir(dir)
+	var out []RecoveryEnvelope
+	for _, en := range ents {
+		raw, err := os.ReadFile(filepath.Join(dir, en.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var env RecoveryEnvelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, env)
+	}
+	return out
+}
+
+// Item 1 (amendment B): a recovery that has not enqueued by its deadline is abandoned and can never
+// enqueue later, even when its goroutine resumes after cleanup finished.
+func TestE1bItem1RecoveryNotEnqueuedByItsDeadlineNeverEnqueuesLater(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Late Draft")+`}`)
+	h := hookStages(e, []string{"recover.enqueue"}, []string{"recover.persisted"})
+	e.b.win.ProcessFailed(e.gen, 1)
+	_, done := e.b.win.waitChans()
+	recv(t, h.in["recover.enqueue"], "recovery reaching its enqueue")
+	notClosed(t, done, "cleanup before the deadline")
+	e.clk.Advance(recoverBound + time.Millisecond)
+	recv(t, done, "cleanup at the deadline")
+	close(h.release["recover.enqueue"])
+	recv(t, h.reached["recover.persisted"], "the abandoned recovery goroutine returning")
+	if hasQueued(e, "a=Late Draft") || e.scr("a").Name != "S a" {
+		t.Fatalf("an abandoned recovery enqueued after its deadline: %v %q", queuedNames(e), e.scr("a").Name)
+	}
+	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 }) // possibly landing late (logged)
+	if f := recoveryFiles(t, e.dir); len(f) != 1 || f[0].Script.Name != "Late Draft" {
+		t.Fatalf("the draft must survive as a file: %+v", f)
+	}
+}
+
+// Item 2 (amendment A): a detached A's recovery is a compare-and-swap against the script's store
+// revision captured at open, and is refused while a newer generation has the script open.
+func TestE1bItem2DetachedRecoveryNeverOverwritesANewerSaveOfTheSameScript(t *testing.T) {
+	for _, bSaves := range []bool{true, false} {
+		name := map[bool]string{true: "B saved and closed", false: "B has it open"}[bSaves]
+		t.Run(name, func(t *testing.T) {
+			e := newEdRig(t, edScript("a"))
+			e.openAll(t, "a")
+			e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "A Draft")+`}`)
+			h := hookStages(e, []string{"recover.enqueue"}, []string{"recover.persisted"})
+			e.b.win.ProcessFailed(e.gen, 1)
+			_, doneA := e.b.win.waitChans()
+			recv(t, h.in["recover.enqueue"], "A's recovery paused before its enqueue")
+
+			e.openAll(t, "a") // B
+			want := "S a"
+			if bSaves {
+				e.mustCall(t, "editor.save", `{"sessionId":"`+e.sid+`","snapshotRev":1,"script":`+scriptJSON("a", "B Saved")+`}`)
+				e.b.win.CloseRequested(e.gen)
+				e.mustCall(t, "editor.closeDecision", `{"sessionId":"`+e.sid+`","decision":"discard"}`)
+				e.waitDone(t)
+				want = "B Saved"
+			}
+			close(h.release["recover.enqueue"])
+			recv(t, h.reached["recover.persisted"], "A's recovery deciding")
+			if hasQueued(e, "a=A Draft") || e.scr("a").Name != want {
+				t.Fatalf("A's recovery overwrote the newer state: %v %q", queuedNames(e), e.scr("a").Name)
+			}
+			waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 })
+			e.clk.Advance(recoverBound + time.Millisecond)
+			recv(t, doneA, "A's cleanup")
+			if f := recoveryFiles(t, e.dir); len(f) != 1 || f[0].Script.Name != "A Draft" {
+				t.Fatalf("A's draft must be file-only: %+v", f)
+			}
+			if !bSaves && e.b.sessionIDForGen(e.gen) != e.sid {
+				t.Fatal("B's session must be untouched")
+			}
+		})
+	}
+}
+
+// Item 3 (amendment C): the recovery file is written on its own goroutine; a stalled write neither
+// holds the gate nor delays cleanup past the deadline, and lands late (logged).
+func TestE1bItem3StalledRecoveryFileWriteIsBoundedAndNeverHoldsTheGate(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Draft")+`}`)
+	h := hookStages(e, []string{"recover.file"}, nil)
+	e.b.win.ProcessFailed(e.gen, 1)
+	_, done := e.b.win.waitChans()
+	recv(t, h.in["recover.file"], "the file write stalling")
+	waitFor(t, func() bool { return !e.ctl.Snapshot().EditDialogOpen })
+	if e.scr("a").Name != "Draft" {
+		t.Fatalf("persistence does not wait for the file: %q", e.scr("a").Name)
+	}
+	notClosed(t, done, "cleanup before its deadline while the file is pending")
+	e.clk.Advance(recoverBound + time.Millisecond)
+	recv(t, done, "cleanup at the deadline despite the stalled file")
+	ev := e.em.named(evEditorWindowFailed)
+	if len(ev) != 1 || ev[0].payload.(windowFailedEvent).RecoveredPath != "" {
+		t.Fatalf("no path can be reported for a pending file: %+v", ev)
+	}
+	close(h.release["recover.file"])
+	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 })
+}
+
+// Item 4 (amendment D): a save paused before its commit check past the lease bound is still the
+// newest draft: its payload was published at entry, so recovery writes it.
+func TestE1bItem4SaveRejectedAfterTheLeaseBoundKeepsItsDraft(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Checkpoint")+`}`)
+	h := hookStages(e, []string{"validated"}, []string{"lease.wait"})
+	saveErr := make(chan error, 1)
+	go func() {
+		_, err := e.m["editor.save"](json.RawMessage(`{"sessionId":"` + e.sid + `","snapshotRev":3,"script":` + scriptJSON("a", "Paused") + `}`))
+		saveErr <- err
+	}()
+	recv(t, h.in["validated"], "the save pausing before commit")
+	e.b.win.ProcessFailed(e.gen, 1)
+	_, done := e.b.win.waitChans()
+	recv(t, h.reached["lease.wait"], "the lease wait")
+	e.clk.Advance(saveLeaseWaitMax + time.Millisecond)
+	recv(t, done, "cleanup after the lease bound")
+	f := recoveryFiles(t, e.dir)
+	if len(f) != 1 || f[0].Revision != 3 || f[0].Script.Name != "Paused" {
+		t.Fatalf("the paused save's payload is the newest draft: %+v", f)
+	}
+	close(h.release["validated"])
+	wantCode(t, <-saveErr, CodeSessionClosing)
+	if e.scr("a").Name != "S a" {
+		t.Fatalf("a save still in flight makes recovery file-only: %q", e.scr("a").Name)
+	}
+}
+
+// Item 5 (amendment F): each cleanup owns a token; a later generation failing before it has a
+// session neither consumes the older token nor releases the gate it still holds.
+func TestE1bItem5CleanupTokensArePerCleanup(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Draft")+`}`)
+	h := hookStages(e, []string{"recover.enqueue"}, nil)
+	e.b.win.ProcessFailed(e.gen, 1)
+	_, doneA := e.b.win.waitChans()
+	recv(t, h.in["recover.enqueue"], "A's cleanup holding its token")
+
+	res := e.mustCall(t, "editor.openWindow", `{"id":"a"}`)
+	genB := uint64(res["gen"].(float64))
+	e.b.win.WindowFailed(genB, "embed", "async") // B fails before any session exists
+	_, doneB := e.b.win.waitChans()
+	recv(t, doneB, "B's cleanup")
+	e.b.win.cleanupDone(1 << 40) // an unknown token is a no-op
+	if !e.ctl.Snapshot().EditDialogOpen {
+		t.Fatal("B's failure released the gate A's cleanup still owns")
+	}
+	close(h.release["recover.enqueue"])
+	recv(t, doneA, "A's cleanup")
+	waitFor(t, func() bool { return !e.ctl.Snapshot().EditDialogOpen })
+}
+
+// Item 6 (amendment E): teardown detaches A synchronously, so B's editor.open during A's lease wait
+// never sees A's session (no EDITOR_BUSY).
+func TestE1bItem6ReopenDuringTheLeaseWaitNeverGetsEditorBusy(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	sidA := e.sid
+	h := hookStages(e, []string{"validated"}, []string{"lease.wait"})
+	go e.m["editor.save"](json.RawMessage(`{"sessionId":"` + sidA + `","snapshotRev":1,"script":` + scriptJSON("a", "Stuck") + `}`))
+	recv(t, h.in["validated"], "A's save holding its lease")
+	e.b.win.ProcessFailed(e.gen, 1)
+	_, doneA := e.b.win.waitChans()
+	recv(t, h.reached["lease.wait"], "A's cleanup waiting on the lease")
+	if e.b.curSess() != nil || e.b.sessAtomic.Load() != nil {
+		t.Fatal("A must be detached before teardown returns")
+	}
+	e.openAll(t, "a") // mustCall: EDITOR_BUSY would fail here
+	if e.sid == sidA {
+		t.Fatal("B must have its own session")
+	}
+	notClosed(t, doneA, "A's cleanup during its lease wait")
+	e.clk.Advance(saveLeaseWaitMax + time.Millisecond)
+	recv(t, doneA, "A's cleanup")
+	close(h.release["validated"])
+	if e.b.sessionIDForGen(e.gen) != e.sid || !e.ctl.Snapshot().EditDialogOpen {
+		t.Fatal("A's cleanup touched B")
+	}
+}
+
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// Item 7 (amendment H): the shutdown escape is explicit — with the destroy unconfirmed at D3+0.5s
+// shutdown logs it and proceeds, and not one instant before.
+func TestE1bItem7ShutdownEscapeIsExplicitAndLogged(t *testing.T) {
+	buf := &syncBuf{}
+	log.SetOutput(buf)
+	defer log.SetOutput(os.Stderr)
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	ui := &heldUI{}
+	e.b.d.UI = ui
+	e.b.BeginShutdown(1500*time.Millisecond, func() {})
+	e.mustCall(t, "app.closingReady", ``)
+	e.clk.Advance(1500*time.Millisecond + time.Millisecond)
+	waitFor(t, func() bool { return ui.n() >= 1 })
+	e.clk.Advance(shutdownDestroy + shutdownDestroyGrace - 2*time.Millisecond) // D3+0.5s minus 1ms
+	time.Sleep(50 * time.Millisecond)
+	if strings.Contains(buf.String(), "editor destroy not confirmed; proceeding") {
+		t.Fatal("escaped before D3+0.5s")
+	}
+	e.clk.Advance(2 * time.Millisecond)
+	waitFor(t, func() bool { return strings.Contains(buf.String(), "editor destroy not confirmed; proceeding") })
+}
+
+// Item 8 (amendment G): cleanup takes no unbounded lock and never waits on EndSession: with
+// Bridge.mu, sessMu and the capture lock all held, teardown returns, main is re-enabled, the gate
+// opens at the deadline, cleanup finishes, and the blocked recovery never persists afterwards.
+func TestE1bItem8CleanupIsBoundedWithBridgeLocksAndCaptureEndBlocked(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Held Draft")+`}`)
+	h := hookStages(e, nil, []string{"recover.enqueue", "recover.persisted"})
+	e.b.sessMu.Lock()
+	e.b.mu.Lock()
+	e.b.capture.opMu.Lock()
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			e.b.capture.opMu.Unlock()
+			e.b.mu.Unlock()
+			e.b.sessMu.Unlock()
+		}
+	}
+	defer unlock()
+	td := make(chan struct{})
+	go func() { e.b.win.ProcessFailed(e.gen, 1); close(td) }()
+	recv(t, td, "teardown returning with the bridge locks held")
+	if !e.h.mainEnabled {
+		t.Fatal("main must be re-enabled")
+	}
+	_, done := e.b.win.waitChans()
+	recv(t, h.reached["recover.enqueue"], "recovery blocked behind the locks")
+	e.clk.Advance(recoverBound + time.Millisecond)
+	recv(t, done, "cleanup at the deadline")
+	if e.ctl.Snapshot().EditDialogOpen {
+		t.Fatal("the gate must open at the deadline")
+	}
+	unlock()
+	recv(t, h.reached["recover.persisted"], "the abandoned recovery returning")
+	if hasQueued(e, "a=Held Draft") || e.scr("a").Name != "S a" {
+		t.Fatalf("persisted after abandonment: %v", queuedNames(e))
+	}
+	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 })
+}

@@ -43,8 +43,8 @@ type windowClosedEvent struct {
 func (b *Bridge) sessionIDForGen(gen uint64) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.session != nil && b.session.gen == gen && gen != 0 {
-		return b.session.id
+	if s := b.liveLocked(); s != nil && s.gen == gen && gen != 0 {
+		return s.id
 	}
 	return ""
 }
@@ -53,42 +53,39 @@ func (b *Bridge) sessionIDForGen(gen uint64) string {
 func (b *Bridge) savedUpTo(sessionID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.session != nil && b.session.id == sessionID && b.session.lastSavedRev >= b.session.dirtyRev
+	s := b.liveLocked()
+	return s != nil && s.id == sessionID && s.lastSavedRev >= s.dirtyRev
 }
 
-// cleanupSession is the off-UI-thread half of every editor teardown, bound to the generation that
-// started it: it touches only that generation's session and capture, and releases script execution
-// only when no editor generation is active. The session was already marked closing (lock-free)
-// BEFORE the window was destroyed. Order: bounded wait for in-flight saves, detach the session (so a
-// reopened editor can open its own), end that session's capture, recover its draft by deadline.
-func (b *Bridge) cleanupSession(gen uint64, kind teardownKind, stage, msg string, deadline time.Time) {
-	sess := b.sessAtomic.Load()
-	if sess != nil && (sess.gen != gen || gen == 0) {
-		sess = nil
+// cleanupSession is the off-UI-thread half of a teardown, bound to one generation and one cleanup
+// token. sess (nil when the generation had none) was already detached by the teardown, so it takes
+// no lock to release it (amendment E) and a reopened editor never sees it. Every step is bounded
+// (amendment G): the lease wait (500ms, injected clock), the capture end (asynchronous: the gate and
+// EnableMain never wait on it) and recovery (by deadline). The token is released as soon as
+// recovery persistence is settled; the gate opens only when no token is left and no generation is
+// active (amendment F).
+func (b *Bridge) cleanupSession(sess *editorSession, gen uint64, tok uint64, kind teardownKind, stage, msg string, deadline time.Time) {
+	release := func() {
+		if w := b.winCtl(); w != nil {
+			w.cleanupDone(tok)
+		}
 	}
-	inflight := false
-	saved := false
 	var rr RecoverResult
+	saved := false
 	if sess != nil {
-		inflight = b.waitSaves(sess, saveLeaseWaitMax)
-		b.sessMu.Lock()
-		b.mu.Lock()
-		sess.detached = true
-		saved = sess.lastSavedRev > 0
-		if b.session == sess {
-			b.setSessionLocked(nil)
-		}
-		b.mu.Unlock()
-		b.sessMu.Unlock()
-		b.capture.EndSession(sess.id, EndEditorClosed)
+		inflight := b.waitSaves(sess, saveLeaseWaitMax)
+		id := sess.id
+		go b.capture.EndSession(id, EndEditorClosed)
 		if kind != tdNormal {
-			rr = b.recoverDraft(sess, inflight, deadline)
+			rr = b.recoverDraft(sess, inflight, deadline, release)
+		} else {
+			release()
 		}
-	}
-	if w := b.winCtl(); w != nil {
-		w.cleanupDone() // releases the gate only when no editor generation is active
-	} else if b.d.Controller != nil {
-		b.d.Controller.SetEditDialogOpen(false)
+		if s := sess.snap.Load(); s != nil && s.lastSaved > 0 {
+			saved = true
+		}
+	} else {
+		release()
 	}
 	if kind == tdFailed {
 		if stage == "shutdown" { // no toast: the app is closing

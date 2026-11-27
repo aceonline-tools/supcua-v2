@@ -323,7 +323,7 @@ func TestStartupFailureRollsBack(t *testing.T) {
 			e.gen = uint64(res["gen"].(float64))
 			fail(e)
 			e.waitDone(t)
-			if !e.h.mainEnabled || e.ctl.Snapshot().EditDialogOpen || e.b.session != nil || e.b.win.State() != "none" {
+			if !e.h.mainEnabled || e.ctl.Snapshot().EditDialogOpen || e.b.curSess() != nil || e.b.win.State() != "none" {
 				t.Fatalf("rollback incomplete: %v", e.h.log)
 			}
 			if len(e.em.named("editor.windowFailed")) != 1 || !e.h.isDestroyed(e.gen) {
@@ -363,7 +363,7 @@ func TestCloseReEnablesMainBeforeDestroyThenFocusRule(t *testing.T) {
 			t.Fatalf("visible=%v revealed=%v %v", visible, revealed, e.h.log)
 		}
 		e.waitDone(t)
-		if e.ctl.Snapshot().EditDialogOpen || e.b.session != nil {
+		if e.ctl.Snapshot().EditDialogOpen || e.b.curSess() != nil {
 			t.Fatal("cleanup must release the gate and the session")
 		}
 		if got := len(e.em.named("editor.windowClosed")); got != 1 {
@@ -500,7 +500,7 @@ func TestFailEditorFromEveryState(t *testing.T) {
 			gen := e.b.win.currentGen()
 			e.b.win.ProcessFailed(gen, 1)
 			e.waitDone(t)
-			if e.b.win.State() != "none" || !e.h.mainEnabled || e.ctl.Snapshot().EditDialogOpen || e.b.session != nil || !e.h.isDestroyed(gen) {
+			if e.b.win.State() != "none" || !e.h.mainEnabled || e.ctl.Snapshot().EditDialogOpen || e.b.curSess() != nil || !e.h.isDestroyed(gen) {
 				t.Fatalf("%s: not fully failed over: %v", name, e.h.log)
 			}
 			if got := len(e.em.named("editor.windowFailed")); got != 1 {
@@ -748,7 +748,7 @@ func stuckSaveHook(e *edRig) (inSave, release chan struct{}) {
 	inSave, release = make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	e.b.testHook = func(stage string) {
-		if stage == "validated" {
+		if stage == "validated" || stage == "recover.enqueue" {
 			once.Do(func() { close(inSave); <-release })
 		}
 	}
@@ -786,7 +786,7 @@ func TestSaveNotPastItsCommitPointIsRejectedOnceClosingIsSetAndStillRecovered(t 
 		close(cleaned)
 	}()
 	waitFor(t, func() bool {
-		return e.b.session != nil && e.b.session.closingFlag.Load() || e.b.sessAtomic.Load() != nil && e.b.sessAtomic.Load().closingFlag.Load()
+		return e.b.lastClosed.Load() != nil
 	})
 	_, err := e.call(t, "editor.save", `{"sessionId":"`+e.sid+`","snapshotRev":4,"script":`+scriptJSON("a", "Late")+`}`)
 	wantCode(t, err, CodeSessionClosing)
@@ -798,8 +798,8 @@ func TestSaveNotPastItsCommitPointIsRejectedOnceClosingIsSetAndStillRecovered(t 
 	close(release) // it passed validation but not its commit point: the fence rejects it
 	wantCode(t, <-saveDone, CodeSessionClosing)
 	<-cleaned
-	if e.scr("a").Name != "In Flight" {
-		t.Fatalf("the rejected save's draft is the newest and must be recovered, not lost: %q", e.scr("a").Name)
+	if e.scr("a").Name != "Late" { // amendment D: the newest payload by revision (rev 4, refused at entry)
+		t.Fatalf("the rejected saves' newest draft must be recovered, not lost: %q", e.scr("a").Name)
 	}
 	if ents, _ := os.ReadDir(e.dir); len(ents) != 1 {
 		t.Fatalf("recovery file: %v", ents)
@@ -815,7 +815,7 @@ func TestLeaseWaitIsBoundedAt500msOnTheInjectedClock(t *testing.T) {
 	waitFor(t, func() bool { return e.b.sessAtomic.Load().savingN.Load() == 1 })
 	before := e.clk.live()
 	e.b.win.ProcessFailed(e.gen, 1)
-	waitFor(t, func() bool { return e.clk.live() > before-1 && e.b.sessAtomic.Load() != nil })
+	waitFor(t, func() bool { return e.clk.live() > before-1 && e.b.lastClosed.Load() != nil })
 	_, done := e.b.win.waitChans()
 	select {
 	case <-done:

@@ -400,3 +400,33 @@ func TestOldReaderDropsUnknownFieldsKeepsUnknownType(t *testing.T) {
 		}
 	}
 }
+
+func TestQueueSaveIfIsACompareAndSwapOnTheScriptRevision(t *testing.T) {
+	store := NewScriptStore(t.TempDir())
+	s := model.Script{ID: "a", Name: "A", Actions: []model.Action{}}
+	if store.Revision("a") != 0 {
+		t.Fatal("never written: 0")
+	}
+	r1, ok := store.QueueSaveIf("a", 0, false, nil, s)
+	if !ok || r1 == 0 || store.Revision("a") != r1 {
+		t.Fatalf("cas on 0: %d %v", r1, ok)
+	}
+	if _, ok := store.QueueSaveIf("a", 0, false, nil, s); ok {
+		t.Fatal("stale etag must be refused")
+	}
+	if _, ok := store.QueueSaveIf("a", r1, false, func() bool { return false }, s); ok {
+		t.Fatal("admit=false must be refused")
+	}
+	if !store.FlushSaves(2 * time.Second) {
+		t.Fatal("flush")
+	}
+	if err := store.Delete("a"); err != nil {
+		t.Fatal(err)
+	}
+	if rv := store.Revision("a"); rv == 0 || rv == r1 {
+		t.Fatalf("delete leaves a tombstone revision: %d", rv)
+	}
+	if _, ok := store.QueueSaveIf("a", r1, false, nil, s); ok {
+		t.Fatal("a deleted script is not resurrected by a stale etag")
+	}
+}

@@ -33,7 +33,7 @@ func (b *Bridge) editorCheckpoint(p struct {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	sess := b.session
+	sess := b.liveLocked()
 	if sess == nil || sess.id != p.SessionID || p.SessionID == "" {
 		return nil, newErr(CodeEditorClosed)
 	}
@@ -59,13 +59,17 @@ func (b *Bridge) editorCheckpoint(p struct {
 	return checkpointResult{Applied: true, Revision: p.Revision}, nil
 }
 
-// newestDraftLocked is the highest-revision unsaved draft: the checkpoint or the last failed save.
+// newestDraftLocked is the highest-revision unsaved draft: the checkpoint, the last failed save or
+// the newest save payload published at entry (amendment D).
 func (s *editorSession) newestDraftLocked() (script model.Script, rev uint64, ok bool) {
 	if s.checkpoint != nil && s.checkpoint.Revision > s.lastSavedRev {
 		script, rev, ok = s.checkpoint.Script, s.checkpoint.Revision, true
 	}
 	if s.draft != nil && s.draftRev > s.lastSavedRev && (!ok || s.draftRev >= rev) {
 		script, rev, ok = *s.draft, s.draftRev, true
+	}
+	if s.entry != nil && s.entryRev > s.lastSavedRev && (!ok || s.entryRev > rev) {
+		script, rev, ok = *s.entry, s.entryRev, true
 	}
 	return
 }

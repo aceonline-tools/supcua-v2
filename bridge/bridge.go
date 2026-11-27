@@ -49,6 +49,13 @@ type Store interface {
 	SetOnSaveError(hook func(script model.Script, err error))
 }
 
+// RevStore is the optional compare-and-swap surface of a Store (editor-window §4.5 amendment A).
+// Without it, editor recovery never persists into a script (file only).
+type RevStore interface {
+	Revision(id string) uint64
+	QueueSaveIf(id string, expect uint64, anyRev bool, admit func() bool, scripts ...model.Script) (uint64, bool)
+}
+
 type Config interface {
 	Get() model.AppConfig
 	Update(fn func(*model.AppConfig)) error
@@ -160,6 +167,7 @@ type Bridge struct {
 	failed     map[string]struct{}
 	session    *editorSession
 	sessAtomic atomic.Pointer[editorSession] // lock-free mirror of session (UI-thread teardown, recovery)
+	lastClosed atomic.Pointer[editorSession] // the session a teardown detached last (saves to it get SESSION_CLOSING)
 	closed     bool
 
 	winMu        sync.RWMutex
@@ -467,7 +475,7 @@ func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 			select { // the AND barrier; it gives way only when the UI thread itself is wedged
 			case <-destroyed:
 			case <-d3x:
-				log.Printf("bridge: shutdown proceeds although the editor window was not destroyed by D3+0.5s (UI thread wedged?)")
+				log.Printf("editor destroy not confirmed; proceeding") // §7 amendment H: the bounded escape
 			}
 		}
 		<-qdone
@@ -517,7 +525,7 @@ func (b *Bridge) ResetSession(reason string) {
 	// controller, which already detaches it under the §6.5 protocol (closing flag, save lease,
 	// recovery) when the editor's renderer or the shared browser fails; a main-renderer reload does
 	// not affect the editor's renderer, so the session is deliberately left alone here.
-	if b.session != nil && b.session.gen != 0 {
+	if s := b.liveLocked(); s != nil && s.gen != 0 {
 		b.mu.Unlock()
 		b.sessMu.Unlock()
 		return
@@ -529,9 +537,7 @@ func (b *Bridge) ResetSession(reason string) {
 	b.setSessionLocked(nil) // in-flight saves/captures hold the old *editorSession and fail their commit check
 	b.mu.Unlock()
 	b.capture.End(endReason)
-	if b.d.Controller != nil {
-		b.d.Controller.SetEditDialogOpen(false)
-	}
+	b.releaseGate()
 	b.sessMu.Unlock()
 	b.emit(EvEditorReset, editorResetEvent{Reason: reason, SessionID: sessionID})
 }

@@ -3,10 +3,12 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -46,6 +48,7 @@ func (b *Bridge) waitSaves(sess *editorSession, d time.Duration) (inFlight bool)
 	expired := make(chan struct{})
 	t := b.clock().AfterFunc(d, func() { close(expired) })
 	defer t.Stop()
+	b.at("lease.wait")
 	for sess.savingN.Load() > 0 {
 		select {
 		case <-sess.notify:
@@ -56,44 +59,168 @@ func (b *Bridge) waitSaves(sess *editorSession, d time.Duration) (inFlight bool)
 	return false
 }
 
-// recoverDraft writes the newest unsaved draft to the recovery file (always) and then persists it
-// into the script only when no save is in flight, it is newer than the last saved revision and it
-// validates without conflicts. Everything is bounded by deadline: it reads the lock-free snapshot,
-// runs the persistence on its own goroutine and abandons it at the deadline, and nothing commits
-// or flushes after it. It bypasses the mutation fence (the session is already closing) and never
-// overwrites a newer revision.
-func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool, deadline time.Time) RecoverResult {
+// Recovery persistence states (editor-window §4.5 amendment B). The enqueue goroutine moves
+// pending→enqueued under the store's queue lock; the deadline moves pending→abandoned. Exactly one
+// wins, so nothing is enqueued after the deadline and an abandoned recovery can never enqueue later.
+const (
+	recPending int32 = iota
+	recEnqueued
+	recAbandoned
+)
+
+// recoverDraft recovers the newest unsaved draft of a detached session (amendments A–C). The
+// recovery file is written on its own goroutine; persistence into the script is a compare-and-swap
+// enqueue on another. It returns at the deadline at the latest: persistence that did not enqueue by
+// then is abandoned (file only); a file write still running is logged when it lands. released is
+// called as soon as persistence is settled, before any wait on file I/O (the gate never waits on it).
+func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool, deadline time.Time, released func()) RecoverResult {
 	snap := sess.snap.Load()
 	if snap == nil || !snap.ok || snap.rev <= snap.lastSaved {
+		released()
 		return RecoverResult{}
 	}
 	res := RecoverResult{Found: true, Revision: snap.rev}
 	clk := b.clock()
+	expired, stop := b.afterChan(deadline.Sub(clk.Now()))
+	defer stop()
+
+	type fileRes struct {
+		path string
+		err  error
+	}
+	var fileCh chan fileRes
+	var late atomic.Bool
 	if b.recoveredDir != "" && clk.Now().Before(deadline) {
+		fileCh = make(chan fileRes, 1)
 		env := RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: snap.rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: snap.script}
-		if path, err := writeRecovery(b.recoveredDir, env); err != nil {
-			res.Reason = "could not write recovery file"
-		} else {
-			res.Path = path
+		dir := b.recoveredDir
+		go func() {
+			b.at("recover.file")
+			path, err := writeRecovery(dir, env)
+			if late.Load() {
+				log.Printf("bridge: late recovery file for script %s: path=%q err=%v", sess.scriptID, path, err)
+			}
+			fileCh <- fileRes{path, err}
+		}()
+	}
+
+	var st atomic.Int32
+	if !savesInFlight && clk.Now().Before(deadline) {
+		persisted := make(chan bool, 1)
+		go func() {
+			ok := b.persistRecovery(sess, snap, &st, deadline)
+			persisted <- ok
+			b.at("recover.persisted")
+		}()
+		select {
+		case res.Persisted = <-persisted:
+		case <-expired:
+			if !st.CompareAndSwap(recPending, recAbandoned) {
+				res.Persisted = st.Load() == recEnqueued
+			}
 		}
 	}
-	if savesInFlight || !clk.Now().Before(deadline) {
-		return res
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := b.saveScript(sess, snap.script, saveOpts{rev: snap.rev, recovery: true, deadline: deadline})
-		done <- err
-	}()
-	expired := make(chan struct{})
-	t := clk.AfterFunc(deadline.Sub(clk.Now()), func() { close(expired) })
-	defer t.Stop()
-	select {
-	case err := <-done:
-		res.Persisted = err == nil
-	case <-expired: // abandoned: the commit-time deadline check keeps it from persisting later
+	released()
+
+	if fileCh != nil {
+		var r fileRes
+		got := false
+		select { // a finished write wins over an expired deadline
+		case r, got = <-fileCh:
+		default:
+			select {
+			case r, got = <-fileCh:
+			case <-expired:
+				late.Store(true)
+				select { // the write may have landed while the flag was being set
+				case r, got = <-fileCh:
+				default:
+				}
+			}
+		}
+		switch {
+		case !got:
+			res.Reason = "recovery file still being written"
+		case r.err != nil:
+			res.Reason = "could not write recovery file"
+		default:
+			res.Path = r.path
+		}
 	}
 	return res
+}
+
+// persistRecovery enqueues the recovered draft into the script (amendment A) only when, atomically
+// under the store's queue lock: the store revision of the script still equals the session's etag
+// (nobody else saved it since), no newer editor generation has the script open, the deadline has
+// not passed and the deadline did not abandon it. Only then is the in-memory list updated (under
+// Bridge.mu, held across the enqueue). It never waits for the write: anything enqueued is flushed
+// by the store and the shutdown quiesce. Any blocking here only delays a goroutine that can no
+// longer enqueue once abandoned.
+func (b *Bridge) persistRecovery(sess *editorSession, snap *recSnap, st *atomic.Int32, deadline time.Time) bool {
+	rs, ok := b.d.Store.(RevStore)
+	if !ok {
+		return false
+	}
+	script := snap.script
+	script.ID = sess.scriptID
+	if validateScript(&script, b.known) != nil || b.d.Store.NameOrFileTakenExcept(script.Name, script.ID) {
+		return false
+	}
+	b.at("recover.enqueue")
+	clk := b.clock()
+	w := b.winCtl()
+	b.qMu.Lock()
+	if b.qClosed {
+		b.qMu.Unlock()
+		return false
+	}
+	b.mu.Lock()
+	others := make([]model.Script, 0, len(b.scripts))
+	for _, s := range b.scripts {
+		if s.ID != script.ID {
+			others = append(others, s)
+		}
+	}
+	if b.nameTakenLocked(script.Name, script.ID) || snap.rev <= sess.lastSavedRev || len(b.findConflicts(script, others)) > 0 {
+		b.mu.Unlock()
+		b.qMu.Unlock()
+		return false
+	}
+	cur := b.liveLocked()
+	_, queued := rs.QueueSaveIf(script.ID, sess.etag, false, func() bool {
+		if cur != nil && cur.scriptID == script.ID {
+			return false
+		}
+		if w != nil {
+			if p := w.activeScript.Load(); p != nil && *p == script.ID {
+				return false
+			}
+		}
+		return clk.Now().Before(deadline) && st.CompareAndSwap(recPending, recEnqueued)
+	}, script)
+	if !queued {
+		b.mu.Unlock()
+		b.qMu.Unlock()
+		return false
+	}
+	delete(b.failed, script.ID)
+	if i := b.indexLocked(script.ID); i >= 0 {
+		b.scripts[i] = script
+	} else {
+		b.scripts = append(b.scripts, script)
+	}
+	b.rev++
+	rev := b.rev
+	if snap.rev > sess.lastSavedRev {
+		sess.lastSavedRev = snap.rev
+	}
+	sess.publishLocked()
+	b.mu.Unlock()
+	b.qMu.Unlock()
+	b.syncHotkeys()
+	b.emit(EvScriptsChanged, revResult{rev})
+	return true
 }
 
 // writeRecovery writes the envelope as compact JSON, atomically (temp + rename), 0600. The script

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -110,7 +111,8 @@ type windowCtl struct {
 	metrics        EditorMetrics
 	shown          bool
 	shutdown       bool
-	cleaning       int       // teardown cleanups still running (the gate is released only at 0 with no window)
+	cleanups       map[uint64]struct{} // one token per running teardown cleanup (amendment F)
+	nextTok        uint64
 	recoverBy      time.Time // shutdown: the D2 recovery deadline (zero outside shutdown)
 
 	t0, ceiling time.Time
@@ -122,6 +124,8 @@ type windowCtl struct {
 	closeT      Timer
 
 	pendingOut *BoundsOut // fallback size waiting for the page's measureAck or the grace timer
+
+	activeScript atomic.Pointer[string] // the script of the active generation (lock-free, read by recovery)
 
 	destroyed chan struct{} // closed when this window's HWND is gone
 	done      chan struct{} // closed when its session cleanup (recovery included) finished
@@ -241,6 +245,7 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 	// is disabled BEFORE the editor can be interactive (contract §4.2).
 	c.mainWasVisible = visible
 	c.state, c.gen, c.scriptID = stCreating, 0, id
+	c.activeScript.Store(id)
 	c.shown, c.shutdown, c.token, c.tries = false, false, 0, 0
 	c.recoverBy = time.Time{}
 	c.destroyed, c.done = make(chan struct{}), make(chan struct{})
@@ -254,6 +259,7 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 		c.h.EnableMain(true)
 		c.mu.Lock()
 		c.state, c.gen = stNone, 0
+		c.activeScript.Store(nil)
 		close(c.destroyed)
 		close(c.done)
 		c.releaseGateLocked()
@@ -276,17 +282,29 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 // releaseGateLocked releases script execution when no editor generation is active and no
 // teardown cleanup is still running (c.mu held).
 func (c *windowCtl) releaseGateLocked() {
-	if c.state == stNone && c.cleaning == 0 && c.b.d.Controller != nil {
+	if c.state == stNone && len(c.cleanups) == 0 && c.b.d.Controller != nil {
 		c.b.d.Controller.SetEditDialogOpen(false)
 	}
 }
 
-// cleanupDone is the end of one generation's cleanup.
-func (c *windowCtl) cleanupDone() {
-	c.mu.Lock()
-	if c.cleaning > 0 {
-		c.cleaning--
+// releaseGate (no bridge lock held) releases script execution unless an editor generation is
+// active or a teardown cleanup still owns it; without an editor window it releases unconditionally.
+func (b *Bridge) releaseGate() {
+	if w := b.winCtl(); w != nil {
+		w.mu.Lock()
+		w.releaseGateLocked()
+		w.mu.Unlock()
+		return
 	}
+	if b.d.Controller != nil {
+		b.d.Controller.SetEditDialogOpen(false)
+	}
+}
+
+// cleanupDone releases one cleanup's token (idempotent; unknown tokens are no-ops).
+func (c *windowCtl) cleanupDone(tok uint64) {
+	c.mu.Lock()
+	delete(c.cleanups, tok)
 	c.releaseGateLocked()
 	c.mu.Unlock()
 }
@@ -639,20 +657,26 @@ func (c *windowCtl) teardown(gen uint64, kind teardownKind, stage, msg string) {
 	}
 	c.mu.Unlock()
 
-	hasSession := false
+	var sess *editorSession
 	if s := c.b.sessAtomic.Load(); s != nil && s.gen == gen && gen != 0 {
-		s.closingFlag.Store(true) // the commit fence, set before anything is destroyed
-		hasSession = true
+		s.detach(c.b) // the commit fence and the detach, lock-free, before anything is destroyed
+		sess = s
 	}
 	if r, max, ok := c.h.EditorBounds(gen); ok && c.shownBefore() {
 		c.saveBounds(r, max)
 	}
 	c.h.EnableMain(true) // before destroy: otherwise Windows activates another application
 	c.mu.Lock()
-	if hasSession {
-		c.cleaning++
-	} else if c.b.d.Controller != nil {
-		c.b.d.Controller.SetEditDialogOpen(false) // nothing to recover: restore the gate before destroy
+	var tok uint64
+	if sess != nil {
+		c.nextTok++
+		tok = c.nextTok
+		if c.cleanups == nil {
+			c.cleanups = map[uint64]struct{}{}
+		}
+		c.cleanups[tok] = struct{}{}
+	} else if len(c.cleanups) == 0 && c.b.d.Controller != nil {
+		c.b.d.Controller.SetEditDialogOpen(false) // nothing to recover and no other cleanup: restore the gate before destroy
 	}
 	c.mu.Unlock()
 	c.h.DestroyEditor(gen)
@@ -662,11 +686,13 @@ func (c *windowCtl) teardown(gen uint64, kind teardownKind, stage, msg string) {
 	}
 	c.mu.Lock()
 	c.state, c.gen, c.pendingOut = stNone, 0, nil
+	c.activeScript.Store(nil)
+	c.releaseGateLocked()
 	c.mu.Unlock()
 
 	go func() {
 		defer close(done)
-		c.b.cleanupSession(gen, kind, stage, msg, deadline)
+		c.b.cleanupSession(sess, gen, tok, kind, stage, msg, deadline)
 	}()
 }
 
