@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,29 +13,27 @@ import (
 	"github.com/lxn/win"
 
 	"github.com/yanmad27/supcua-v2/app"
+	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 )
 
 var (
-	user32DLL                      = syscall.NewLazyDLL("user32.dll")
-	gdi32DLL                       = syscall.NewLazyDLL("gdi32.dll")
-	procCreateSolidBrush           = gdi32DLL.NewProc("CreateSolidBrush")
-	procFillRect                   = user32DLL.NewProc("FillRect")
-	procSetLayeredWindowAttributes = user32DLL.NewProc("SetLayeredWindowAttributes")
+	user32DLL            = syscall.NewLazyDLL("user32.dll")
+	procUpdateLayeredWin = user32DLL.NewProc("UpdateLayeredWindow")
+	procGdiFlush         = syscall.NewLazyDLL("gdi32.dll").NewProc("GdiFlush")
+	colorGreenActive     = [3]uint8{0x00, 0xFF, 0x00}
+	colorRedInactive     = [3]uint8{0xFF, 0x00, 0x00}
+	colorGrayIdle        = [3]uint8{0x80, 0x80, 0x80}
 )
 
 const (
-	overlayWidth  = 136
-	overlayHeight = 32
-
-	colorBackground  = 0x00404040 // dark gray (BGR)
-	colorGreenActive = 0x0000FF00 // green text (BGR)
-	colorRedInactive = 0x000000FF // red text (BGR)
-	colorGrayIdle    = 0x00808080 // gray text (BGR)
-
-	layeredWindowAttributeAlpha = 0x02
-	wmExitSizeMove              = 0x0232
+	ulwAlpha       = 0x02
+	acSrcOver      = 0x00
+	acSrcAlpha     = 0x01
+	wmExitSizeMove = 0x0232
 )
+
+type blendFunction struct{ BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat byte }
 
 // OverlayWindow is the always-on-top HUD showing global status. It has no message loop of
 // its own: it lives on the UI thread and depends on the pump (walk's MainWindow.Run).
@@ -47,6 +46,8 @@ type OverlayWindow struct {
 	isDraggable   bool
 	paints        atomic.Int64
 	threadID      uint32
+	style         model.ResolvedOverlayStyle
+	lastPix       []byte
 
 	// OnMoved is called on the UI thread when a drag ends.
 	OnMoved func(x, y int)
@@ -75,6 +76,7 @@ func overlayWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) ui
 			ow.positionX = int(int16(lParam & 0xFFFF))
 			ow.positionY = int(int16((lParam >> 16) & 0xFFFF))
 		case wmExitSizeMove:
+			ow.clampAfterDrag()
 			if ow.OnMoved != nil {
 				ow.OnMoved(ow.positionX, ow.positionY)
 			}
@@ -84,7 +86,7 @@ func overlayWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) ui
 }
 
 // NewOverlayWindow creates the HUD overlay as a layered, topmost, toolwindow.
-func NewOverlayWindow(appController *app.Controller, initialX, initialY int, startVisible bool) (*OverlayWindow, error) {
+func NewOverlayWindow(appController *app.Controller, initialX, initialY int, startVisible bool, style model.ResolvedOverlayStyle) (*OverlayWindow, error) {
 	if overlayCurrent.Load() != nil {
 		return nil, fmt.Errorf("overlay already exists")
 	}
@@ -93,6 +95,7 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 		positionX:     initialX,
 		positionY:     initialY,
 		isVisible:     startVisible,
+		style:         style,
 		threadID:      win.GetCurrentThreadId(),
 	}
 
@@ -124,7 +127,7 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 		windowTitle,
 		win.WS_POPUP,
 		int32(initialX), int32(initialY),
-		overlayWidth, overlayHeight,
+		int32(style.Width), int32(style.Height),
 		0, 0, hInstance, nil,
 	)
 	if overlayWindow.windowHandle == 0 {
@@ -132,10 +135,11 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 		return nil, fmt.Errorf("failed to create overlay window")
 	}
 
-	// Set 80% opacity
-	procSetLayeredWindowAttributes.Call(
-		uintptr(overlayWindow.windowHandle), 0, 200, layeredWindowAttributeAlpha,
-	)
+	if err := overlayWindow.render(true); err != nil {
+		overlayCurrent.Store(nil)
+		win.DestroyWindow(overlayWindow.windowHandle)
+		return nil, err
+	}
 
 	if startVisible {
 		win.ShowWindow(overlayWindow.windowHandle, win.SW_SHOWNOACTIVATE)
@@ -146,42 +150,193 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 
 func (overlayWindow *OverlayWindow) paint() {
 	var paintStruct win.PAINTSTRUCT
-	deviceContext := win.BeginPaint(overlayWindow.windowHandle, &paintStruct)
-	defer win.EndPaint(overlayWindow.windowHandle, &paintStruct)
+	win.BeginPaint(overlayWindow.windowHandle, &paintStruct)
+	win.EndPaint(overlayWindow.windowHandle, &paintStruct)
+	_ = overlayWindow.render(false)
+}
+
+func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
+	if !overlayWindow.appController.IsGlobalActive() {
+		return "DISABLE", colorRedInactive
+	}
+	if name := overlayWindow.appController.GetRunningScriptName(); name != "" {
+		return "RUN: " + sanitizeStatusText(name), colorGreenActive
+	}
+	return "IDLE", colorGrayIdle
+}
+
+// render draws the overlay into a 32-bit premultiplied DIB and pushes it with UpdateLayeredWindow.
+// GDI draws the glyphs (same system font as before) as a coverage mask; composeOverlay paints the
+// anti-aliased rounded background and the solid text. withGeometry also moves/resizes the window.
+func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
+	st := overlayWindow.style
+	w, h := st.Width, st.Height
+	text, rgb := overlayWindow.statusText()
+	if st.TextColor != "" {
+		rgb[0], rgb[1], rgb[2] = parseHex(st.TextColor)
+	}
 	overlayWindow.paints.Add(1)
 
-	var textColor uint32
-	var statusText string
-	if overlayWindow.appController.IsGlobalActive() {
-		textColor = colorGrayIdle
-		statusText = "IDLE"
-		runningScriptName := overlayWindow.appController.GetRunningScriptName()
-		if runningScriptName != "" {
-			textColor = colorGreenActive
-			statusText = "RUN: " + runningScriptName
-		}
-	} else {
-		textColor = colorRedInactive
-		statusText = "DISABLE"
+	screenDC := win.GetDC(0)
+	if screenDC == 0 {
+		return errors.New("overlay: GetDC failed")
 	}
+	defer win.ReleaseDC(0, screenDC)
+	memDC := win.CreateCompatibleDC(screenDC)
+	if memDC == 0 {
+		return errors.New("overlay: CreateCompatibleDC failed")
+	}
+	defer win.DeleteDC(memDC)
+	var bits unsafe.Pointer
+	bmi := win.BITMAPINFO{BmiHeader: win.BITMAPINFOHEADER{
+		BiSize: uint32(unsafe.Sizeof(win.BITMAPINFOHEADER{})), BiWidth: int32(w), BiHeight: -int32(h), BiPlanes: 1, BiBitCount: 32, BiCompression: win.BI_RGB,
+	}}
+	bitmap := win.CreateDIBSection(memDC, &bmi.BmiHeader, win.DIB_RGB_COLORS, &bits, 0, 0)
+	if bitmap == 0 || bits == nil {
+		return errors.New("overlay: CreateDIBSection failed")
+	}
+	defer win.DeleteObject(win.HGDIOBJ(bitmap))
+	previous := win.SelectObject(memDC, win.HGDIOBJ(bitmap))
+	if previous == 0 {
+		return errors.New("overlay: SelectObject failed")
+	}
+	defer win.SelectObject(memDC, previous)
 
-	brushHandle, _, _ := procCreateSolidBrush.Call(uintptr(colorBackground))
-	clientRect := win.RECT{Left: 0, Top: 0, Right: overlayWidth, Bottom: overlayHeight}
-	procFillRect.Call(uintptr(deviceContext), uintptr(unsafe.Pointer(&clientRect)), brushHandle)
-	win.DeleteObject(win.HGDIOBJ(brushHandle))
-
-	win.SetBkMode(deviceContext, win.TRANSPARENT)
-	win.SetTextColor(deviceContext, win.COLORREF(textColor))
-
-	textUTF16, _ := syscall.UTF16FromString(statusText)
-	textRect := clientRect
-	win.DrawTextEx(deviceContext, &textUTF16[0], int32(len(textUTF16)-1), &textRect,
+	pix := unsafe.Slice((*byte)(bits), w*h*4)
+	win.SetBkMode(memDC, win.TRANSPARENT)
+	win.SetTextColor(memDC, win.COLORREF(0x00FFFFFF))
+	textUTF16, err := syscall.UTF16FromString(text)
+	if err != nil || len(textUTF16) < 2 {
+		textUTF16, _ = syscall.UTF16FromString("?")
+	}
+	textRect := win.RECT{Left: 0, Top: 0, Right: int32(w), Bottom: int32(h)}
+	win.DrawTextEx(memDC, &textUTF16[0], int32(len(textUTF16)-1), &textRect,
 		win.DT_CENTER|win.DT_VCENTER|win.DT_SINGLELINE, nil)
+	procGdiFlush.Call() // GDI batches drawing; the DIB bits are only valid to read after this
+	mask := make([]uint8, w*h)
+	for i := range mask {
+		mask[i] = max(pix[4*i], pix[4*i+1], pix[4*i+2])
+	}
+	composeOverlay(pix, w, h, st, rgb[0], rgb[1], rgb[2], mask)
+	overlayWindow.lastPix = append(overlayWindow.lastPix[:0], pix...)
+
+	blend := blendFunction{BlendOp: acSrcOver, SourceConstantAlpha: byte(st.Opacity*255 + 0.5), AlphaFormat: acSrcAlpha}
+	origin := win.POINT{}
+	size := win.SIZE{CX: int32(w), CY: int32(h)}
+	dst := win.POINT{X: int32(overlayWindow.positionX), Y: int32(overlayWindow.positionY)}
+	var dstPtr, sizePtr uintptr
+	if withGeometry {
+		dstPtr, sizePtr = uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&size))
+	}
+	ok, _, callErr := procUpdateLayeredWin.Call(uintptr(overlayWindow.windowHandle), 0, dstPtr, sizePtr,
+		uintptr(memDC), uintptr(unsafe.Pointer(&origin)), 0, uintptr(unsafe.Pointer(&blend)), ulwAlpha)
+	if ok == 0 {
+		return fmt.Errorf("overlay: UpdateLayeredWindow failed: %v", callErr)
+	}
+	return nil
 }
+
+// ApplyStyle applies a new style and position live. The position is moved onto a real monitor
+// if needed; the effective position is returned. On a render error the previous style stays.
+func (overlayWindow *OverlayWindow) ApplyStyle(style model.ResolvedOverlayStyle, x, y int) (int, int, error) {
+	prevStyle, prevX, prevY := overlayWindow.style, overlayWindow.positionX, overlayWindow.positionY
+	overlayWindow.style = style
+	x, y = ClampToMonitors(x, y, style.Width, style.Height)
+	overlayWindow.positionX, overlayWindow.positionY = x, y
+	if err := overlayWindow.render(true); err != nil {
+		overlayWindow.style, overlayWindow.positionX, overlayWindow.positionY = prevStyle, prevX, prevY
+		_ = overlayWindow.render(true)
+		return prevX, prevY, err
+	}
+	return x, y, nil
+}
+
+type displayDevice struct {
+	Size         uint32
+	DeviceName   [32]uint16
+	DeviceString [128]uint16
+	StateFlags   uint32
+	DeviceID     [128]uint16
+	DeviceKey    [128]uint16
+}
+
+type devMode struct {
+	DeviceName                                                        [32]uint16
+	SpecVersion, DriverVersion, Size, DriverExtra                     uint16
+	Fields                                                            uint32
+	PosX, PosY                                                        int32
+	DisplayOrientation, DisplayFixedOutput                            uint32
+	Color, Duplex, YResolution, TTOption, Collate                     int16
+	FormName                                                          [32]uint16
+	LogPixels                                                         uint16
+	BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency uint32
+	ICMMethod, ICMIntent, MediaType, DitherType, Reserved1, Reserved2 uint32
+	PanningWidth, PanningHeight                                       uint32
+}
+
+// DEVMODEW is 220 bytes; a wrong layout fails the build here.
+var _ = [1]byte{}[unsafe.Sizeof(devMode{})-220]
+
+const (
+	enumCurrentSettings = ^uintptr(0) // (DWORD)-1
+)
+
+var (
+	procEnumDisplayDevices  = user32DLL.NewProc("EnumDisplayDevicesW")
+	procEnumDisplaySettings = user32DLL.NewProc("EnumDisplaySettingsW")
+)
+
+// Monitors lists the attached monitors' rectangles in virtual-screen pixels (the process is
+// per-monitor DPI aware, so these match window coordinates). It uses EnumDisplayDevices, which needs
+// no callback (the UI layer is limited to one window-procedure callback).
+func Monitors() []model.Rect {
+	var rects []model.Rect
+	for i := uint32(0); i < 64; i++ {
+		dd := displayDevice{Size: uint32(unsafe.Sizeof(displayDevice{}))}
+		if ok, _, _ := procEnumDisplayDevices.Call(0, uintptr(i), uintptr(unsafe.Pointer(&dd)), 0); ok == 0 {
+			break
+		}
+		if !monitorDeviceActive(dd.StateFlags) {
+			continue
+		}
+		dm := devMode{Size: uint16(unsafe.Sizeof(devMode{}))}
+		if ok, _, _ := procEnumDisplaySettings.Call(uintptr(unsafe.Pointer(&dd.DeviceName[0])), enumCurrentSettings, uintptr(unsafe.Pointer(&dm))); ok == 0 {
+			continue
+		}
+		if dm.PelsWidth == 0 || dm.PelsHeight == 0 {
+			continue
+		}
+		rects = append(rects, model.Rect{Left: int(dm.PosX), Top: int(dm.PosY), Right: int(dm.PosX) + int(dm.PelsWidth), Bottom: int(dm.PosY) + int(dm.PelsHeight)})
+	}
+	return rects
+}
+
+// ClampToMonitors keeps a top-left position where the overlay shows on an actual monitor.
+func ClampToMonitors(x, y, w, h int) (int, int) {
+	return model.ClampOverlayToMonitors(x, y, w, h, Monitors())
+}
+
+// clampAfterDrag moves a dragged overlay that ended off every monitor back onto the nearest one.
+func (overlayWindow *OverlayWindow) clampAfterDrag() {
+	x, y := ClampToMonitors(overlayWindow.positionX, overlayWindow.positionY, overlayWindow.style.Width, overlayWindow.style.Height)
+	if x == overlayWindow.positionX && y == overlayWindow.positionY {
+		return
+	}
+	overlayWindow.positionX, overlayWindow.positionY = x, y
+	win.SetWindowPos(overlayWindow.windowHandle, 0, int32(x), int32(y), 0, 0, win.SWP_NOSIZE|win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+}
+
+// Snapshot returns a copy of the last rendered premultiplied BGRA buffer (self-test).
+func (overlayWindow *OverlayWindow) Snapshot() (pix []byte, w, h int) {
+	return append([]byte(nil), overlayWindow.lastPix...), overlayWindow.style.Width, overlayWindow.style.Height
+}
+
+// Style returns the style currently applied.
+func (overlayWindow *OverlayWindow) Style() model.ResolvedOverlayStyle { return overlayWindow.style }
 
 // Refresh triggers a repaint of the overlay.
 func (overlayWindow *OverlayWindow) Refresh() {
-	win.InvalidateRect(overlayWindow.windowHandle, nil, true)
+	_ = overlayWindow.render(false)
 }
 
 // ToggleVisibility shows or hides the overlay.

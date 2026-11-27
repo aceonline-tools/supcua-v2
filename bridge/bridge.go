@@ -76,6 +76,8 @@ type Overlay interface {
 	SetEnabled(enabled bool) error
 	SetVisible(visible bool)
 	SetDraggable(draggable bool)
+	// ApplyStyle applies the style live and returns the effective (screen-clamped) position.
+	ApplyStyle(style model.OverlayStyle, x, y int) (int, int, error)
 }
 
 // Hotkey kinds accepted by Host.RebindHotkey.
@@ -274,6 +276,7 @@ func (b *Bridge) refreshOverlay(viaUI bool) {
 // drag end, the overlay hotkey or a tray toggle.
 func (b *Bridge) RefreshOverlay() {
 	b.refreshOverlay(false)
+	b.persistOverlayPosition()
 	b.NotifyStateChanged()
 }
 
@@ -497,7 +500,7 @@ var mutating = []string{
 	"scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed", "settings.setSidebarCollapsed", "scripts.clone",
 	"scripts.delete", "scripts.retrySave", "editor.open", "editor.save", "editor.close",
 	"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.stop", "capture.mouse.stop",
-	"settings.update", "overlay.set", "autoactive.set", "update.apply", "update.skip", "app.closingReady",
+	"settings.update", "overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "app.closingReady",
 }
 
 func (b *Bridge) fenceMutations(m map[string]Handler) {
@@ -603,6 +606,8 @@ func (b *Bridge) Methods() map[string]Handler {
 	regNoParams(m, "settings.get", b.settingsGet)
 	reg(m, "settings.update", b.settingsUpdate, "patch")
 	reg(m, "overlay.set", b.overlaySet)
+	reg(m, "overlay.setStyle", b.overlaySetStyle, "radius", "background", "text_color", "background_opacity", "opacity", "width", "height", "x", "y")
+	regNoParams(m, "overlay.resetStyle", b.overlayResetStyle)
 	reg(m, "autoactive.set", b.autoActiveSet)
 	regNoParams(m, "update.apply", b.updateApply)
 	regNoParams(m, "update.skip", b.updateSkip)

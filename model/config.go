@@ -10,15 +10,16 @@ type WindowPos struct {
 
 // AppConfig holds global application settings.
 type AppConfig struct {
-	GlobalHotkey       Hotkey    `json:"global_hotkey"`
-	CaptureHotkey      Hotkey    `json:"capture_hotkey"`
-	OverlayHotkey      Hotkey    `json:"overlay_hotkey"`
-	OverlayEnabled     bool      `json:"overlay_enabled"`
-	OverlayPosition    WindowPos `json:"overlay_position"`
-	MainWindowPos      WindowPos `json:"main_window_pos"`
-	EditDialogPos      WindowPos `json:"edit_dialog_pos"`
-	ScriptsDir         string    `json:"scripts_dir"`
-	KeyPressDurationMs int       `json:"key_press_duration_ms"`
+	GlobalHotkey       Hotkey       `json:"global_hotkey"`
+	CaptureHotkey      Hotkey       `json:"capture_hotkey"`
+	OverlayHotkey      Hotkey       `json:"overlay_hotkey"`
+	OverlayEnabled     bool         `json:"overlay_enabled"`
+	OverlayPosition    WindowPos    `json:"overlay_position"`
+	OverlayStyle       OverlayStyle `json:"overlay_style"`
+	MainWindowPos      WindowPos    `json:"main_window_pos"`
+	EditDialogPos      WindowPos    `json:"edit_dialog_pos"`
+	ScriptsDir         string       `json:"scripts_dir"`
+	KeyPressDurationMs int          `json:"key_press_duration_ms"`
 
 	AutoActiveEnabled     bool   `json:"auto_active_enabled"`
 	AutoActiveProcessName string `json:"auto_active_process_name"`
