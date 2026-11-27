@@ -1,4 +1,5 @@
 import { ApiError, type Client } from '../api/client';
+import { recordEvent, sequenceOf, type KeyPressAction } from './keySequence';
 import type { Action, ActionSpec, CaptureEndReason, HotkeyConflict, HotkeyField, Script } from '../api/types';
 import type { AppStore } from './store.svelte';
 import { dropIndex, insertIndex } from './reorder';
@@ -7,7 +8,7 @@ export type CloseResult = 'closed' | 'conflict' | 'failed' | 'noop';
 type SaveResult = 'ok' | 'stale' | 'conflict' | 'name' | 'failed';
 const MAX_SAVE_PASSES = 5;
 type CaptureEventName = 'hotkey' | 'key' | 'mouse' | 'ended';
-export type Capturing = HotkeyField | 'key' | null;
+export type Capturing = HotkeyField | 'key' | 'keys' | null;
 
 export interface ActionDialogState {
   index: number;
@@ -28,6 +29,8 @@ export class EditorStore {
   mouse = $state({ x: 0, y: 0 });
   builder = $state({ key: '', delay: 100, loop: 1 });
   capturing = $state<Capturing>(null);
+  recordMods = $state<string[]>([]);
+  recordNote = $state('');
   conflicts = $state<HotkeyConflict[] | null>(null);
   actionDialog = $state<ActionDialogState | null>(null);
   raw = $state<{ text: string; error: string } | null>(null);
@@ -150,7 +153,7 @@ export class EditorStore {
 
   closeActionDialog(): void {
     this.actionDialog = null;
-    if (this.capturing === 'key') this.cancelCapture();
+    if (this.capturing === 'key' || this.capturing === 'keys') this.cancelCapture();
   }
 
   async deleteSelected(): Promise<void> {
@@ -264,6 +267,14 @@ export class EditorStore {
     return this.requestStart('key', 'key', (sessionId) => this.api.call('capture.key.start', { sessionId }));
   }
 
+  // Records a key sequence into the open key_press dialog; the host keeps streaming key-downs
+  // until Esc / Stop, and global hotkeys stay suspended for the whole capture.
+  startKeyRecording(): Promise<void> {
+    this.recordMods = [];
+    this.recordNote = '';
+    return this.requestStart('key', 'keys', (sessionId) => this.api.call('capture.key.start', { sessionId }));
+  }
+
   capturePending(): boolean {
     return this.pendingStarts > 0;
   }
@@ -345,12 +356,28 @@ export class EditorStore {
   }
 
   private onCaptureKey(key: string): void {
+    if (this.curKind === 'key' && this.capturing === 'keys' && this.capturingOp === this.curOp) { this.onRecordKey(key); return; }
     if (this.curKind !== 'key' || this.capturing !== 'key' || this.capturingOp !== this.curOp) return;
     if (this.actionDialog) this.actionDialog.action.key = key;
     else this.builder.key = key;
     this.capturing = null;
     this.capturingOp = null;
     void this.stopAndResume({ id: this.curId ?? undefined });
+  }
+
+  private onRecordKey(key: string): void {
+    const a = this.actionDialog?.action as KeyPressAction | undefined;
+    if (!a) return;
+    const r = recordEvent({ keys: sequenceOf(a), mods: this.recordMods }, key);
+    this.recordNote = r.ignored ? (r.stop ? 'Maximum keys reached.' : `Unsupported key ignored (${key}).`) : '';
+    a.keys = r.keys;
+    delete a.key;
+    this.recordMods = r.mods;
+    if (r.stop) {
+      this.capturing = null;
+      this.capturingOp = null;
+      void this.stopAndResume({ id: this.curId ?? undefined });
+    }
   }
 
   private onCaptureMouse(x: number, y: number): void {
