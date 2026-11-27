@@ -1005,7 +1005,7 @@ func TestReopenWhileOlderCleanupRunsKeepsTheNewEditorsGateSessionAndCapture(t *t
 		t.Fatalf("A's cleanup ended B's capture: %v %q", mode, sess)
 	}
 	// A's recovery snapshot survives the reopen; the file is asynchronous (amendment C) and may land after the deadline.
-	waitFor(t, func() bool { ents, _ := os.ReadDir(e.dir); return len(ents) == 1 })
+	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 })
 	close(release)
 	// B closes normally: now the gate is released.
 	e.b.win.CloseRequested(e.gen)
@@ -1109,7 +1109,7 @@ func TestSharedAfterD2NothingPersistsAndTheBarrierWaitsForDestroy(t *testing.T) 
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown must proceed once recovery is abandoned and the editor destroyed")
 	}
-	waitFor(t, func() bool { ents, _ := os.ReadDir(e.dir); return len(ents) == 1 }) // the recovery FILE (asynchronous, amendment C)
+	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 }) // the recovery FILE (asynchronous, amendment C)
 	close(release)
 	time.Sleep(150 * time.Millisecond)
 	if e.scr("a").Name == "Late Draft" {

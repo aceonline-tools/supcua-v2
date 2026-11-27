@@ -83,6 +83,9 @@ func recoveryFiles(t *testing.T, dir string) []RecoveryEnvelope {
 	ents, _ := os.ReadDir(dir)
 	var out []RecoveryEnvelope
 	for _, en := range ents {
+		if strings.HasPrefix(en.Name(), ".") || !strings.HasSuffix(en.Name(), ".json") {
+			continue // a temp file still being written (temp + rename)
+		}
 		raw, err := os.ReadFile(filepath.Join(dir, en.Name()))
 		if err != nil {
 			t.Fatal(err)
