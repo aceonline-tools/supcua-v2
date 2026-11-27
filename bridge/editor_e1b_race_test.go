@@ -681,7 +681,7 @@ func TestRenameRetryReturnsAPermanentErrorAtOnce(t *testing.T) {
 	}
 }
 
-// Only Windows ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) are retryable.
+// Only Windows ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33) and ERROR_ACCESS_DENIED (5) are retryable.
 func TestRetryableRenameClassification(t *testing.T) {
 	wrap := func(e syscall.Errno) error { return &os.LinkError{Op: "rename", Err: e} }
 	win := runtime.GOOS == "windows"
