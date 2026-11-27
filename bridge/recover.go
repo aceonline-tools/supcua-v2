@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -232,17 +233,20 @@ func (b *Bridge) lateRecoveryFile(sess *editorSession, script model.Script, rev 
 		return
 	}
 	sess.lateMu.Lock()
-	defer sess.lateMu.Unlock()
 	if rev <= sess.lateMax {
+		sess.lateMu.Unlock()
 		return // superseded by a newer covered revision
 	}
 	sess.lateMax = rev
-	log.Printf("bridge: save payload rev %d of script %s arrived after recovery sealed the session; writing it file-only", rev, sess.scriptID)
 	sess.lateNext = &RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: script}
-	if sess.lateRunning {
+	start := !sess.lateRunning
+	sess.lateRunning = true
+	sess.lateMu.Unlock()
+	// logged after unlocking: a stalled log sink never holds lateMu (seal takes it)
+	log.Printf("bridge: save payload rev %d of script %s arrived after recovery sealed the session; writing it file-only", rev, sess.scriptID)
+	if !start {
 		return
 	}
-	sess.lateRunning = true
 	go func() {
 		for {
 			sess.lateMu.Lock()
@@ -261,9 +265,19 @@ func (b *Bridge) lateRecoveryFile(sess *editorSession, script model.Script, rev 
 	}()
 }
 
-// writeRecovery writes the envelope as compact JSON, atomically (temp + rename), 0600. The script
-// is bounded by the same compact measure as every draft (maxDraftBytes); the envelope adds only its
-// fixed fields, so no slack is allowed.
+// recoveryNow is the wall clock used for recovery file names (a test seam).
+var recoveryNow = time.Now
+
+// writeRecovery writes the envelope as compact JSON, 0600, under a name it reserved exclusively:
+// <id>-<ms:13>-<rev:10>[-n].json. The script is bounded by the same compact measure as every draft.
+//
+// Publication is reserve-then-rename: the final name is first created with O_CREATE|O_EXCL (so no
+// two writers can ever own it, on any filesystem — NTFS, FAT/exFAT or POSIX), the content is
+// written to a temp file, then the temp file is renamed over the reservation, which only this
+// writer owns, so the replace can never hit another recovery file. Crash consistency: a crash
+// leaves either the empty reservation (readers skip empty files; pruning removes it in time) or
+// the complete file — never a partially written one. Writing into the reservation directly would
+// save the rename but could leave a truncated JSON file after a crash.
 func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
 	if draftBytes(env.Script) > maxDraftBytes {
 		return "", fmt.Errorf("draft too large")
@@ -275,55 +289,54 @@ func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	base := fmt.Sprintf("%s-%d-%d", safeName(env.ScriptID), time.Now().UnixMilli(), env.Revision)
+	base := fmt.Sprintf("%s-%013d-%010d", safeName(env.ScriptID), recoveryNow().UnixMilli(), env.Revision)
+	final, err := reserveRecoveryName(dir, base)
+	if err != nil {
+		return "", err
+	}
 	tmp, err := os.CreateTemp(dir, ".recover-*")
 	if err != nil {
+		_ = os.Remove(final)
 		return "", err
 	}
 	tmpName := tmp.Name()
 	_, werr := tmp.Write(raw)
+	serr := tmp.Sync()
 	cerr := tmp.Close()
-	if werr != nil || cerr != nil {
+	if werr != nil || serr != nil || cerr != nil {
 		_ = os.Remove(tmpName)
+		_ = os.Remove(final)
 		return "", fmt.Errorf("write recovery file")
 	}
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		_ = os.Remove(tmpName)
+		_ = os.Remove(final)
 		return "", err
 	}
-	final, err := linkRecoveryName(dir, base, tmpName)
-	if err != nil {
+	if err := os.Rename(tmpName, final); err != nil { // replaces only our own reservation
 		_ = os.Remove(tmpName)
+		_ = os.Remove(final)
 		return "", err
 	}
 	pruneRecovery(dir, safeName(env.ScriptID))
 	return final, nil
 }
 
-// linkRecoveryName publishes the finished temp file under a unique final name: os.Link fails when
-// the name exists, so two recovery files written in the same millisecond never replace each other
-// and readers never see a partial file.
-func linkRecoveryName(dir, base, tmpName string) (string, error) {
-	for n := 0; n < 100; n++ {
+// reserveRecoveryName creates base.json (or base-n.json) exclusively and returns its path.
+func reserveRecoveryName(dir, base string) (string, error) {
+	for n := 0; n < 1000; n++ {
 		name := base + ".json"
 		if n > 0 {
 			name = fmt.Sprintf("%s-%d.json", base, n)
 		}
 		p := filepath.Join(dir, name)
-		err := os.Link(tmpName, p)
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			_ = os.Remove(tmpName)
+			_ = f.Close()
 			return p, nil
 		}
-		if os.IsExist(err) {
-			continue
-		}
-		// no hard links on this filesystem: rename onto a name that does not exist yet
-		if _, serr := os.Lstat(p); os.IsNotExist(serr) {
-			if rerr := os.Rename(tmpName, p); rerr != nil {
-				return "", rerr
-			}
-			return p, nil
+		if !os.IsExist(err) {
+			return "", err
 		}
 	}
 	return "", fmt.Errorf("no free recovery file name")
@@ -342,20 +355,62 @@ func safeName(id string) string {
 	return sb.String()
 }
 
+type recName struct {
+	name       string
+	ms, rev, n uint64
+}
+
+// parseRecoveryName parses <prefix>-<ms>-<rev>[-n].json; ok is false for any other name (another
+// script whose id starts with prefix+"-", or a foreign file), which pruning then leaves alone.
+func parseRecoveryName(name, prefix string) (recName, bool) {
+	rest, ok := strings.CutPrefix(name, prefix+"-")
+	if !ok {
+		return recName{}, false
+	}
+	rest, ok = strings.CutSuffix(rest, ".json")
+	if !ok {
+		return recName{}, false
+	}
+	parts := strings.Split(rest, "-")
+	if len(parts) < 2 || len(parts) > 3 || len(parts[0]) != 13 || len(parts[1]) != 10 {
+		return recName{}, false
+	}
+	var v [3]uint64
+	for i, p := range parts {
+		x, err := strconv.ParseUint(p, 10, 64)
+		if err != nil {
+			return recName{}, false
+		}
+		v[i] = x
+	}
+	return recName{name, v[0], v[1], v[2]}, true
+}
+
+// pruneRecovery keeps the newest recoveredKeep files of a script, ordered numerically by
+// (ms, revision, n) — never lexically.
 func pruneRecovery(dir, prefix string) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	var mine []string
+	var mine []recName
 	for _, e := range ents {
-		if strings.HasPrefix(e.Name(), prefix+"-") && strings.HasSuffix(e.Name(), ".json") {
-			mine = append(mine, e.Name())
+		if r, ok := parseRecoveryName(e.Name(), prefix); ok {
+			mine = append(mine, r)
 		}
 	}
-	sort.Strings(mine) // unix-ms suffix: lexical order is age order for same-width stamps
+	sort.Slice(mine, func(i, j int) bool {
+		a, b := mine[i], mine[j]
+		if a.ms != b.ms {
+			return a.ms < b.ms
+		}
+		if a.rev != b.rev {
+			return a.rev < b.rev
+		}
+		return a.n < b.n
+	})
 	for len(mine) > recoveredKeep {
-		_ = os.Remove(filepath.Join(dir, mine[0]))
+		_ = os.Remove(filepath.Join(dir, mine[0].name))
 		mine = mine[1:]
 	}
 }

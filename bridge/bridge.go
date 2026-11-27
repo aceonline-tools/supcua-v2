@@ -167,7 +167,7 @@ type Bridge struct {
 	failed     map[string]struct{}
 	session    *editorSession
 	sessAtomic atomic.Pointer[editorSession] // lock-free mirror of session (UI-thread teardown, recovery)
-	admitMu    sync.Mutex                    // leaf lock: a generation registering its script vs recovery's admission + enqueue
+	admitMu    sync.Mutex                    // a generation registering its script vs recovery's admission + enqueue; order admitMu → store queueMu, no I/O
 	lastClosed atomic.Pointer[editorSession] // the session a teardown detached last (saves to it get SESSION_CLOSING)
 	closed     bool
 

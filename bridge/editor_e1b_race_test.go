@@ -91,6 +91,9 @@ func recoveryFiles(t *testing.T, dir string) []RecoveryEnvelope {
 		if os.IsNotExist(err) {
 			continue // pruned meanwhile
 		}
+		if err == nil && len(raw) == 0 {
+			continue // a name reservation whose content is still being written
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -482,9 +485,109 @@ func TestE1bSealFloodOfLateSavesUsesOneCoalescingWriter(t *testing.T) {
 		}
 		return false
 	})
-	if n := len(recoveryFiles(t, e.dir)); n > recoveredKeep {
-		t.Fatalf("%d files", n)
-	}
 	sess := e.b.lastClosed.Load()
 	waitFor(t, func() bool { sess.lateMu.Lock(); defer sess.lateMu.Unlock(); return !sess.lateRunning })
+	if n := len(recoveryFiles(t, e.dir)); n > recoveredKeep { // each write prunes right after its rename
+		t.Fatalf("%d files", n)
+	}
+}
+
+// Review fix (reservation): two writers racing for the same base name (same ms, same revision) each
+// reserve a distinct name with O_EXCL and both files survive; there is no hard-link path at all,
+// so a filesystem without hard links (FAT/exFAT) behaves the same.
+func TestE1bRecoveryReservationRacingWritersForTheSameBaseNameBothSurvive(t *testing.T) {
+	fixed := time.UnixMilli(1_795_000_000_000)
+	recoveryNow = func() time.Time { return fixed }
+	defer func() { recoveryNow = time.Now }()
+	dir := filepath.Join(t.TempDir(), "recovered")
+	env := RecoveryEnvelope{V: 1, ScriptID: "a", Revision: 9, Script: edScript("a")}
+	var wg sync.WaitGroup
+	paths := make([]string, 2)
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	for i := range paths {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			paths[i], errs[i] = writeRecovery(dir, env)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil || paths[0] == paths[1] {
+		t.Fatalf("%v %v %q %q", errs[0], errs[1], paths[0], paths[1])
+	}
+	if f := recoveryFiles(t, dir); len(f) != 2 {
+		t.Fatalf("both files must survive: %+v", f)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 2 {
+		t.Fatalf("no reservation or temp file may be left: %v", ents)
+	}
+}
+
+// Review fix (prune order): six files in the same millisecond with revisions 95–100 — the prune
+// orders numerically, so it keeps 96–100 (100 included) and drops 95.
+func TestE1bPruneKeepsTheNewestByNumericMsRevisionOrder(t *testing.T) {
+	fixed := time.UnixMilli(1_795_000_000_000)
+	recoveryNow = func() time.Time { return fixed }
+	defer func() { recoveryNow = time.Now }()
+	dir := filepath.Join(t.TempDir(), "recovered")
+	for rev := uint64(95); rev <= 100; rev++ {
+		if _, err := writeRecovery(dir, RecoveryEnvelope{V: 1, ScriptID: "a", Revision: rev, Script: edScript("a")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[uint64]bool{}
+	for _, f := range recoveryFiles(t, dir) {
+		got[f.Revision] = true
+	}
+	if len(got) != 5 || got[95] || !got[100] || !got[96] {
+		t.Fatalf("kept %v", got)
+	}
+	if _, ok := parseRecoveryName("a-b-1795000000000-0000000001.json", "a"); ok {
+		t.Fatal("another script's file (id a-b) must not parse as script a's")
+	}
+}
+
+type blockingLog struct {
+	release chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingLog) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+// Review fix (no logging under lateMu): with a log sink that blocks, a late publish stalls only its
+// own caller after releasing lateMu, so a seal and a whole cleanup still finish by the deadline.
+func TestE1bBlockingLogSinkNeverStallsSealOrCleanup(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	sess := e.b.curSess()
+	sess.seal()
+	w := &blockingLog{release: make(chan struct{}), entered: make(chan struct{})}
+	log.SetOutput(w)
+	defer log.SetOutput(os.Stderr)
+	go e.b.lateRecoveryFile(sess, edScript("a"), 5)
+	recv(t, w.entered, "the late publish blocking in the log sink")
+	locked := make(chan struct{})
+	go func() { sess.seal(); close(locked) }()
+	recv(t, locked, "a seal while the log sink is blocked")
+
+	e2 := newEdRig(t, edScript("b"))
+	e2.openAll(t, "b")
+	e2.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e2.sid+`","revision":2,"script":`+scriptJSON("b", "Draft")+`}`)
+	h2 := hookStages(e2, nil, []string{"recover.file"})
+	e2.b.win.ProcessFailed(e2.gen, 1)
+	_, done := e2.b.win.waitChans()
+	recv(t, h2.reached["recover.file"], "e2's recovery armed")
+	e2.clk.Advance(recoverBound + time.Millisecond)
+	recv(t, done, "cleanup by its deadline with the log sink blocked")
+	close(w.release)
+	waitFor(t, func() bool { sess.lateMu.Lock(); defer sess.lateMu.Unlock(); return !sess.lateRunning })
+	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 && len(recoveryFiles(t, e2.dir)) == 1 })
 }
