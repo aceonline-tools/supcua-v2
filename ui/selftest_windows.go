@@ -69,11 +69,23 @@ type SelfTest struct {
 	// Exit runs the ordered application shutdown on the UI thread.
 	Exit func()
 
+	// Editor-window lifecycle test (E1b).
+	Host         *EditorHost
+	RecoveredDir string
+	EditOpen     func() bool // script execution is blocked (the controller's edit-dialog gate)
+	Methods      map[string]func(json.RawMessage) (any, error)
+
+	fixture        string
+	shutdownStart  time.Time
+	shutdownHWND   uintptr
+	shutdownBefore int
+
 	reports chan selfReport
 }
 
 // Install registers the driver channel on methods.
 func (s *SelfTest) Install(methods map[string]func(json.RawMessage) (any, error)) {
+	s.Methods = methods
 	s.reports = make(chan selfReport, 16)
 	methods[SelfTestMethod] = func(p json.RawMessage) (any, error) {
 		var r selfReport
@@ -214,6 +226,9 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 
 	s.overlayVisual(res)
 	webview.SelftestEditorWindow(s.UI, res)
+	if s.Host != nil {
+		s.editorLifecycle()
+	}
 
 	trayDone := make(chan bool, 1)
 	post(func() {
@@ -226,6 +241,9 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 		res.Step("tray created and removed", ok, "")
 	case <-time.After(5 * time.Second):
 		res.Step("tray created and removed", false, "UI thread did not respond")
+	}
+	if s.Host != nil {
+		s.editorShutdownCase()
 	}
 	done()
 }

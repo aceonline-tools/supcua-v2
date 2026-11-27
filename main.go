@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -68,8 +69,15 @@ func (l *lateUI) EmitTo(t bridge.Target, event string, payload any) {
 	}
 }
 
+// hwnd is the ACTIVE MODAL window: the editor while one exists, else main. Capture hooks evaluate
+// it per event from their own thread (editor-window contract §8).
 func (l *lateUI) hwnd() uintptr {
 	if u := l.p.Load(); u != nil {
+		if ed := u.Editor(); ed != nil {
+			if h := ed.HWND(); h != 0 {
+				return h
+			}
+		}
 		return u.HWND()
 	}
 	return 0
@@ -516,7 +524,14 @@ func main() {
 		},
 		Logf: log.Printf,
 	}
-	pageFailed := recovery.Failed
+	pageFailed := func(kind int32) {
+		if kind == 0 && br != nil { // browser process exit: the editor's controller died with it, clean it up first
+			if ev := br.EditorEvents(); ev != nil {
+				ev.SharedBrowserFailed()
+			}
+		}
+		recovery.Failed(kind)
+	}
 	host.OnExit = quitApp
 	host.Rebind = fixed.rebind
 
@@ -531,6 +546,12 @@ func main() {
 		UI:         late,
 		Capture:    &ui.CaptureBackend{HWND: late.hwnd},
 		Host:       host,
+		CallerRole: func(ctx context.Context) string {
+			if c, ok := rpc.CallerFrom(ctx); ok {
+				return c.Role.String()
+			}
+			return ""
+		},
 	}, late)
 
 	initialScripts := br.InitialScripts()
@@ -577,6 +598,7 @@ func main() {
 	webUI, err := webview.New(webview.Config{
 		Title:           title,
 		Methods:         methods,
+		CtxMethods:      br.CtxMethods(),
 		Roles:           rpc.NewMatrix(roleLists.Both, roleLists.MainOnly, roleLists.EditorOnly, roleLists.TransitionalMain),
 		Assets:          assets.FS(),
 		DarkTitleBar:    wantDark(appConfig.Theme),
@@ -608,7 +630,7 @@ func main() {
 			}
 		},
 		OnActivate: func(active bool) {
-			if !active {
+			if !active && !br.EditorOpen() { // while the editor owns capture, main losing focus is not a blur
 				br.NotifyBlur() // ends an active capture (contract §9.5)
 			}
 		},
@@ -623,6 +645,8 @@ func main() {
 		os.Exit(4)
 	}
 	late.p.Store(webUI)
+	edHost := &ui.EditorHost{U: webUI, Events: br.EditorEvents, Blur: br.NotifyBlur}
+	br.AttachEditorHost(edHost, nil, filepath.Join(dataDirectory, "recovered"))
 	host.UI = webUI
 	stages.Mark("webview created and shown")
 	kit.watch.Start()
@@ -728,6 +752,8 @@ func main() {
 
 	if selftest != nil {
 		selftest.UI, selftest.Tray = webUI, tray
+		selftest.Host, selftest.RecoveredDir = edHost, filepath.Join(dataDirectory, "recovered")
+		selftest.EditOpen = func() bool { return appController.Snapshot().EditDialogOpen }
 		if *prodFlag {
 			probe := model.Hotkey{Modifiers: []string{"ctrl", "alt", "shift"}, Key: "f11"}
 			go selftest.RunProduction(ui.ProductionHooks{
@@ -753,6 +779,9 @@ func main() {
 	}
 
 	log.Println("supcua-v2 exiting")
+	if selftest != nil {
+		selftest.AfterRun()
+	}
 	if res != nil {
 		os.RemoveAll(dataDirectory)
 		os.Exit(res.Finish(0))

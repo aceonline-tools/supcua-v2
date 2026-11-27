@@ -436,6 +436,9 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 		case wmDpiChanged:
 			r := (*win.RECT)(ptrFrom(lp))
 			win.SetWindowPos(hwnd, 0, r.Left, r.Top, r.Right-r.Left, r.Bottom-r.Top, win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+			if w.onDPI != nil {
+				w.onDPI()
+			}
 			return 0
 		case win.WM_CLOSE:
 			if w.role == rpc.RoleEditor {
@@ -451,6 +454,27 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 				u.Quit()
 			}
 			return 0
+		}
+		if w.role == rpc.RoleEditor {
+			switch msg {
+			case wmExitSizeMove:
+				if w.onBounds != nil {
+					w.onBounds()
+				}
+			case win.WM_ACTIVATE:
+				if w.onActivate != nil {
+					w.onActivate(uint16(wp&0xFFFF) != win.WA_INACTIVE)
+				}
+			case win.WM_GETMINMAXINFO:
+				mm := (*win.MINMAXINFO)(ptrFrom(lp))
+				aw, ah := 0, 0
+				if wk, ok := workArea(hwnd); ok {
+					aw, ah = wk.R-wk.L, wk.B-wk.T
+				}
+				mw, mh := scaledMin(windowDPI(hwnd), editorMinCssW, editorMinCssH, aw, ah)
+				mm.PtMinTrackSize.X, mm.PtMinTrackSize.Y = int32(mw), int32(mh)
+				return 0
+			}
 		}
 		if w.role == rpc.RoleMain {
 			switch msg {
@@ -476,6 +500,9 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 				return 0
 			case win.WM_SYSCOMMAND:
 				if wp&0xFFF0 == win.SC_MINIMIZE { // minimize hides to tray (ui/main_window.go:299)
+					if ed := u.editor; ed != nil && ed.hwnd != 0 {
+						win.ShowWindow(ed.hwnd, win.SW_HIDE) // the owned editor goes with its owner
+					}
 					win.ShowWindow(hwnd, win.SW_HIDE)
 					return 0
 				}

@@ -16,12 +16,13 @@ func editorURL(gen uint64) string {
 	return fmt.Sprintf("%s/%s?window=editor&gen=%d", serve.Origin, serve.Index, gen)
 }
 
-// sameDestination reports whether got is want: same scheme, host, path and exact query (no
-// fragment, userinfo or port).
+// sameDestination reports whether got is want: same scheme, host, path and exact query; no
+// fragment (an empty "#" marker included), userinfo or port (an empty ":" included).
 func sameDestination(got, want string) bool {
 	g, err1 := url.Parse(got)
 	w, err2 := url.Parse(want)
-	if err1 != nil || err2 != nil || g.User != nil || g.Opaque != "" || g.Fragment != "" || g.Port() != "" {
+	if err1 != nil || err2 != nil || g.User != nil || g.Opaque != "" || g.Fragment != "" || g.RawFragment != "" ||
+		strings.Contains(got, "#") || g.Host != g.Hostname() { // any fragment marker (even empty); any explicit port (even empty)
 		return false
 	}
 	return g.Scheme == w.Scheme && strings.EqualFold(g.Hostname(), w.Hostname()) && g.Path == w.Path && g.RawQuery == w.RawQuery
@@ -35,3 +36,6 @@ func editorNavAllowed(uri string, gen uint64, fixture bool) bool {
 	}
 	return sameDestination(uri, editorURL(gen))
 }
+
+// The editor's compact-density minimum window size in CSS px (bridge.MinCssW × MinCssH).
+const editorMinCssW, editorMinCssH = 720, 480

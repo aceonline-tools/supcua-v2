@@ -102,10 +102,10 @@ func (b *Bridge) cleanupSession(gen uint64, kind teardownKind, stage, msg string
 }
 
 func (b *Bridge) needWindow() (*windowCtl, error) {
-	if b.win == nil {
-		return nil, newErr(CodeEditorClosed)
+	if w := b.winCtl(); w != nil {
+		return w, nil
 	}
-	return b.win, nil
+	return nil, newErr(CodeEditorClosed)
 }
 
 func (b *Bridge) editorOpenWindow(p struct {
@@ -217,8 +217,8 @@ func (b *Bridge) CtxMethods() map[string]func(context.Context, json.RawMessage) 
 
 // clock is the controller's clock (real unless a test attached a fake one).
 func (b *Bridge) clock() Clock {
-	if b.win != nil {
-		return b.win.clk
+	if w := b.winCtl(); w != nil {
+		return w.clk
 	}
 	return realClock{}
 }

@@ -14,9 +14,12 @@ func TestEditorNavigationIsRestrictedToItsExactPage(t *testing.T) {
 		want bool
 	}{
 		{ok, true},
-		{editorURL(8), false},      // another generation
-		{ok + "&x=1", false},       // extra query
-		{ok + "#frag", false},      // fragment
+		{editorURL(8), false}, // another generation
+		{ok + "&x=1", false},  // extra query
+		{ok + "#frag", false}, // fragment
+		{ok + "#", false},     // empty fragment marker
+		{"https://" + serve.Host + ":/index.html?window=editor&gen=7", false}, // empty explicit port
+		{"https://" + serve.Host + ":443/index.html?window=editor&gen=7", false},
 		{o + "/index.html", false}, // the main page
 		{o + "/index.html?window=main&gen=7", false},
 		{o + "/assets/app.js", false}, // any other asset navigation

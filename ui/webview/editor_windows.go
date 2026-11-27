@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/jchv/go-webview2/pkg/edge"
 	"github.com/lxn/win"
@@ -23,13 +24,16 @@ type EditorOptions struct {
 	OnFailed       func(w *Window, err error)
 	OnProcessFail  func(w *Window, kind int32)
 	OnCloseRequest func(w *Window)
+	OnDPIChanged   func(w *Window)
+	OnBoundsDone   func(w *Window)
+	OnActivate     func(w *Window, active bool)
 }
 
 // Gen is the window generation (contract §4.6).
 func (w *Window) Gen() uint64 { return w.gen }
 
-// HWND is the native handle (0 once destroyed).
-func (w *Window) HWND() uintptr { return uintptr(w.hwnd) }
+// HWND is the native handle (0 once destroyed). Safe from any goroutine.
+func (w *Window) HWND() uintptr { return w.hw.Load() }
 
 // Editor returns the live editor window, or nil. Safe from any goroutine.
 func (u *UI) Editor() *Window { return u.editorWin.Load() }
@@ -66,6 +70,21 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 			return
 		}
 		log.Printf("webview: editor process failed (kind %d)", kind)
+	}
+	w.onDPI = func() {
+		if o.OnDPIChanged != nil && !w.preparing {
+			o.OnDPIChanged(w)
+		}
+	}
+	w.onBounds = func() {
+		if o.OnBoundsDone != nil {
+			o.OnBoundsDone(w)
+		}
+	}
+	w.onActivate = func(a bool) {
+		if o.OnActivate != nil {
+			o.OnActivate(w, a)
+		}
 	}
 	w.register()
 	u.editor = w
@@ -158,10 +177,17 @@ func (u *UI) destroyEditor(w *Window) {
 	u.retired.BlockedNavigations += w.blockedNav.Load()
 	u.retired.DeniedPopups += w.deniedWin.Load()
 	u.retiredMu.Unlock()
-	if w.browser != nil {
-		w.browser.Abandon()
+	if b := w.browser; b != nil {
+		// Close() is POSTED, never called here: it is a COM call that can block, and destroy must
+		// never wait on it. If it hangs, a dangling renderer lives until app exit (contract §4.5).
+		b.Abandon()
+		w.browser = nil
+		u.Post(func() {
+			if err := b.Close(); err != nil {
+				log.Printf("webview: editor controller close: %v", err)
+			}
+		})
 	}
-	w.closeBrowser()
 	w.unregister()
 	if w.hwnd != 0 {
 		win.DestroyWindow(w.hwnd)
@@ -174,4 +200,109 @@ func (u *UI) DestroyEditorWindow(gen uint64) {
 	if w := u.editor; w != nil && w.gen == gen {
 		u.destroyEditor(w)
 	}
+}
+
+// MonitorFacts are the target monitor's facts at its real DPI (editor-window contract §5.3).
+type MonitorFacts struct {
+	DPI                        int
+	FrameW, FrameH             int
+	WorkL, WorkT, WorkR, WorkB int
+	OwnerCX, OwnerCY           int
+}
+
+var procAdjustWindowRectExForDpi = user32.NewProc("AdjustWindowRectExForDpi")
+
+// PrepareEditorWindow positions the HIDDEN editor on the target monitor (the remembered rectangle's
+// monitor when given, else the owner's), lets its DPI settle and returns that monitor's facts:
+// DPI first, then frame and client maths (contract §5.3). UI thread only.
+func (u *UI) PrepareEditorWindow(gen uint64, remembered *[4]int) (MonitorFacts, error) {
+	w := u.editor
+	if w == nil || w.gen != gen || w.hwnd == 0 {
+		return MonitorFacts{}, errors.New("webview: no such editor window")
+	}
+	var mon win.HMONITOR
+	if remembered != nil {
+		r := win.RECT{Left: int32(remembered[0]), Top: int32(remembered[1]), Right: int32(remembered[2]), Bottom: int32(remembered[3])}
+		h, _, _ := procMonitorFromRect.Call(uintptr(unsafe.Pointer(&r)), 0)
+		mon = win.HMONITOR(h)
+	}
+	if mon == 0 {
+		mon = win.MonitorFromWindow(u.hwnd, win.MONITOR_DEFAULTTONEAREST)
+	}
+	mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
+	if mon == 0 || !win.GetMonitorInfo(mon, &mi) {
+		return MonitorFacts{}, errors.New("webview: no monitor")
+	}
+	f := MonitorFacts{WorkL: int(mi.RcWork.Left), WorkT: int(mi.RcWork.Top), WorkR: int(mi.RcWork.Right), WorkB: int(mi.RcWork.Bottom)}
+	const probeW, probeH = 400, 300
+	w.preparing = true
+	win.SetWindowPos(w.hwnd, 0, int32(f.WorkL+(f.WorkR-f.WorkL-probeW)/2), int32(f.WorkT+(f.WorkB-f.WorkT-probeH)/2), probeW, probeH,
+		win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+	w.preparing = false
+	f.DPI = windowDPI(w.hwnd)
+	var fr win.RECT
+	procAdjustWindowRectExForDpi.Call(uintptr(unsafe.Pointer(&fr)), uintptr(win.WS_OVERLAPPEDWINDOW), 0, 0, uintptr(f.DPI))
+	f.FrameW, f.FrameH = int(fr.Right-fr.Left), int(fr.Bottom-fr.Top)
+	var or win.RECT
+	if win.GetWindowRect(u.hwnd, &or) && win.IsWindowVisible(u.hwnd) && !win.IsIconic(u.hwnd) {
+		f.OwnerCX, f.OwnerCY = int(or.Left+or.Right)/2, int(or.Top+or.Bottom)/2
+	} else {
+		f.OwnerCX, f.OwnerCY = (f.WorkL+f.WorkR)/2, (f.WorkT+f.WorkB)/2
+	}
+	return f, nil
+}
+
+// PlaceEditorWindow sets the outer rectangle of the hidden editor. UI thread only.
+func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
+	if w := u.editor; w != nil && w.gen == gen && w.hwnd != 0 {
+		win.SetWindowPos(w.hwnd, 0, int32(l), int32(t), int32(r-l), int32(b-t), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+		w.wantMax = maximized
+	}
+}
+
+// ShowEditorWindow restores (iconic), shows (hidden) and activates the editor. UI thread only.
+func (u *UI) ShowEditorWindow(gen uint64) {
+	w := u.editor
+	if w == nil || w.gen != gen || w.hwnd == 0 {
+		return
+	}
+	switch {
+	case win.IsIconic(w.hwnd):
+		win.ShowWindow(w.hwnd, win.SW_RESTORE)
+	case !win.IsWindowVisible(w.hwnd) && w.wantMax && !w.shownOnce:
+		win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
+	case !win.IsWindowVisible(w.hwnd):
+		win.ShowWindow(w.hwnd, win.SW_SHOW)
+	}
+	w.shownOnce = true
+	win.SetForegroundWindow(w.hwnd)
+}
+
+// EditorWindowBounds is the restored (normal) rectangle and the maximised flag. UI thread only.
+func (u *UI) EditorWindowBounds(gen uint64) (l, t, r, b int, maximized, ok bool) {
+	w := u.editor
+	if w == nil || w.gen != gen || w.hwnd == 0 {
+		return
+	}
+	var wp win.WINDOWPLACEMENT
+	wp.Length = uint32(unsafe.Sizeof(wp))
+	if !win.GetWindowPlacement(w.hwnd, &wp) {
+		return
+	}
+	n := wp.RcNormalPosition
+	return int(n.Left), int(n.Top), int(n.Right), int(n.Bottom), wp.ShowCmd == win.SW_SHOWMAXIMIZED, true
+}
+
+// EmitEditor pushes an event to the editor window of generation gen (dropped when it is gone).
+func (u *UI) EmitEditor(gen uint64, event string, payload any) {
+	ed := u.editorWin.Load()
+	if ed == nil || ed.gen != gen {
+		return
+	}
+	b, err := rpc.EncodeEvent(event, payload)
+	if err != nil {
+		log.Printf("webview: emit %q: %v", event, err)
+		return
+	}
+	ed.postFrame(b, false)
 }

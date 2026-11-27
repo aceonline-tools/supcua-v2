@@ -244,9 +244,8 @@ func (d *Dispatcher) serve(it item) {
 		d.send(it, encode(response{ID: it.req.ID, Error: errObj(CodeStaleGen, "window superseded")}), false)
 		return
 	}
-	// TODO(E1b, editor-window §6.5): invalidate(gen) does not stop a handler that already passed
-	// this check. Commit fencing for in-flight editor calls is the bridge's per-session `closing`
-	// state + save lease; it must land with the session/watchdog milestone.
+	// A handler that already passed this check is fenced by the bridge, not here: the per-session
+	// `closing` state and the save lease (bridge/editor.go acquireSaveLease; contract §6.5).
 	out, deferred := d.run(it)
 	if deferred != nil {
 		deferred.bind(func(v any, err error) { d.send(it, d.finish(it.req, v, err), true) })

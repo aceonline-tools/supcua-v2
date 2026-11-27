@@ -39,6 +39,13 @@ type Window struct {
 	fixtureHTML     string // self-test only: served at fixturePath instead of the app
 	onProcessFailed func(kind int32)
 	onCloseRequest  func()
+	onDPI           func()         // WM_DPICHANGED on the editor
+	onBounds        func()         // end of a move/resize of the editor
+	onActivate      func(bool)     // editor (de)activated
+	hw              atomic.Uintptr // hwnd mirror readable from any goroutine (capture hooks); 0 once destroyed
+	preparing       bool           // PrepareEditorWindow is moving the hidden window: ignore DPI changes
+	wantMax         bool           // show maximised on first show
+	shownOnce       bool
 }
 
 var (
@@ -53,12 +60,14 @@ func windowOf(h win.HWND) *Window {
 }
 
 func (w *Window) register() {
+	w.hw.Store(uintptr(w.hwnd))
 	winMu.Lock()
 	winRegistry[w.hwnd] = w
 	winMu.Unlock()
 }
 
 func (w *Window) unregister() {
+	w.hw.Store(0)
 	winMu.Lock()
 	if winRegistry[w.hwnd] == w {
 		delete(winRegistry, w.hwnd)
@@ -255,3 +264,19 @@ func (w *Window) Hide() { win.ShowWindow(w.hwnd, win.SW_HIDE) }
 
 // Visible reports whether the window is shown and not minimized. UI thread only.
 func (w *Window) Visible() bool { return win.IsWindowVisible(w.hwnd) && !win.IsIconic(w.hwnd) }
+
+// Show restores and activates the main window and, when an editor window exists, restores
+// (iconic) or shows (hidden with its owner) and activates it too: the tray Show path. The editor,
+// not the disabled main window, ends up focused. UI thread only.
+func (u *UI) Show() {
+	u.Window.Show()
+	if ed := u.editor; ed != nil && ed.hwnd != 0 && ed.shownOnce {
+		ed.Show()
+	}
+}
+
+// SetMainEnabled enables or disables the main window (editor modality). UI thread only.
+func (u *UI) SetMainEnabled(enabled bool) { win.EnableWindow(u.hwnd, enabled) }
+
+// MainEnabled reports whether the main window accepts input. Safe from any goroutine.
+func (u *UI) MainEnabled() bool { return win.IsWindowEnabled(u.hwnd) }

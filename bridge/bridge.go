@@ -161,7 +161,8 @@ type Bridge struct {
 	session *editorSession
 	closed  bool
 
-	win          *windowCtl // editor window controller; nil until AttachEditorHost
+	winMu        sync.RWMutex
+	win          *windowCtl // editor window controller; nil until AttachEditorHost (read it through winCtl)
 	recoveredDir string     // where recovered drafts are written ("" disables the file)
 
 	ovMu    sync.Mutex
@@ -405,8 +406,8 @@ func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 		started = true
 		b.stopping.Store(true)
 		roles := []string{"main"}
-		if b.win != nil && b.win.active() {
-			w = b.win
+		if wc := b.winCtl(); wc != nil && wc.active() {
+			w = wc
 			roles = append(roles, "editor")
 		}
 		b.emit(EvAppClosing, appClosingEvent{DeadlineMs: deadline.Milliseconds(), Roles: roles})

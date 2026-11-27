@@ -15,7 +15,9 @@ import (
 // hook thread (webview.StartKeyCapture, one process-wide hook callback), mouse capture is
 // the 50 ms P-key poll. At most one capture is active; Stop is idempotent.
 type CaptureBackend struct {
-	// HWND returns the host window handle; keys are only captured while it is the foreground window.
+	// HWND returns the handle of the active modal window (the editor while one exists, else main);
+	// keys AND the mouse are only captured while it is the foreground window. It is evaluated per
+	// event, from the hook thread, so it must be safe from any goroutine.
 	HWND func() uintptr
 
 	mu        sync.Mutex
@@ -61,7 +63,7 @@ func (c *CaptureBackend) Start(mode bridge.CaptureMode, pick model.Hotkey, sink 
 		}
 		c.stopKey = stop
 	case bridge.CaptureMouse:
-		c.stopMouse = webview.StartMousePick(hotkey.KeyNameToVirtualKeyCode(pick.Key), sink.Mouse)
+		c.stopMouse = webview.StartMousePick(hotkey.KeyNameToVirtualKeyCode(pick.Key), webview.ForegroundIs(c.HWND), sink.Mouse)
 	}
 	return nil
 }

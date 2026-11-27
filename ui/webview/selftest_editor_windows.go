@@ -211,9 +211,9 @@ func selftestEditorSecurityFailure(u *UI, step func(string, bool, string)) bool 
 	u.onUIThread(func() {
 		good = torn && !isWindow(hwnd) && windowOf(hwnd) == nil && u.Editor() == nil && u.editorGen.Load() == 0 &&
 			w.browser == nil && w.gone.Load() && isWindow(mainHwnd) && u.browser != nil
-		detail = fmt.Sprintf("torn=%v hwndAlive=%v registered=%v editorNil=%v genCleared=%v controllerReleased=%v gone=%v mainAlive=%v",
+		detail = fmt.Sprintf("torn=%v hwndAlive=%v registered=%v editorNil=%v genCleared=%v browserCleared=%v gone=%v mainAlive=%v",
 			torn, isWindow(hwnd), windowOf(hwnd) != nil, u.Editor() == nil, u.editorGen.Load() == 0, w.browser == nil, w.gone.Load(), isWindow(mainHwnd))
 	})
-	step("security failure: native teardown still runs (HWND, registry, controller/env ref, generation)", good, detail)
+	step("security failure: native teardown still runs (HWND, registry, browser cleared, generation)", good, detail)
 	return good
 }

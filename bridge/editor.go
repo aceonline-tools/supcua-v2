@@ -36,6 +36,14 @@ func (s *editorSession) isClosing() bool { return s.closing || s.closingFlag.Loa
 func (b *Bridge) editorOpen(p struct {
 	ID *string `json:"id"`
 }) (any, error) {
+	w := b.winCtl()
+	var gen uint64 // read before b.mu: the controller's lock is taken before b.mu elsewhere
+	if w != nil { // a session opened by the editor window is for the script that window was opened for
+		if id, ok := w.pendingID(); ok {
+			p.ID = id
+		}
+		gen = w.currentGen()
+	}
 	b.sessMu.Lock()
 	defer b.sessMu.Unlock()
 	b.mu.Lock()
@@ -66,9 +74,7 @@ func (b *Bridge) editorOpen(p struct {
 		}
 	}
 	sess := &editorSession{id: uuid.New().String(), scriptID: script.ID}
-	if b.win != nil {
-		sess.gen = b.win.currentGen()
-	}
+	sess.gen = gen
 	b.session = sess
 	rev := sess.lastSavedRev
 	b.mu.Unlock()

@@ -129,7 +129,40 @@ func (b *Bridge) AttachEditorHost(h EditorHost, clk Clock, recoveredDir string) 
 		clk = realClock{}
 	}
 	b.recoveredDir = recoveredDir
+	b.winMu.Lock()
 	b.win = &windowCtl{b: b, h: h, clk: clk}
+	b.winMu.Unlock()
+}
+
+func (b *Bridge) winCtl() *windowCtl {
+	b.winMu.RLock()
+	defer b.winMu.RUnlock()
+	return b.win
+}
+
+// EditorEvents are the host's reports about the editor window (all on the UI thread).
+type EditorEvents interface {
+	WindowReady(gen uint64)
+	WindowFailed(gen uint64, stage, msg string)
+	CloseRequested(gen uint64)
+	ProcessFailed(gen uint64, kind int32)
+	DPIChanged(gen uint64)
+	BoundsChanged(gen uint64, r Rect, maximized bool)
+	SharedBrowserFailed()
+}
+
+// EditorEvents returns the controller to wire native callbacks to (nil before AttachEditorHost).
+func (b *Bridge) EditorEvents() EditorEvents {
+	if w := b.winCtl(); w != nil {
+		return w
+	}
+	return nil
+}
+
+// EditorOpen reports whether an editor window exists (any state).
+func (b *Bridge) EditorOpen() bool {
+	w := b.winCtl()
+	return w != nil && w.active()
 }
 
 func (c *windowCtl) currentGen() uint64 {
