@@ -2,8 +2,11 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // ActionType enumerates all supported script action types.
@@ -77,26 +80,44 @@ func (a Action) KeyDelay() int {
 	return *a.KeyDelayMs
 }
 
-// NormalizeKeys validates a key_press sequence and lowercases/canonically orders
-// its modifiers. It reports false when the sequence is unusable.
-func (a *Action) NormalizeKeys() bool {
+// ResolveKeys validates the key_press sequence without mutating the action and
+// returns it with canonical modifiers and key names plus the effective delay.
+// With strict, an out-of-range delay is an error; otherwise it is clamped.
+func (a Action) ResolveKeys(strict bool) ([]KeyStroke, int, error) {
 	seq := a.Sequence()
-	if len(seq) == 0 || len(seq) > MaxKeySequence {
-		return false
+	if len(seq) == 0 {
+		return nil, 0, errors.New("key_press has no keys")
 	}
-	if a.KeyDelayMs != nil && (*a.KeyDelayMs < 0 || *a.KeyDelayMs > MaxKeyDelayMs) {
-		return false
+	if len(seq) > MaxKeySequence {
+		return nil, 0, fmt.Errorf("key_press has %d keys (max %d)", len(seq), MaxKeySequence)
+	}
+	delay := a.KeyDelay()
+	if delay < 0 || delay > MaxKeyDelayMs {
+		if strict {
+			return nil, 0, fmt.Errorf("key delay %dms out of range 0-%d", delay, MaxKeyDelayMs)
+		}
+		delay = min(max(delay, 0), MaxKeyDelayMs)
 	}
 	out := make([]KeyStroke, len(seq))
 	for i, k := range seq {
-		if k.Key == "" || len(k.Key) > maxKeyNameLen || len(k.Mods) > len(KeyModifiers) {
-			return false
+		name := k.Key
+		if len(name) > maxKeyNameLen {
+			return nil, 0, errors.New("key name too long")
+		}
+		if utf8.RuneCountInString(name) > 1 {
+			name = strings.ToLower(name)
+		}
+		if !IsKnownKey(name) {
+			return nil, 0, fmt.Errorf("unknown key %q", k.Key)
+		}
+		if len(k.Mods) > len(KeyModifiers) {
+			return nil, 0, errors.New("too many modifiers")
 		}
 		seen := map[string]bool{}
 		for _, m := range k.Mods {
 			m = strings.ToLower(m)
 			if seen[m] || !slices.Contains(KeyModifiers, m) {
-				return false
+				return nil, 0, fmt.Errorf("invalid modifier %q", m)
 			}
 			seen[m] = true
 		}
@@ -106,9 +127,19 @@ func (a *Action) NormalizeKeys() bool {
 				mods = append(mods, m)
 			}
 		}
-		out[i] = KeyStroke{Key: k.Key, Mods: mods}
+		out[i] = KeyStroke{Key: name, Mods: mods}
 	}
-	a.Keys, a.Key = out, ""
+	return out, delay, nil
+}
+
+// NormalizeKeys strictly validates a key_press sequence and rewrites it in
+// canonical form. It reports false when the sequence is unusable.
+func (a *Action) NormalizeKeys() bool {
+	seq, _, err := a.ResolveKeys(true)
+	if err != nil {
+		return false
+	}
+	a.Keys, a.Key = seq, ""
 	return true
 }
 

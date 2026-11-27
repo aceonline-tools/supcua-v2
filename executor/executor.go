@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -372,11 +373,11 @@ var sleepCtx = func(ctx context.Context, d time.Duration) error {
 // between keys (not after the last). Cancellation is checked before each key and
 // interrupts every wait; whatever is held is released on any exit path.
 func (scriptExecutor *Executor) executeKeyPress(ctx context.Context, currentAction model.Action) error {
-	sequence := currentAction.Sequence()
-	if len(sequence) == 0 {
-		return fmt.Errorf("key_press has no keys")
+	sequence, delayMs, err := currentAction.ResolveKeys(false)
+	if err != nil {
+		return err
 	}
-	delay := time.Duration(currentAction.KeyDelay()) * time.Millisecond
+	delay := time.Duration(delayMs) * time.Millisecond
 	for i, stroke := range sequence {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -393,11 +394,14 @@ func (scriptExecutor *Executor) executeKeyPress(ctx context.Context, currentActi
 	return nil
 }
 
-func (scriptExecutor *Executor) pressStroke(ctx context.Context, stroke model.KeyStroke) error {
+// pressStroke holds the modifiers and key for keyPressDurationMs, then releases
+// everything in reverse. Every release is attempted even if one fails or panics;
+// release failures are returned so the action (and script) fails.
+func (scriptExecutor *Executor) pressStroke(ctx context.Context, stroke model.KeyStroke) (err error) {
 	var held []string
 	defer func() {
-		for j := len(held) - 1; j >= 0; j-- {
-			_ = scriptExecutor.inputSimulator.KeyUp(held[j])
+		if releaseErr := scriptExecutor.releaseAll(held); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
 		}
 	}()
 	for _, name := range append(append([]string(nil), stroke.Mods...), stroke.Key) {
@@ -407,4 +411,22 @@ func (scriptExecutor *Executor) pressStroke(ctx context.Context, stroke model.Ke
 		held = append(held, name)
 	}
 	return sleepCtx(ctx, time.Duration(scriptExecutor.keyPressDurationMs)*time.Millisecond)
+}
+
+func (scriptExecutor *Executor) releaseAll(held []string) error {
+	var errs []error
+	for j := len(held) - 1; j >= 0; j-- {
+		name := held[j]
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					errs = append(errs, fmt.Errorf("release %q panicked: %v", name, r))
+				}
+			}()
+			if err := scriptExecutor.inputSimulator.KeyUp(name); err != nil {
+				errs = append(errs, fmt.Errorf("release %q: %w", name, err))
+			}
+		}()
+	}
+	return errors.Join(errs...)
 }

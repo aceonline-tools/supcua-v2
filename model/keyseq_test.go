@@ -87,6 +87,9 @@ func TestNormalizeKeys(t *testing.T) {
 		"bad mod":     {Action{Type: ActionKeyPress, Keys: []KeyStroke{{Key: "a", Mods: []string{"meta"}}}}, false},
 		"dup mod":     {Action{Type: ActionKeyPress, Keys: []KeyStroke{{Key: "a", Mods: []string{"ctrl", "CTRL"}}}}, false},
 		"empty key":   {Action{Type: ActionKeyPress, Keys: []KeyStroke{{Key: ""}}}, false},
+		"unknown key": {Action{Type: ActionKeyPress, Key: "nosuchkey"}, false},
+		"single char": {Action{Type: ActionKeyPress, Key: ";"}, true},
+		"upper name":  {Action{Type: ActionKeyPress, Key: "Enter"}, true},
 		"key too big": {Action{Type: ActionKeyPress, Key: strings.Repeat("k", 33)}, false},
 	} {
 		if got := ok(c.a); got != c.want {

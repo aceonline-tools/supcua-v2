@@ -130,3 +130,70 @@ func (f *failOnKey) KeyDown(k string) error {
 	}
 	return nil
 }
+
+type upFault struct {
+	*fakeSim
+	failUp  string
+	panicUp string
+}
+
+func (f *upFault) KeyUp(k string) error {
+	f.rec("ku:" + k)
+	if k == f.panicUp {
+		panic("kaboom")
+	}
+	if k == f.failUp {
+		return errors.New("up failed")
+	}
+	return nil
+}
+
+func TestKeySeq_ReleaseErrorStopsScriptAfterReleasingAll(t *testing.T) {
+	sim := &upFault{fakeSim: &fakeSim{}, failUp: "shift"}
+	recordSleeps(t, sim.fakeSim)
+	err := NewExecutor(sim, nil, 1).Execute(context.Background(),
+		once(seqAction(intv(0), ks("a", "ctrl", "shift"), ks("b"))))
+	if err == nil {
+		t.Fatal("release failure must fail the action")
+	}
+	eq(t, strip(sim.log()), []string{"kd:ctrl", "kd:shift", "kd:a", "sleep:1ms", "ku:a", "ku:shift", "ku:ctrl"})
+}
+
+func TestKeySeq_ReleasePanicStillReleasesRest(t *testing.T) {
+	sim := &upFault{fakeSim: &fakeSim{}, panicUp: "a"}
+	recordSleeps(t, sim.fakeSim)
+	err := NewExecutor(sim, nil, 1).Execute(context.Background(),
+		once(seqAction(intv(0), ks("a", "ctrl", "alt"), ks("b"))))
+	if err == nil {
+		t.Fatal("panicking release must fail the action")
+	}
+	eq(t, strip(sim.log()), []string{"kd:ctrl", "kd:alt", "kd:a", "sleep:1ms", "ku:a", "ku:alt", "ku:ctrl"})
+}
+
+func TestKeySeq_DiskLoadedValuesAreChecked(t *testing.T) {
+	long := make([]model.KeyStroke, model.MaxKeySequence+1)
+	for i := range long {
+		long[i] = ks("a")
+	}
+	for name, a := range map[string]model.Action{
+		"too long": seqAction(nil, long...),
+		"bad mod":  seqAction(nil, ks("a", "meta")),
+		"bad key":  seqAction(nil, ks("nosuchkey")),
+	} {
+		sim := &fakeSim{}
+		if err := run(t, sim, nil, once(a)); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+		if sim.count("kd:a") != 0 {
+			t.Errorf("%s: keys pressed despite invalid sequence", name)
+		}
+	}
+	sim := &fakeSim{}
+	recordSleeps(t, sim)
+	if err := run(t, sim, nil, once(seqAction(intv(999999), ks("a"), ks("b")))); err != nil {
+		t.Fatal(err)
+	}
+	if sim.count("sleep:5s") != 1 {
+		t.Fatalf("delay not clamped to 5s: %v", sim.log())
+	}
+}
