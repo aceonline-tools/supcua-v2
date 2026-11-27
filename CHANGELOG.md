@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/aceonline-tools/supcua-v2/compare/v1.5.1...v1.5.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* log overlay status changes and drawing errors ([2d24d8d](https://github.com/aceonline-tools/supcua-v2/commit/2d24d8d578a1a65a7a2557cbf9883acd8adfefaa))
+
 ## [1.5.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.5.0...v1.5.1) (2026-11-27)
 
 
