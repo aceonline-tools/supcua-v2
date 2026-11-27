@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -37,7 +38,15 @@ type editorSession struct {
 	// I): recovery stores sealed then loads snap; a publish stores snap then loads sealed. With
 	// sequentially consistent atomics a payload is in the snapshot, or its publisher sees sealed and
 	// writes its own file (possibly both: an extra file, never a lost one).
-	sealed  atomic.Bool
+	sealed atomic.Bool
+
+	// Late payloads (published after the seal) go to ONE writer per session, coalesced to the
+	// newest revision, so a page flooding saves after close cannot spawn unbounded writers.
+	lateMu      sync.Mutex
+	lateNext    *RecoveryEnvelope // newest payload waiting for the writer
+	lateMax     uint64            // highest revision covered: the sealed snapshot, queued or written
+	lateRunning bool
+
 	savingN atomic.Int32            // saves holding the lease
 	notify  chan struct{}           // a lease was released (cap 1)
 	snap    atomic.Pointer[recSnap] // newest unsaved draft, republished under Bridge.mu on every change
@@ -54,7 +63,15 @@ type recSnap struct {
 // seal takes recovery's final snapshot and seals the session against later entry publication.
 func (s *editorSession) seal() *recSnap {
 	s.sealed.Store(true)
-	return s.snap.Load()
+	snap := s.snap.Load()
+	if snap != nil && snap.ok {
+		s.lateMu.Lock()
+		if snap.rev > s.lateMax {
+			s.lateMax = snap.rev
+		}
+		s.lateMu.Unlock()
+	}
+	return snap
 }
 
 // isClosing reports whether cleanup began.

@@ -222,18 +222,42 @@ func (b *Bridge) persistRecovery(sess *editorSession, snap *recSnap, st *atomic.
 }
 
 // lateRecoveryFile writes a payload published after its session was sealed as an extra file-only
-// recovery file (amendment I), on its own goroutine, and logs the outcome. Nothing is dropped.
+// recovery file (amendment I) and logs it. One writer goroutine per session drains the newest
+// pending payload; a payload not newer than one already covered (the sealed snapshot, or a newer
+// late payload) is superseded by it, never lost.
 func (b *Bridge) lateRecoveryFile(sess *editorSession, script model.Script, rev uint64) {
 	dir := b.recoveredDir
-	log.Printf("bridge: save payload rev %d of script %s arrived after recovery sealed the session; writing it file-only", rev, sess.scriptID)
 	if dir == "" {
+		log.Printf("bridge: save payload rev %d of script %s arrived after recovery sealed the session; no recovery dir", rev, sess.scriptID)
 		return
 	}
-	env := RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: script}
+	sess.lateMu.Lock()
+	defer sess.lateMu.Unlock()
+	if rev <= sess.lateMax {
+		return // superseded by a newer covered revision
+	}
+	sess.lateMax = rev
+	log.Printf("bridge: save payload rev %d of script %s arrived after recovery sealed the session; writing it file-only", rev, sess.scriptID)
+	sess.lateNext = &RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: script}
+	if sess.lateRunning {
+		return
+	}
+	sess.lateRunning = true
 	go func() {
-		path, err := writeRecovery(dir, env)
-		log.Printf("bridge: late-payload recovery file for script %s rev %d: path=%q err=%v", sess.scriptID, rev, path, err)
-		b.at("recover.latefile")
+		for {
+			sess.lateMu.Lock()
+			env := sess.lateNext
+			sess.lateNext = nil
+			if env == nil {
+				sess.lateRunning = false
+				sess.lateMu.Unlock()
+				return
+			}
+			sess.lateMu.Unlock()
+			path, err := writeRecovery(dir, *env)
+			log.Printf("bridge: late-payload recovery file for script %s rev %d: path=%q err=%v", env.ScriptID, env.Revision, path, err)
+			b.at("recover.latefile")
+		}
 	}()
 }
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,6 +88,9 @@ func recoveryFiles(t *testing.T, dir string) []RecoveryEnvelope {
 			continue // a temp file still being written (temp + rename)
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, en.Name()))
+		if os.IsNotExist(err) {
+			continue // pruned meanwhile
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -449,4 +453,38 @@ func TestE1bRecoveryFilesInTheSameMillisecondDoNotOverwrite(t *testing.T) {
 	if err1 != nil || err2 != nil || p1 == p2 || len(recoveryFiles(t, dir)) != 2 {
 		t.Fatalf("%q %q %v %v", p1, p2, err1, err2)
 	}
+}
+
+// A page flooding saves after recovery sealed its session gets at most one late-payload writer:
+// files stay within the per-script cap and the newest flooded revision is on disk.
+func TestE1bSealFloodOfLateSavesUsesOneCoalescingWriter(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	sid := e.sid
+	e.b.win.ProcessFailed(e.gen, 1)
+	e.waitDone(t)
+	base := runtime.NumGoroutine()
+	peak := 0
+	for i := 1; i <= 2000; i++ {
+		e.m["editor.save"](json.RawMessage(`{"sessionId":"` + sid + `","snapshotRev":` + itoa(i) + `,"script":` + scriptJSON("a", "F"+itoa(i)) + `}`))
+		if n := runtime.NumGoroutine() - base; n > peak {
+			peak = n
+		}
+	}
+	if peak > 5 {
+		t.Fatalf("late payload writers are not coalesced: +%d goroutines", peak)
+	}
+	waitFor(t, func() bool {
+		for _, f := range recoveryFiles(t, e.dir) {
+			if f.Revision == 2000 {
+				return true
+			}
+		}
+		return false
+	})
+	if n := len(recoveryFiles(t, e.dir)); n > recoveredKeep {
+		t.Fatalf("%d files", n)
+	}
+	sess := e.b.lastClosed.Load()
+	waitFor(t, func() bool { sess.lateMu.Lock(); defer sess.lateMu.Unlock(); return !sess.lateRunning })
 }
