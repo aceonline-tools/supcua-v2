@@ -141,7 +141,7 @@ func RunNoRuntimeSelftest(r *Result, timeout time.Duration) int {
 	r.Message = msg
 	r.Step("message contains Evergreen installer link", strings.Contains(msg, RuntimeInstallerURL), RuntimeInstallerURL)
 
-	hwnd, err := createHostWindow("noruntime", Bounds{}, false, 0, 0, nil)
+	hwnd, err := createHostWindow("noruntime", Bounds{}, false, 0, 0, nil, 0)
 	if err != nil {
 		r.Step("host window", false, err.Error())
 		return r.Finish(1)

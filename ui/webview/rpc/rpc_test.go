@@ -22,13 +22,23 @@ func (codedErr) Error() string        { return "x" }
 func (codedErr) ErrorCode() string    { return "NAME_TAKEN" }
 func (codedErr) ErrorMessage() string { return "taken" }
 
-func newStarted(t *testing.T, m map[string]Handler, q int) (*Dispatcher, chan string) {
+var mainCaller = Caller{Role: RoleMain, Gen: 1}
+
+// td submits as the main window into one sink, so the single-sink tests read as before.
+type td struct {
+	*Dispatcher
+	sink Reply
+}
+
+func (d td) Submit(raw string) { d.Dispatcher.Submit(raw, mainCaller, d.sink) }
+
+func newStarted(t *testing.T, m map[string]Handler, q int) (td, chan string) {
 	t.Helper()
 	out := make(chan string, 256)
 	d := New(m, q)
-	d.Start(func(b []byte) { out <- string(b) })
+	d.Start()
 	t.Cleanup(d.Close)
-	return d, out
+	return td{d, func(b []byte) { out <- string(b) }}, out
 }
 
 func next(t *testing.T, ch chan string) string {
@@ -127,10 +137,10 @@ func TestBusyWhenQueueFull(t *testing.T) {
 
 func TestCloseIsIdempotentAndSubmitAfterCloseDoesNotPanic(t *testing.T) {
 	d := New(map[string]Handler{}, 0)
-	d.Start(func([]byte) {})
+	d.Start()
 	d.Close()
 	d.Close()
-	d.Submit(`{"id":1,"method":"x"}`)
+	d.Submit(`{"id":1,"method":"x"}`, mainCaller, func([]byte) { t.Error("reply after Close") })
 }
 
 func TestWireFrames(t *testing.T) {

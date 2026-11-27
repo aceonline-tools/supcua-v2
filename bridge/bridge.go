@@ -209,10 +209,19 @@ func (b *Bridge) at(stage string) {
 	}
 }
 
-func (b *Bridge) emit(event string, payload any) {
-	if b.emitter != nil {
-		b.emitter.Emit(event, payload)
+func (b *Bridge) emit(event string, payload any) { b.emitTo(TargetFor(event), event, payload) }
+
+// emitTo routes an event to the main window, the editor window or both. A single-window emitter
+// receives everything (the in-main editor route lives until E2).
+func (b *Bridge) emitTo(t Target, event string, payload any) {
+	if b.emitter == nil {
+		return
 	}
+	if te, ok := b.emitter.(TargetEmitter); ok {
+		te.EmitTo(t, event, payload)
+		return
+	}
+	b.emitter.Emit(event, payload)
 }
 
 func (b *Bridge) post(fn func()) {

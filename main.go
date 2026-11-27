@@ -30,6 +30,7 @@ import (
 	"github.com/yanmad27/supcua-v2/ui"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 	"github.com/yanmad27/supcua-v2/ui/webview/assets"
+	"github.com/yanmad27/supcua-v2/ui/webview/rpc"
 	"github.com/yanmad27/supcua-v2/updater"
 	"github.com/yanmad27/supcua-v2/version"
 )
@@ -53,6 +54,17 @@ func (l *lateUI) Emit(event string, payload any) {
 	}
 	if u := l.p.Load(); u != nil {
 		u.Emit(event, payload)
+	}
+}
+
+// EmitTo implements bridge.TargetEmitter: events are routed to the main window, the editor window
+// or both (editor-window contract §2.4).
+func (l *lateUI) EmitTo(t bridge.Target, event string, payload any) {
+	if st, ok := payload.(bridge.StateDTO); ok && l.onTheme != nil {
+		l.onTheme(st.Theme)
+	}
+	if u := l.p.Load(); u != nil {
+		u.EmitToWindows(t != bridge.TargetEditor, t != bridge.TargetMain, event, payload)
 	}
 }
 
@@ -561,9 +573,11 @@ func main() {
 	pos := appConfig.MainWindowPos
 	var navLogged sync.Once
 	stages.Mark("creating webview")
+	roleLists := bridge.Roles()
 	webUI, err := webview.New(webview.Config{
 		Title:           title,
 		Methods:         methods,
+		Roles:           rpc.NewMatrix(roleLists.Both, roleLists.MainOnly, roleLists.EditorOnly, roleLists.TransitionalMain),
 		Assets:          assets.FS(),
 		DarkTitleBar:    wantDark(appConfig.Theme),
 		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},

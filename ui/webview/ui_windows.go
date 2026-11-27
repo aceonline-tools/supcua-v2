@@ -37,7 +37,9 @@ type Bounds struct{ X, Y, W, H int }
 type Config struct {
 	Title          string
 	Methods        map[string]rpc.Handler
-	Assets         fs.FS // frontend root served at https://app.local/
+	CtxMethods     map[string]rpc.HandlerCtx // handlers that need the caller identity (rpc.CallerFrom)
+	Roles          *rpc.Matrix               // role matrix; nil = no policy
+	Assets         fs.FS                     // frontend root served at https://app.local/
 	DataDir        string
 	Debug          bool // DevTools, context menu and browser accelerators on
 	DarkTitleBar   bool
@@ -66,24 +68,32 @@ type Config struct {
 }
 
 // UI is the single WebView2 host of the process. All methods are UI-thread only unless noted.
+//
+// UI is the process host: it owns the hwnd→Window registry, the shared WebView2 environment, the
+// ONE serial rpc.Dispatcher and the optional editor window. The embedded *Window is the main
+// window, so its hwnd/browser/nav stay reachable as u.hwnd, u.browser, u.nav.
 type UI struct {
+	*Window
 	cfg      Config
 	mw       *walk.MainWindow
-	hwnd     win.HWND
-	browser  *edge.Chromium
 	disp     *rpc.Dispatcher
 	server   *serve.Server
 	threadID uint32
+	dataPath string
 
 	closed     atomic.Bool
-	nav        navGate // UI thread only
 	loadedOnce sync.Once
 	loaded     chan struct{}
-	blockedNav atomic.Int64
-	deniedWin  atomic.Int64
+
+	editor    *Window // UI thread only; nil when no editor window exists
+	editorWin atomic.Pointer[Window]
+	editorGen atomic.Uint64 // generation of the live editor, 0 when none (dispatcher validity check)
+	genSeq    atomic.Uint64
+	retired   Stats // counters of destroyed editor windows
+	retiredMu sync.Mutex
 }
 
-var current atomic.Pointer[UI]
+var hostActive atomic.Bool // one host per process
 
 // New builds the hidden walk pump owner, the host window and the WebView2 controller, and
 // navigates to https://app.local/index.html. Call on the main goroutine before Run.
@@ -92,7 +102,8 @@ func New(cfg Config) (*UI, error) {
 		return nil, errors.New("webview: Assets and Methods are required")
 	}
 	u := &UI{cfg: cfg, loaded: make(chan struct{}), server: &serve.Server{FS: cfg.Assets, Logf: log.Printf}, threadID: win.GetCurrentThreadId()}
-	if !current.CompareAndSwap(nil, u) {
+	u.Window = &Window{host: u, role: rpc.RoleMain, gen: u.genSeq.Add(1)}
+	if !hostActive.CompareAndSwap(false, true) {
 		return nil, errors.New("webview: only one UI per process")
 	}
 	ok := false
@@ -102,7 +113,7 @@ func New(cfg Config) (*UI, error) {
 			if u.mw != nil {
 				u.mw.Dispose()
 			}
-			current.Store(nil)
+			hostActive.Store(false)
 		}
 	}()
 
@@ -110,29 +121,27 @@ func New(cfg Config) (*UI, error) {
 	if u.mw, err = walk.NewMainWindow(); err != nil { // hidden: message owner for tray + Synchronize
 		return nil, fmt.Errorf("webview: pump window: %w", err)
 	}
-	if u.hwnd, err = createHostWindow(cfg.Title, cfg.Initial, cfg.ResetSize, cfg.MinW, cfg.MinH, cfg.IconIDs); err != nil {
+	if u.hwnd, err = createHostWindow(cfg.Title, cfg.Initial, cfg.ResetSize, cfg.MinW, cfg.MinH, cfg.IconIDs, 0); err != nil {
 		return nil, err
 	}
+	u.register()
 	if cfg.DarkTitleBar {
 		_ = ApplyDarkTitleBar(uintptr(u.hwnd), true)
 	}
 
 	u.disp = rpc.New(cfg.Methods, cfg.QueueSize)
-	b := edge.NewChromium()
-	b.DataPath = cfg.DataDir
-	if b.DataPath == "" {
-		b.DataPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "supcua-v2", "webview2")
+	for name, h := range cfg.CtxMethods {
+		u.disp.HandleCtx(name, h)
 	}
-	b.MessageCallback = u.disp.Submit // enqueue only
-	b.NavigationStartingCallback = u.allowNavigation
-	b.FatalCallback = func(err error) {
-		if cfg.OnFatal != nil {
-			cfg.OnFatal(err) // first: arms the exit watchdog before any step that could hang
-		}
-		log.Printf("webview: security handler failed: %v", err)
-		u.Quarantine() // synchronous: no further page input reaches the backend, the page is gone
+	if cfg.Roles != nil {
+		u.disp.Authorize(func(c rpc.Caller, method string) bool { return cfg.Roles.Allow(c.Role, method) })
 	}
-	b.NewWindowDeniedCallback = func(string) { u.deniedWin.Add(1) }
+	u.disp.Validate(u.callerCurrent)
+	u.dataPath = cfg.DataDir
+	if u.dataPath == "" {
+		u.dataPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "supcua-v2", "webview2")
+	}
+	b := u.newBrowser(u.dataPath)
 	b.ProcessFailedCallback = func(kind int32) {
 		if cfg.OnProcessFailed != nil {
 			cfg.OnProcessFailed(kind)
@@ -147,7 +156,6 @@ func New(cfg Config) (*UI, error) {
 		}
 		log.Printf("webview: auxiliary process failed (kind %d)", kind)
 	}
-	b.WebResourceRequestedCallback = u.serveRequest
 	b.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		success, status := args.NavigationResult()
 		if !success {
@@ -164,7 +172,6 @@ func New(cfg Config) (*UI, error) {
 			}
 		})
 	}
-	b.SetGlobalPermission(edge.CoreWebView2PermissionStateDeny)
 	u.browser = b
 
 	timeout := cfg.StartupTimeout
@@ -187,21 +194,11 @@ func New(cfg Config) (*UI, error) {
 		return nil, fmt.Errorf("webview startup: %w", err)
 	}
 	// Fail closed: a host whose protections could not all be applied is never shown.
-	if err = b.Lockdown(cfg.Debug); err != nil {
-		return nil, fmt.Errorf("webview lockdown: %w", err)
+	if err = u.finishBrowser(cfg.Debug, bgR, bgG, bgB); err != nil {
+		return nil, err
 	}
-	if err := b.SetDefaultBackground(bgR, bgG, bgB); err != nil {
-		log.Printf("webview: default background: %v", err)
-	}
-	if err = b.AddResourceFilter(serve.Filter); err != nil {
-		return nil, fmt.Errorf("webview resource filter: %w", err)
-	}
-	if err = b.AddDocumentCreatedScript(rpc.BootstrapJS); err != nil {
-		return nil, fmt.Errorf("webview bootstrap: %w", err)
-	}
-	b.Resize()
 
-	u.disp.Start(func(resp []byte) { u.postFrame(rpc.EncodeResolve(resp)) })
+	u.disp.Start()
 	if err = b.NavigateChecked(serve.Origin + "/" + serve.Index); err != nil {
 		return nil, fmt.Errorf("webview navigate: %w", err)
 	}
@@ -210,29 +207,6 @@ func New(cfg Config) (*UI, error) {
 	}
 	ok = true
 	return u, nil
-}
-
-// serveRequest answers https://app.local/* from the embedded assets (UI thread, COM event).
-func (u *UI) serveRequest(req *edge.ICoreWebView2WebResourceRequest, args *edge.ICoreWebView2WebResourceRequestedEventArgs) {
-	uri, method, err := req.RequestInfo()
-	if err != nil {
-		return
-	}
-	r := u.server.Handle(method, uri)
-	if u.browser == nil {
-		return
-	}
-	if err := u.browser.Respond(args, r.Status, r.Reason, r.Header, r.Body); err != nil {
-		log.Printf("webview: respond %q: %v", uri, err)
-	}
-}
-
-func (u *UI) allowNavigation(uri string) bool {
-	if u.nav.allow(serve.AllowNavigation(uri)) {
-		return true
-	}
-	u.blockedNav.Add(1)
-	return false
 }
 
 // EnqueueRPCJob runs job on the RPC worker strictly after every page call already queued or in
@@ -251,23 +225,17 @@ func (u *UI) Quarantine() {
 		return
 	}
 	u.nav.quarantined = true
+	u.gone.Store(true)
 	if u.disp != nil {
 		u.disp.Close()
+	}
+	if u.editor != nil {
+		u.destroyEditor(u.editor)
 	}
 	if u.hwnd != 0 {
 		win.ShowWindow(u.hwnd, win.SW_HIDE)
 	}
 	u.closeBrowser()
-}
-
-func (u *UI) closeBrowser() {
-	if u.browser == nil {
-		return
-	}
-	if err := u.browser.Close(); err != nil {
-		log.Printf("webview: controller close: %v", err)
-	}
-	u.browser = nil
 }
 
 // Reload reloads the app page: the only post-load navigation the host permits. UI thread only;
@@ -308,25 +276,28 @@ func (u *UI) Post(f func()) {
 }
 
 // Emit pushes an event to the page. Safe from any goroutine; non-blocking.
-func (u *UI) Emit(event string, payload any) {
+func (u *UI) Emit(event string, payload any) { u.EmitToWindows(true, false, event, payload) }
+
+// EmitToWindows pushes an event to the main window and/or the editor window. An editor-only
+// event while no editor window exists goes to main: the in-main editor route (removed in E2)
+// still hosts the editor, and its capture/reset events must keep reaching it. Safe from any
+// goroutine; non-blocking.
+func (u *UI) EmitToWindows(toMain, toEditor bool, event string, payload any) {
 	b, err := rpc.EncodeEvent(event, payload)
 	if err != nil {
 		log.Printf("webview: emit %q: %v", event, err)
 		return
 	}
-	u.postFrame(b)
-}
-
-func (u *UI) postFrame(frame []byte) {
-	s := string(frame)
-	u.Post(func() {
-		if u.browser == nil {
-			return
-		}
-		if err := u.browser.PostWebMessageAsJSON(s); err != nil {
-			log.Printf("webview: post: %v", err)
-		}
-	})
+	ed := u.editorWin.Load()
+	if toEditor && ed == nil && !toMain {
+		toMain = true
+	}
+	if toMain {
+		u.postFrame(b, false)
+	}
+	if toEditor && ed != nil {
+		ed.postFrame(b, false)
+	}
 }
 
 // Eval runs a script in the page (self-test driver only; production traffic uses Emit).
@@ -399,11 +370,16 @@ func (u *UI) RequestQuit() {
 
 func (u *UI) teardown() {
 	u.closed.Store(true)
+	u.gone.Store(true)
 	if u.disp != nil {
 		u.disp.Close() // non-blocking: a handler may be waiting for this very thread
 	}
+	if u.editor != nil {
+		u.destroyEditor(u.editor) // the owned window goes before its owner
+	}
 	u.closeBrowser()
 	if u.hwnd != 0 {
+		u.unregister()
 		win.DestroyWindow(u.hwnd)
 		u.hwnd = 0
 	}
@@ -412,7 +388,18 @@ func (u *UI) teardown() {
 // Stats are counters for self-tests.
 type Stats struct{ BlockedNavigations, DeniedPopups int64 }
 
-func (u *UI) Stats() Stats { return Stats{u.blockedNav.Load(), u.deniedWin.Load()} }
+func (u *UI) Stats() Stats {
+	s := Stats{u.blockedNav.Load(), u.deniedWin.Load()}
+	if ed := u.editorWin.Load(); ed != nil {
+		s.BlockedNavigations += ed.blockedNav.Load()
+		s.DeniedPopups += ed.deniedWin.Load()
+	}
+	u.retiredMu.Lock()
+	s.BlockedNavigations += u.retired.BlockedNavigations
+	s.DeniedPopups += u.retired.DeniedPopups
+	u.retiredMu.Unlock()
+	return s
+}
 
 // ProbeNavigationLock navigates to a foreign origin and reports whether the lock cancelled
 // it within timeout. Self-test only.
@@ -447,62 +434,76 @@ const (
 )
 
 func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
-	u := current.Load()
-	if u != nil && !u.closed.Load() && u.browser != nil {
+	w := windowOf(hwnd)
+	if w != nil && !w.host.closed.Load() && !w.gone.Load() && w.browser != nil {
+		u := w.host
 		switch msg {
 		case win.WM_SIZE:
-			u.browser.Resize()
+			w.browser.Resize()
 		case win.WM_SHOWWINDOW:
 			if wp != 0 {
-				u.presentSurface("shown")
+				w.presentSurface("shown")
 			}
 		case win.WM_MOVE, win.WM_MOVING:
-			_ = u.browser.NotifyParentWindowPositionChanged()
+			_ = w.browser.NotifyParentWindowPositionChanged()
 		case win.WM_SETFOCUS:
-			u.browser.Focus()
-		case win.WM_ACTIVATE:
-			if u.cfg.OnActivate != nil {
-				u.cfg.OnActivate(uint16(wp&0xFFFF) != win.WA_INACTIVE)
-			}
-		case wmExitSizeMove:
-			u.reportBounds()
+			w.browser.Focus()
 		case wmDpiChanged:
 			r := (*win.RECT)(ptrFrom(lp))
 			win.SetWindowPos(hwnd, 0, r.Left, r.Top, r.Right-r.Left, r.Bottom-r.Top, win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 			return 0
-		case win.WM_GETMINMAXINFO:
-			mm := (*win.MINMAXINFO)(ptrFrom(lp))
-			aw, ah := 0, 0
-			if wk, ok := workArea(hwnd); ok {
-				aw, ah = wk.R-wk.L, wk.B-wk.T
-			}
-			mw, mh := scaledMin(windowDPI(hwnd), u.cfg.MinW, u.cfg.MinH, aw, ah)
-			if u.cfg.MinW > 0 {
-				mm.PtMinTrackSize.X = int32(mw)
-			}
-			if u.cfg.MinH > 0 {
-				mm.PtMinTrackSize.Y = int32(mh)
-			}
-			return 0
-		case win.WM_SYSCOMMAND:
-			if wp&0xFFF0 == win.SC_MINIMIZE { // minimize hides to tray (ui/main_window.go:299)
-				win.ShowWindow(hwnd, win.SW_HIDE)
+		case win.WM_CLOSE:
+			if w.role == rpc.RoleEditor {
+				// The editor is never destroyed by X/Alt-F4: the owner decides (contract §4.3).
+				if w.onCloseRequest != nil {
+					w.onCloseRequest()
+				}
 				return 0
 			}
-		case win.WM_CLOSE: // X exits for real (ui/main_window.go:308)
-			if u.cfg.OnClose != nil {
+			if u.cfg.OnClose != nil { // X exits for real (ui/main_window.go:308)
 				u.cfg.OnClose()
 			} else {
 				u.Quit()
 			}
 			return 0
 		}
+		if w.role == rpc.RoleMain {
+			switch msg {
+			case win.WM_ACTIVATE:
+				if u.cfg.OnActivate != nil {
+					u.cfg.OnActivate(uint16(wp&0xFFFF) != win.WA_INACTIVE)
+				}
+			case wmExitSizeMove:
+				u.reportBounds()
+			case win.WM_GETMINMAXINFO:
+				mm := (*win.MINMAXINFO)(ptrFrom(lp))
+				aw, ah := 0, 0
+				if wk, ok := workArea(hwnd); ok {
+					aw, ah = wk.R-wk.L, wk.B-wk.T
+				}
+				mw, mh := scaledMin(windowDPI(hwnd), u.cfg.MinW, u.cfg.MinH, aw, ah)
+				if u.cfg.MinW > 0 {
+					mm.PtMinTrackSize.X = int32(mw)
+				}
+				if u.cfg.MinH > 0 {
+					mm.PtMinTrackSize.Y = int32(mh)
+				}
+				return 0
+			case win.WM_SYSCOMMAND:
+				if wp&0xFFF0 == win.SC_MINIMIZE { // minimize hides to tray (ui/main_window.go:299)
+					win.ShowWindow(hwnd, win.SW_HIDE)
+					return 0
+				}
+			}
+		}
 	}
 	return win.DefWindowProc(hwnd, msg, wp, lp)
 }
 
 // createHostWindow registers the class once and creates a native-frame top-level window.
-func createHostWindow(title string, b Bounds, resetSize bool, minW, minH int, iconIDs []int) (win.HWND, error) {
+// A non-zero owner makes an owned window (stays above its owner, minimises with it, no taskbar
+// button); it is created hidden either way.
+func createHostWindow(title string, b Bounds, resetSize bool, minW, minH int, iconIDs []int, owner win.HWND) (win.HWND, error) {
 	inst := win.GetModuleHandle(nil)
 	hostClassOnce.Do(func() {
 		hostClassName, _ = syscall.UTF16PtrFromString("supcua_webview_host")
@@ -541,7 +542,7 @@ func createHostWindow(title string, b Bounds, resetSize bool, minW, minH int, ic
 		}
 	}
 	t, _ := syscall.UTF16PtrFromString(title)
-	hwnd := win.CreateWindowEx(0, hostClassName, t, win.WS_OVERLAPPEDWINDOW, x, y, w, h, 0, 0, inst, nil)
+	hwnd := win.CreateWindowEx(0, hostClassName, t, win.WS_OVERLAPPEDWINDOW, x, y, w, h, owner, 0, inst, nil)
 	if hwnd == 0 {
 		return 0, errors.New("webview: create host window failed")
 	}
@@ -598,29 +599,3 @@ func onSomeMonitor(r *win.RECT) bool {
 }
 
 var procGetDpiForWindow = user32.NewProc("GetDpiForWindow")
-
-// presentSurface makes the controller present after the host window is shown: the controller
-// is created while the host is still hidden and must be told to present once it is visible,
-// otherwise the client area keeps the WebView2 default (white) background. It logs the
-// controller's own IsVisible/Bounds next to the host client rect so a blank window is
-// diagnosable from the log. UI thread only.
-func (u *UI) presentSurface(reason string) {
-	b := u.browser
-	if b == nil {
-		return
-	}
-	if err := b.Reassert(); err != nil {
-		log.Printf("webview: surface %s: reassert failed: %v", reason, err)
-	}
-	var cr win.RECT
-	win.GetClientRect(u.hwnd, &cr)
-	dpi, _, _ := procGetDpiForWindow.Call(uintptr(u.hwnd))
-	st, err := b.Surface()
-	if err != nil {
-		log.Printf("webview: surface %s: state unavailable: %v", reason, err)
-		return
-	}
-	log.Printf("webview: surface %s: client=%dx%d controller=%dx%d@(%d,%d) visible=%v hostVisible=%v dpi=%d",
-		reason, cr.Right-cr.Left, cr.Bottom-cr.Top, st.Bounds.Right-st.Bounds.Left, st.Bounds.Bottom-st.Bounds.Top,
-		st.Bounds.Left, st.Bounds.Top, st.Visible, win.IsWindowVisible(u.hwnd), dpi)
-}

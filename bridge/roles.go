@@ -1,0 +1,41 @@
+package bridge
+
+// RoleLists classifies every method for the role matrix (editor-window contract §3.2). The host
+// builds its matrix from these lists; the editor window is default-deny, so a method missing from
+// Both and EditorOnly is unreachable from it.
+//
+//	Both       callable by the main and the editor window
+//	MainOnly   main window only
+//	EditorOnly editor window only (a main-side call is FORBIDDEN_ROLE, except TransitionalMain)
+//
+// TransitionalMain are EditorOnly methods main may still call because the in-main editor route
+// lives until E2 removes it; E2 deletes this list.
+type RoleLists struct {
+	Both, MainOnly, EditorOnly, TransitionalMain []string
+}
+
+// Roles returns the method classification. Names for methods that do not exist yet (E1b) are
+// listed so their registration needs no matrix change.
+func Roles() RoleLists {
+	legacyEditor := []string{
+		"editor.open", "editor.save", "editor.close", "editor.describeActions", "editor.toJSON", "editor.fromJSON",
+		"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.mouse.stop", "capture.stop",
+	}
+	return RoleLists{
+		Both: []string{
+			"app.getBootState", "app.ready", "state.get", "actions.catalog", "clipboard.write", "settings.get", "app.closingReady",
+		},
+		MainOnly: []string{
+			"app.setGlobalActive", "app.exit", "window.hide", "window.show", "window.reportBounds",
+			"scripts.list", "scripts.get", "scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed",
+			"scripts.clone", "scripts.delete", "scripts.retrySave",
+			"settings.update", "settings.setSidebarCollapsed",
+			"overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip",
+			"editor.openWindow",
+		},
+		EditorOnly: append([]string{
+			"editor.windowReady", "editor.measured", "editor.measureAck", "editor.checkpoint", "editor.guardActive", "editor.closeDecision",
+		}, legacyEditor...),
+		TransitionalMain: legacyEditor,
+	}
+}

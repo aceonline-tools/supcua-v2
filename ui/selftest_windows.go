@@ -213,6 +213,7 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 	}
 
 	s.overlayVisual(res)
+	webview.SelftestEditorWindow(s.UI, res)
 
 	trayDone := make(chan bool, 1)
 	post(func() {

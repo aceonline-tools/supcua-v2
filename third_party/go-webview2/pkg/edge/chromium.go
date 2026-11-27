@@ -60,6 +60,10 @@ type Chromium struct {
 	ProcessFailedCallback func(kind int32)
 	// PATCH: popups are always denied; this only observes.
 	NewWindowDeniedCallback func(uri string)
+	// PATCH: runs once, on the UI thread inside a WebView2 completion callback, when controller
+	// creation finished (err == nil) or failed. Post work from it, never block. Used by the
+	// non-blocking EmbedFromEnvironment.
+	InitDoneCallback func(err error)
 }
 
 func NewChromium() *Chromium {
@@ -219,7 +223,7 @@ func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environme
 	}
 	if int32(res) < 0 { // PATCH: no log.Fatalf
 		e.initErr = fmt.Errorf("creating environment failed: HRESULT 0x%08X", uint32(res))
-		atomic.StoreUintptr(&e.inited, 1)
+		e.markInited()
 		return 0
 	}
 	_, _, _ = env.vtbl.AddRef.Call(uintptr(unsafe.Pointer(env)))
@@ -232,7 +236,7 @@ func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environme
 	)
 	if int32(r) < 0 {
 		e.initErr = fmt.Errorf("CreateCoreWebView2Controller: HRESULT 0x%08X", uint32(r))
-		atomic.StoreUintptr(&e.inited, 1)
+		e.markInited()
 	}
 	return 0
 }
@@ -246,7 +250,7 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 	}
 	if int32(res) < 0 { // PATCH: no log.Fatalf
 		e.initErr = fmt.Errorf("creating controller failed: HRESULT 0x%08X", uint32(res))
-		atomic.StoreUintptr(&e.inited, 1)
+		e.markInited()
 		return 0
 	}
 	_, _, _ = controller.vtbl.AddRef.Call(uintptr(unsafe.Pointer(controller)))
@@ -259,7 +263,7 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 			return false
 		}
 		e.initErr = fmt.Errorf("%s: HRESULT 0x%08X", op, uint32(r))
-		atomic.StoreUintptr(&e.inited, 1)
+		e.markInited()
 		return true
 	}
 	r, _, _ := controller.vtbl.GetCoreWebView2.Call(
@@ -269,7 +273,7 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 	if fail("get_CoreWebView2", r) || e.webview == nil {
 		if e.initErr == nil {
 			e.initErr = errors.New("get_CoreWebView2 returned no webview")
-			atomic.StoreUintptr(&e.inited, 1)
+			e.markInited()
 		}
 		return 0
 	}
@@ -295,7 +299,7 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 		return 0
 	}
 
-	atomic.StoreUintptr(&e.inited, 1)
+	e.markInited()
 
 	if e.focusOnInit {
 		e.Focus()
