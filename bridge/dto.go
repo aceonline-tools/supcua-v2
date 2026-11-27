@@ -133,6 +133,8 @@ type EditorSession struct {
 	Script    model.Script `json:"script"`
 	Catalog   []ActionSpec `json:"catalog"`
 	Revision  uint64       `json:"revision,omitempty"` // the session's revision at open (editor-window contract §6.1)
+	IsNew     bool         `json:"isNew,omitempty"`    // the host created this script for the session (New, not Edit)
+	Groups    []string     `json:"groups"`             // existing group names, ordered like the Scripts list
 }
 
 // Events are emitted through Emitter with these names (contract §9.2).

@@ -834,3 +834,19 @@ func TestInitialScriptsOKFalseWhenTheStartupListingFailed(t *testing.T) {
 		t.Fatal("successful listing must be reported ok")
 	}
 }
+
+func TestEditorOpenReportsIsNewAndSortedGroups(t *testing.T) {
+	r := newRig(t, script("s1", "Alpha", "zeta", true), script("s2", "Beta", "Alpha", true), script("s3", "Gamma", "zeta", true), script("s4", "Delta", "", true))
+	res := r.mustCall(t, "editor.open", `{"id":"s1"}`)
+	if res["isNew"] != nil && res["isNew"] != false {
+		t.Errorf("edit session isNew = %v", res["isNew"])
+	}
+	if g := fmt.Sprint(res["groups"]); g != "[Alpha zeta]" {
+		t.Errorf("groups = %s", g)
+	}
+	r.mustCall(t, "editor.close", `{"sessionId":"`+res["sessionId"].(string)+`","autosave":false}`)
+	res = r.mustCall(t, "editor.open", `{"id":null}`)
+	if res["isNew"] != true {
+		t.Errorf("new session isNew = %v", res["isNew"])
+	}
+}

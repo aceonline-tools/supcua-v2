@@ -1,6 +1,8 @@
 # Editor window — design contract (v1.6.0)
 
-Status: **contract rev 3 (E1a.1)**, revised after reviews of ff96774 and ccb9008. Frozen once the Lead accepts it; later changes need a REOPEN.
+Status: **contract rev 3.3 (E1a.1)**, revised after reviews of ff96774 and ccb9008. Frozen once the Lead accepts it; later changes need a REOPEN.
+> **Changelog — rev 3.3 (E2).** §3.1 `editor.open` gains two additive `EditorSession` fields, `isNew:boolean` (host created the script: New vs Edit title) and `groups:string[]` (existing group names for the combobox; `scripts.list` stays forbidden for the editor); `TransitionalMain` is emptied now that the in-main editor route is gone (main can call no editor-only method).
+>
 > **Changelog — rev 3.2 (E1b review of 5c451dd).** §6.5 adds amendment I (sealed final snapshot; a late publish becomes its own file-only recovery file), J (one admission lock for "a newer generation opened this script" and recovery's enqueue), the late-file handshake, and the note that deadlines bound cleanup, not abandoned workers. §6.3 recovery file names gain the revision and a collision suffix.
 >
 > **Changelog — rev 3.1 (E1b repair, Lead-authorized amendments A–H).** §6.2/§6.5 recovery persistence is a store compare-and-swap (A) with a bounded enqueue deadline (B) and an asynchronous recovery file (C); saves publish their payload as a draft at entry (D); teardown detaches the session before the native state changes (E); cleanups own unique tokens (F); cleanup steps are bounded or asynchronous (G); §7 documents the explicit, logged shutdown escape (H). "Nothing writes after D2" is withdrawn: nothing is **enqueued** after D2.

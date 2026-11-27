@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,6 +125,7 @@ func (b *Bridge) editorOpen(p struct {
 	ID *string `json:"id"`
 }) (any, error) {
 	w := b.winCtl()
+	isNew := p.ID == nil
 	var gen uint64 // read before b.mu: the controller's lock is taken before b.mu elsewhere
 	if w != nil {  // a session opened by the editor window is for the script that window was opened for
 		if id, ok := w.pendingID(); ok {
@@ -167,11 +169,26 @@ func (b *Bridge) editorOpen(p struct {
 	}
 	b.setSessionLocked(sess)
 	rev := sess.lastSavedRev
+	groups := b.groupNamesLocked()
 	b.mu.Unlock()
 
 	// An editor window raised the gate at creation start; the legacy route raises it here.
 	b.d.Controller.SetEditDialogOpen(true)
-	return EditorSession{SessionID: sess.id, Script: script, Catalog: buildCatalog(), Revision: rev}, nil
+	return EditorSession{SessionID: sess.id, Script: script, Catalog: buildCatalog(), Revision: rev, IsNew: isNew, Groups: groups}, nil
+}
+
+// groupNamesLocked lists the distinct non-empty group names in the Scripts list order (case-insensitive).
+func (b *Bridge) groupNamesLocked() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, s := range b.scripts {
+		if s.Group != "" && !seen[s.Group] {
+			seen[s.Group] = true
+			out = append(out, s.Group)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
+	return out
 }
 
 func (b *Bridge) requireSession(id string) (*editorSession, error) {

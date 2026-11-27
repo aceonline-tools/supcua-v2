@@ -20,10 +20,8 @@ func TestEveryRegisteredMethodIsClassifiedOnce(t *testing.T) {
 			t.Errorf("registered method %s has no role classification", n)
 		}
 	}
-	for _, n := range r.TransitionalMain {
-		if class[n] != "editor" {
-			t.Errorf("transitional %s must be editor-only, is %q", n, class[n])
-		}
+	if len(r.TransitionalMain) != 0 {
+		t.Errorf("TransitionalMain must be empty after E2, is %v", r.TransitionalMain)
 	}
 }
 

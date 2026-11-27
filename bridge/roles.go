@@ -6,10 +6,9 @@ package bridge
 //
 //	Both       callable by the main and the editor window
 //	MainOnly   main window only
-//	EditorOnly editor window only (a main-side call is FORBIDDEN_ROLE, except TransitionalMain)
+//	EditorOnly editor window only (a main-side call is FORBIDDEN_ROLE)
 //
-// TransitionalMain are EditorOnly methods main may still call because the in-main editor route
-// lives until E2 removes it; E2 deletes this list.
+// TransitionalMain is kept empty: the in-main editor route is gone (E2), so main can call no editor-only method.
 type RoleLists struct {
 	Both, MainOnly, EditorOnly, TransitionalMain []string
 }
@@ -39,6 +38,5 @@ func Roles() RoleLists {
 		EditorOnly: append([]string{
 			"editor.windowReady", "editor.measured", "editor.measureAck", "editor.checkpoint", "editor.guardActive", "editor.closeDecision",
 		}, legacyEditor...),
-		TransitionalMain: legacyEditor,
 	}
 }
