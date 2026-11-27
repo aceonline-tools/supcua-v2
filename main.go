@@ -47,6 +47,16 @@ func (l *lateUI) Post(f func()) {
 	}
 }
 
+// tryPost reports whether f was handed to the UI thread (false: the window is not ready yet).
+func (l *lateUI) tryPost(f func()) bool {
+	u := l.p.Load()
+	if u == nil {
+		return false
+	}
+	u.Post(f)
+	return true
+}
+
 func (l *lateUI) Emit(event string, payload any) {
 	if st, ok := payload.(bridge.StateDTO); ok && l.onTheme != nil {
 		l.onTheme(st.Theme)
@@ -645,10 +655,12 @@ func main() {
 		if scriptHotkeys != nil {
 			scriptHotkeys.Reconcile()
 		}
-		late.Post(func() {
+		if !late.tryPost(func() {
 			overlayCtl.Refresh()
 			tray.UpdateTooltip()
-		})
+		}) {
+			ui.LogOverlayDropped("UI window not ready")
+		}
 	})
 	tray.UpdateTooltip()
 

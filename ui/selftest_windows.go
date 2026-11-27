@@ -340,6 +340,11 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 	}
 	if fire(h.GlobalHotkey, "global hotkey (SendInput) turns global active on", h.GlobalActive) {
 		step("script hotkeys registered once active", waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() > 0 }), fmt.Sprintf("count=%d", h.ScriptHotkeyCount()))
+		for _, oc := range []struct {
+			name, colour string
+		}{{"status colours", ""}, {"custom colour", "#FF00FF"}} {
+			s.overlayStatusE2E(res, h, oc.name, oc.colour, fire)
+		}
 		if fire(h.ProbeHotkey, "script toggle hotkey (SendInput) starts the script", func() bool { return h.RunningScriptID() == h.ProbeID }) {
 			fire(h.ProbeHotkey, "script toggle hotkey (SendInput) stops the script", func() bool { return h.RunningScriptID() == "" })
 		}
