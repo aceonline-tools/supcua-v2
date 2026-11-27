@@ -14,10 +14,20 @@ describe('layout stability rules', () => {
     expect(css).toMatch(/body\{[^}]*font-variant-numeric:tabular-nums/);
     expect(overlay).toMatch(/\.ov-pct \{ min-width: 42px; text-align: right/);
   });
+  it('bounds message slots and dialog bodies', () => {
+    expect(css).toMatch(/\.msg-slot\{height:18px;[^}]*overflow:auto/);
+    expect(css).toMatch(/\.msg-slot\.one\{height:24px/);
+    expect(css).toMatch(/\.msg-slot\.two\{height:48px/);
+    expect(css).toMatch(/\.dialog-body\{[^}]*max-height:calc\(100vh[^}]*overflow:auto/);
+  });
+  it('stacks notifications in one region below the modal layer', () => {
+    expect(css).toMatch(/\.notices\{position:fixed;[^}]*z-index:30;[^}]*flex-direction:column/);
+    expect(css).toMatch(/\.modal-back\{z-index:100/);
+    expect(css).toMatch(/main\{padding:[^}]*var\(--notice-h/);
+  });
   it('keeps banners and inline errors out of the flow', () => {
-    expect(css).toMatch(/\.banner\{position:fixed/);
-    expect(css).toMatch(/\.msg-float\{position:absolute/);
-    expect(css).toMatch(/\.msg-slot\{min-height/);
+        expect(css).toMatch(/\.msg-float\{position:absolute/);
+    expect(css).toMatch(/\.msg-slot\{height/);
   });
   it('never changes box metrics on selection', () => {
     expect(css).not.toMatch(/\.(nav\.active|chosen|selected)\{[^}]*(font-weight|border-width|padding|margin)/);
