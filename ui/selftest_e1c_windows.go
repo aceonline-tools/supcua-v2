@@ -343,6 +343,8 @@ func (s *SelfTest) realEditorSuite() {
 		shownAs = fmt.Sprintf("CLAMPED to the work area (natural %.0fx%.0f, shown %.0fx%.0f)", in.W, in.H, cw0, ch0)
 	case absF(cw0-float64(bridge.FallbackCssW)) <= 2 && absF(ch0-float64(bridge.FallbackCssH)) <= 2 && absF(in.W-cw0) > 2:
 		shownAs = "the fallback size"
+	case cw0 > in.W+2 || ch0 > in.H+2:
+		shownAs = fmt.Sprintf("LARGER than natural (remembered bounds, contract §9): natural %.0fx%.0f, shown %.0fx%.0f", in.W, in.H, cw0, ch0)
 	}
 	s.estep("shown window: content, client/outer bounds, DPI, work area (evidence)", true,
 		fmt.Sprintf("shown as %s; outer=%v client=%v (css %.0fx%.0f) dpi=%d work=%v; shown layout: %s", shownAs, g.Outer, g.Client, cw0, ch0, g.DPI, g.Work, m))
