@@ -22,6 +22,7 @@ export type Row =
 export interface SettingResult {
   ok: boolean;
   field?: string;
+  code?: string;
 }
 
 function errorText(e: unknown): string {
@@ -66,7 +67,7 @@ export class AppStore {
   readonly editor!: EditorStore;
   private disposers: (() => void)[] = [];
 
-  constructor(private api: Client, readonly role: PageRole = 'main') {
+  constructor(readonly api: Client, readonly role: PageRole = 'main') {
     if (role === 'editor') this.editor = new EditorStore(api, this);
   }
 
@@ -440,7 +441,8 @@ export class AppStore {
       return { ok: true };
     } catch (e) {
       await this.loadSettings().catch(() => {});
-      if (e instanceof ApiError && e.code === 'INVALID_SETTING') return { ok: false, field: e.body.field };
+      if (e instanceof ApiError && e.code === 'INVALID_SETTING') return { ok: false, field: e.body.field, code: e.code };
+      if (e instanceof ApiError && e.code === 'HOTKEY_REGISTER_FAILED') return { ok: false, code: e.code }; // shown inline by the recorder
       this.error = errorText(e);
       return { ok: false };
     }

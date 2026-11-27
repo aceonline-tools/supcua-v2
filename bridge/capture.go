@@ -14,6 +14,11 @@ const (
 	CaptureHotkey CaptureMode = "hotkey"
 	CaptureKey    CaptureMode = "key"
 	CaptureMouse  CaptureMode = "mouse"
+	// CaptureSettingsHotkey is the main window's Settings recorder: like CaptureHotkey, but a
+	// modifier tapped alone is reported with its side, global hotkeys are muted while it runs,
+	// and it reports on the settings.capture.* events (the editor-only capture.* events and
+	// their routing stay untouched).
+	CaptureSettingsHotkey CaptureMode = "settingsHotkey"
 )
 
 // Capture end reasons (contract §9.5).
@@ -23,6 +28,16 @@ const (
 	EndTimeout      = "timeout"
 	EndEditorClosed = "editorClosed"
 )
+
+// Events of the Settings recorder (routed to the main window).
+const (
+	EvSettingsCaptureHotkey = "settings.capture.hotkey"
+	EvSettingsCaptureEnded  = "settings.capture.ended"
+)
+
+// settingsCaptureSession owns the Settings recorder inside the one-session capture manager. It is
+// not an editor session id, so an editor window can never stop it and it can never stop an editor capture.
+const settingsCaptureSession = "settings"
 
 const defaultCaptureIdle = 60 * time.Second
 
@@ -51,6 +66,9 @@ type CaptureManager struct {
 	backend CaptureBackend
 	emit    func(event string, payload any)
 	idle    time.Duration
+	// suspend mutes (true) / restores (false) the app's global hotkeys; called only for the
+	// Settings recorder, under opMu, so mute and restore are strictly paired with Start and teardown.
+	suspend func(bool)
 
 	opMu     sync.Mutex
 	mu       sync.Mutex
@@ -121,6 +139,9 @@ func (m *CaptureManager) Start(session string, mode CaptureMode, field string, p
 	m.mode, m.session, m.field = mode, session, field
 	m.armLocked(gen)
 	m.mu.Unlock()
+	if mode == CaptureSettingsHotkey && m.suspend != nil {
+		m.suspend(true)
+	}
 	if err := m.backend.Start(mode, pickKey, &sink{m: m, gen: gen, id: id}); err != nil {
 		m.endLocked(gen, "", false, false)
 		return 0, newErr(CodeInternal)
@@ -173,7 +194,7 @@ func (m *CaptureManager) endLocked(gen uint64, reason string, notify, needExpire
 		return
 	}
 	m.gen++
-	endedID := m.id
+	endedID, endedMode := m.id, m.mode
 	m.mode, m.session, m.field = CaptureNone, "", ""
 	if m.timer != nil {
 		m.timer.Stop()
@@ -182,6 +203,15 @@ func (m *CaptureManager) endLocked(gen uint64, reason string, notify, needExpire
 	m.mu.Unlock()
 	if m.backend != nil {
 		m.backend.Stop()
+	}
+	if endedMode == CaptureSettingsHotkey {
+		if m.suspend != nil {
+			m.suspend(false)
+		}
+		if notify {
+			m.emit(EvSettingsCaptureEnded, endedEvent{CaptureID: endedID, Reason: reason})
+		}
+		return
 	}
 	if notify {
 		m.emit(EvCaptureEnded, endedEvent{CaptureID: endedID, Reason: reason})
@@ -199,13 +229,19 @@ func (m *CaptureManager) armLocked(gen uint64) {
 
 // touch validates the event's generation and refreshes the idle deadline.
 func (m *CaptureManager) touch(gen uint64, want CaptureMode) (field string, ok bool) {
+	f, _, ok := m.touchMode(gen, want, want)
+	return f, ok
+}
+
+// touchMode is touch for an event either of two modes may produce; it reports the active mode.
+func (m *CaptureManager) touchMode(gen uint64, a, b CaptureMode) (field string, mode CaptureMode, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.gen != gen || m.mode == CaptureNone || (want != CaptureNone && m.mode != want) {
-		return "", false
+	if m.gen != gen || m.mode == CaptureNone || (a != CaptureNone && m.mode != a && m.mode != b) {
+		return "", CaptureNone, false
 	}
 	m.armLocked(gen)
-	return m.field, true
+	return m.field, m.mode, true
 }
 
 type sink struct {
@@ -215,8 +251,12 @@ type sink struct {
 }
 
 func (s *sink) Hotkey(hk model.Hotkey) {
-	field, ok := s.m.touch(s.gen, CaptureHotkey)
+	field, mode, ok := s.m.touchMode(s.gen, CaptureHotkey, CaptureSettingsHotkey)
 	if !ok {
+		return
+	}
+	if mode == CaptureSettingsHotkey {
+		s.m.emit(EvSettingsCaptureHotkey, hotkeyEvent{CaptureID: s.id, Field: field, Hotkey: hk, Display: DisplayHotkey(hk)})
 		return
 	}
 	s.m.emit(EvCaptureHotkey, hotkeyEvent{CaptureID: s.id, Field: field, Hotkey: hk, Display: DisplayHotkey(hk)})

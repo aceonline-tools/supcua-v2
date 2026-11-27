@@ -330,7 +330,11 @@ function onMeasured(win: SimWindow, p: { token: number; cssW: number; cssH: numb
 }
 
 window.addEventListener('message', (e: MessageEvent) => {
-  const m = e.data as { supcua?: string; id?: number; method?: string; params?: unknown };
+  const m = e.data as { supcua?: string; id?: number; method?: string; params?: unknown; down?: boolean; code?: string; key?: string; ctrl?: boolean; alt?: boolean; shift?: boolean };
+  if (m?.supcua === 'key' && hub && e.source === main.iframe.contentWindow && trustedMessage(e, { source: main.iframe.contentWindow, origin: main.origin })) {
+    hub.backend.hostKey(String(m.code), !!m.down, { ctrl: !!m.ctrl, alt: !!m.alt, shift: !!m.shift }, String(m.key ?? ''));
+    return;
+  }
   if (m?.supcua !== 'call' || typeof m.method !== 'string' || !e.source) return;
   const src = e.source as Window;
   const win = src === main.iframe.contentWindow ? main : editor && src === editor.iframe.contentWindow ? editor : null;

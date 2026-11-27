@@ -119,12 +119,28 @@ export class MockBackend implements Transport {
   readonly checkpoints: { revision: number; applied: boolean }[] = [];
   private activeCap: { id: number; method: string } | null = null;
   private capId = 0;
+  private settingsCap: { id: number; field: string } | null = null;
+  /** Mutes the host's global hotkeys while a Settings recording runs (host: hotkey.Manager.SetSuspended). */
+  hotkeysMuted = false;
+  /** Hotkeys another app owns: settings.update fails with HOTKEY_REGISTER_FAILED for these. */
+  readonly takenByOtherApp = new Set(['Ctrl + Alt + F12']);
   private rev = 1;
   private nextId = 100;
   private emit: (name: string, payload: unknown) => void = () => {};
 
   constructor(seed: MockSeed = defaultSeed()) {
     this.seed = structuredClone(seed);
+    if (typeof window !== 'undefined') {
+      // No low-level hook here: the browser's own keys stand in for it while a Settings recording runs
+      // (the simulator shell forwards its iframes' keys to hostKey instead, see sim/web/main.ts).
+      const feed = (down: boolean) => (e: KeyboardEvent) => {
+        if (!this.settingsCap) return;
+        e.preventDefault();
+        this.hostKey(e.code, down, { ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }, e.key);
+      };
+      window.addEventListener('keydown', feed(true), true);
+      window.addEventListener('keyup', feed(false), true);
+    }
   }
 
   /** Dev preview/tests: gives script `id` n sample actions. */
@@ -144,6 +160,11 @@ export class MockBackend implements Transport {
     this.seed.state.editor_open = false;
   }
 
+  private endSettingsCap(): void {
+    this.settingsCap = null;
+    this.hotkeysMuted = false;
+  }
+
   get currentCaptureId(): number {
     return this.activeCap?.id ?? 0;
   }
@@ -157,7 +178,41 @@ export class MockBackend implements Transport {
     this.push('capture.key', { capture_id: this.currentCaptureId, key, mods });
   }
 
+  /** Host keyboard feed of the Settings recorder: a modifier released alone is a tap, anything else a combo. */
+  private tapPending: string | null = null;
+  private tapHeld = new Set<string>();
+  private static readonly SIDED: Record<string, string> = {
+    ControlLeft: 'LCtrl', ControlRight: 'RCtrl', ShiftLeft: 'LShift', ShiftRight: 'RShift', AltLeft: 'LAlt', AltRight: 'RAlt',
+  };
+
+  hostKey(code: string, down: boolean, mods: { ctrl: boolean; alt: boolean; shift: boolean }, key = ''): void {
+    const cap = this.settingsCap;
+    if (!cap) return;
+    const sided = MockBackend.SIDED[code];
+    if (sided) {
+      if (down) {
+        if (!this.tapHeld.has(code)) this.tapPending = this.tapHeld.size === 0 ? code : null;
+        this.tapHeld.add(code);
+        return;
+      }
+      this.tapHeld.delete(code);
+      if (this.tapPending === code) {
+        this.tapPending = null;
+        this.push('settings.capture.hotkey', { capture_id: cap.id, field: cap.field, hotkey: { modifiers: [], key: sided.toLowerCase() }, display: sided });
+      }
+      return;
+    }
+    if (!down) { this.tapHeld.delete(code); return; }
+    this.tapHeld.add(code);
+    this.tapPending = null;
+    const name = key.length === 1 ? key.toUpperCase() : /^F\d+$/.test(key) ? key : key === 'Escape' ? 'Escape' : key;
+    const modifiers = [mods.ctrl && 'ctrl', mods.alt && 'alt', mods.shift && 'shift'].filter(Boolean) as string[];
+    const display = [...modifiers.map((m) => m[0].toUpperCase() + m.slice(1)), name === 'Escape' ? 'Esc' : name].join(' + ');
+    this.push('settings.capture.hotkey', { capture_id: cap.id, field: cap.field, hotkey: { modifiers, key: name.toLowerCase() === 'escape' ? 'escape' : name.toLowerCase() }, display });
+  }
+
   push(name: string, payload: unknown): void {
+    if (name === 'settings.capture.ended' && (payload as { capture_id?: number }).capture_id === this.settingsCap?.id) this.endSettingsCap();
     if (name === 'capture.ended' && (payload as { capture_id?: number }).capture_id === this.activeCap?.id) this.activeCap = null; // host semantics
     this.emit(name, payload);
   }
@@ -359,6 +414,20 @@ export class MockBackend implements Transport {
         this.activeCap = { id: ++this.capId, method };
         return { capture_id: this.activeCap.id };
       }
+      case 'settings.capture.start': {
+        if (this.session) throw new ApiError({ code: 'EDITOR_BUSY', message: 'an editor is already open' });
+        if (!['global_hotkey', 'overlay_hotkey', 'capture_hotkey'].includes(p.field)) throw new ApiError({ code: 'BAD_REQUEST', message: 'invalid request' });
+        if (this.settingsCap) this.emit('settings.capture.ended', { reason: 'stopped', capture_id: this.settingsCap.id });
+        this.tapPending = null; this.tapHeld.clear();
+        this.settingsCap = { id: ++this.capId, field: p.field };
+        this.hotkeysMuted = true;
+        return { capture_id: this.settingsCap.id };
+      }
+      case 'settings.capture.stop': {
+        const cur = this.settingsCap;
+        if (cur && (p.capture_id === undefined || p.capture_id === cur.id)) { this.endSettingsCap(); this.emit('settings.capture.ended', { reason: 'stopped', capture_id: cur.id }); }
+        return {};
+      }
       case 'capture.stop': case 'capture.mouse.stop': {
         this.requireSession(p.sessionId);
         const cur = this.activeCap;
@@ -376,6 +445,16 @@ export class MockBackend implements Transport {
             throw new ApiError({ code: 'INVALID_SETTING', message: 'Invalid setting', field: k });
           if ((k === 'global_hotkey' || k === 'capture_hotkey' || k === 'overlay_hotkey') && !String(v).trim())
             throw new ApiError({ code: 'INVALID_SETTING', message: 'Invalid setting', field: k });
+        }
+        const hk = ['global_hotkey', 'overlay_hotkey', 'capture_hotkey'] as const;
+        for (const k of hk) {
+          const v = patch[k];
+          if (v === undefined) continue;
+          if (!/^((Ctrl|Alt|Shift) \+ )*[A-Za-z0-9;=,./`\[\]\\'-]+$/.test(v) || (v.length > 1 && !/^(F\d{1,2}|[LR](Ctrl|Shift|Alt)|Esc|Space|Enter|Tab|[A-Za-z]+)$/.test(v.split(' + ').pop() ?? '')))
+            throw new ApiError({ code: 'INVALID_SETTING', message: 'Invalid setting', field: k });
+          const clash = hk.find((o) => o !== k && (patch[o] ?? st.settings[o]).toLowerCase() === v.toLowerCase());
+          if (clash) throw new ApiError({ code: 'INVALID_SETTING', message: 'Invalid setting', field: k });
+          if (this.takenByOtherApp.has(v)) throw new ApiError({ code: 'HOTKEY_REGISTER_FAILED', message: 'could not register hotkey' });
         }
         Object.assign(st.settings, patch);
         if (patch.theme) st.state.theme = patch.theme;

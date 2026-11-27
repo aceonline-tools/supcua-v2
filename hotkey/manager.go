@@ -76,6 +76,20 @@ type Manager struct {
 	pollKeys []pollKeyEntry
 
 	listenerTID atomic.Uint32
+
+	suspended atomic.Bool
+	resync    atomic.Bool
+}
+
+// SetSuspended mutes every registered hotkey (WM_HOTKEY and polled bare modifiers) without
+// unregistering anything, so the key being recorded in Settings cannot fire a binding. Resuming
+// re-syncs the polled keys' down state first: a modifier still held from the recording must not
+// fire when it is released after the mute ends.
+func (m *Manager) SetSuspended(on bool) {
+	if !on {
+		m.resync.Store(true)
+	}
+	m.suspended.Store(on)
 }
 
 // registerThreadHook, when set (tests only), receives the OS thread id RegisterHotKey ran on.
@@ -268,7 +282,8 @@ func (m *Manager) ListenForHotkeys() {
 		ret, _, _ := procPeekMessage.Call(
 			uintptr(unsafe.Pointer(&msg)), 0, 0, 0, pmRemove,
 		)
-		if ret != 0 && msg.message == wmHotkey {
+		mute := m.suspended.Load()
+		if ret != 0 && msg.message == wmHotkey && !mute {
 			pressedID := int(msg.wParam)
 			m.mu.RLock()
 			cb, ok := m.callbacks[pressedID]
@@ -280,12 +295,13 @@ func (m *Manager) ListenForHotkeys() {
 		}
 
 		// Poll bare modifier keys via GetAsyncKeyState, fire on key-up.
+		resync := m.resync.Swap(false)
 		m.pollMu.Lock()
 		for i := range m.pollKeys {
 			pk := &m.pollKeys[i]
 			state, _, _ := procGetAsyncKeyState.Call(uintptr(pk.vkCode))
 			isDown := uint16(state)&0x8000 != 0
-			if pk.wasDown && !isDown {
+			if pk.wasDown && !isDown && !mute && !resync {
 				cb := pk.callback
 				id := pk.id
 				log.Printf("hotkey fired: id=%d", id)

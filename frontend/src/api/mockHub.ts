@@ -11,7 +11,7 @@ const MAIN_ONLY = [
   'scripts.list', 'scripts.get', 'scripts.setEnabled', 'scripts.setGroupEnabled', 'scripts.setGroupCollapsed',
   'scripts.clone', 'scripts.delete', 'scripts.retrySave', 'settings.update', 'settings.setSidebarCollapsed',
   'overlay.set', 'overlay.setStyle', 'overlay.resetStyle', 'autoactive.set', 'update.apply', 'update.skip',
-  'editor.openWindow',
+  'editor.openWindow', 'settings.capture.start', 'settings.capture.stop',
 ];
 // Selftest-only gen-0 route (bridge/roles.go SelftestOnly): denied to both windows in production.
 const SELFTEST_ONLY = ['editor.close'];
@@ -29,6 +29,7 @@ const ALLOWED: Record<HubRole, Set<string>> = {
 const EVENT_TARGET: Record<string, Target> = {
   state: 'both', 'scripts.changed': 'both', 'settings.changed': 'both', 'save.failed': 'both', 'app.closing': 'both',
   'editor.windowFailed': 'main', 'editor.windowClosed': 'main', 'update.available': 'main', 'update.progress': 'main', 'update.failed': 'main', 'nav.goto': 'main',
+  'settings.capture.hotkey': 'main', 'settings.capture.ended': 'main',
 };
 const targetOf = (name: string): Target => EVENT_TARGET[name] ?? 'editor';
 

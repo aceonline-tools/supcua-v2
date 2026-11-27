@@ -93,7 +93,7 @@ describe('settings', () => {
     expect((await store.updateSettings({ key_press_duration_ms: 20 })).ok).toBe(true);
     expect(store.restartPending).toContain('key_press_duration_ms');
     const bad = await store.updateSettings({ key_press_duration_ms: 0 });
-    expect(bad).toEqual({ ok: false, field: 'key_press_duration_ms' });
+    expect(bad).toEqual({ ok: false, field: 'key_press_duration_ms', code: 'INVALID_SETTING' });
     expect(store.settings?.key_press_duration_ms).toBe(20);
   });
 });

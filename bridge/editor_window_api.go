@@ -114,6 +114,7 @@ func (b *Bridge) editorOpenWindow(p struct {
 	if b.stopping.Load() {
 		return nil, newErr(CodeShuttingDown)
 	}
+	b.capture.EndSession(settingsCaptureSession, EndEditorClosed) // the main window is about to be disabled
 	var res struct {
 		Status string `json:"status"`
 		Gen    uint64 `json:"gen"`

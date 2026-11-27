@@ -40,7 +40,7 @@ func Roles() RoleLists {
 			"app.setGlobalActive", "app.exit", "window.hide", "window.show", "window.reportBounds",
 			"scripts.list", "scripts.get", "scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed",
 			"scripts.clone", "scripts.delete", "scripts.retrySave",
-			"settings.update", "settings.setSidebarCollapsed",
+			"settings.update", "settings.setSidebarCollapsed", "settings.capture.start", "settings.capture.stop",
 			"overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip",
 			"editor.openWindow",
 		},

@@ -55,7 +55,11 @@ func keyHookProc(nCode int, wParam, lParam uintptr) uintptr {
 	if nCode >= 0 {
 		k := (*kbdllhookstruct)(ptrFrom(lParam))
 		res := s.tracker.process(k.vkCode, wParam, s.isActive(), asyncDownVK, asyncDownVK)
-		if res.SwallowAlt || (res.Emit && s.onKey(res.Event)) {
+		swallow := res.SwallowAlt
+		if res.Emit && s.onKey(res.Event) {
+			swallow = true
+		}
+		if swallow {
 			return 1
 		}
 	}
@@ -76,8 +80,19 @@ func asyncDown(vk uintptr) bool {
 // hook thread, must not block, and returns true to swallow the key. Alt is always swallowed
 // while active. stop unhooks and waits for the thread (2 s bound); it is idempotent.
 func StartKeyCapture(isActive func() bool, onKey func(KeyEvent) bool) (stop func(), err error) {
+	return startKeyCapture(isActive, onKey, false)
+}
+
+// StartKeyCaptureWithAlt is StartKeyCapture that also delivers Alt key events (VK_LMENU/VK_RMENU,
+// down and up) to onKey, for recorders that must see a bare Alt tap. Alt is swallowed regardless.
+func StartKeyCaptureWithAlt(isActive func() bool, onKey func(KeyEvent) bool) (stop func(), err error) {
+	return startKeyCapture(isActive, onKey, true)
+}
+
+func startKeyCapture(isActive func() bool, onKey func(KeyEvent) bool, emitAlt bool) (stop func(), err error) {
 	keyHookOnce.Do(func() { keyHookCallback = newCallback(keyHookProc) })
 	s := &keySession{isActive: isActive, onKey: onKey, tracker: newKeyTracker(asyncDownVK)}
+	s.tracker.emitAlt = emitAlt
 	if !activeKeySession.CompareAndSwap(nil, s) {
 		return nil, ErrCaptureActive
 	}

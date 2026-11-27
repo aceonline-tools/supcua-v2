@@ -559,6 +559,7 @@ func main() {
 		Overlay:    overlayCtl,
 		UI:         late,
 		Capture:    &ui.CaptureBackend{HWND: late.hwnd},
+		HotkeyMute: hotkeyManager,
 		Host:       host,
 		CallerRole: func(ctx context.Context) string {
 			if c, ok := rpc.CallerFrom(ctx); ok {

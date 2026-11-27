@@ -29,3 +29,5 @@ func (hotkeyManager *Manager) Unregister(hotkeyID int) error {
 }
 
 func (hotkeyManager *Manager) ListenForHotkeys() {}
+
+func (hotkeyManager *Manager) SetSuspended(bool) {}

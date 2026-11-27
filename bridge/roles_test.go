@@ -95,3 +95,30 @@ func TestSelftestMainAllowIsEditorOnlyAndNotShipped(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsCaptureIsMainOnlyAndRoutedToMain(t *testing.T) {
+	r := Roles()
+	in := func(list []string, m string) bool {
+		for _, x := range list {
+			if x == m {
+				return true
+			}
+		}
+		return false
+	}
+	for _, m := range []string{"settings.capture.start", "settings.capture.stop"} {
+		if !in(r.MainOnly, m) || in(r.Both, m) || in(r.EditorOnly, m) || in(r.SelftestOnly, m) || in(SelftestMainAllow(), m) {
+			t.Errorf("%s must be main-only and not in any editor list", m)
+		}
+	}
+	for _, m := range []string{"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.stop"} {
+		if in(r.MainOnly, m) || in(r.Both, m) {
+			t.Errorf("%s must stay editor-only", m)
+		}
+	}
+	for _, e := range []string{EvSettingsCaptureHotkey, EvSettingsCaptureEnded} {
+		if TargetFor(e) != TargetMain {
+			t.Errorf("%s must route to main only", e)
+		}
+	}
+}

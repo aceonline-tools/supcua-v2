@@ -118,6 +118,7 @@ func (m *ModState) Held() Held {
 type keyTracker struct {
 	mods     ModState
 	needSeed bool
+	emitAlt  bool // also deliver Alt key events (still swallowed); off for the editor's captures
 }
 
 func newKeyTracker(probe func(vk uint32) bool) *keyTracker {
@@ -150,13 +151,14 @@ func (t *keyTracker) process(vk uint32, wParam uintptr, active bool, probe func(
 	if down || up {
 		t.mods.Update(vk, down)
 	}
-	if vk == 0x12 || vk == 0xA4 || vk == 0xA5 {
+	isAlt := vk == 0x12 || vk == 0xA4 || vk == 0xA5
+	if isAlt && !t.emitAlt {
 		return hookResult{SwallowAlt: true}
 	}
 	if !down && !up {
 		return hookResult{}
 	}
-	return hookResult{Emit: true, Event: KeyEvent{
+	return hookResult{SwallowAlt: isAlt, Emit: true, Event: KeyEvent{
 		VK: vk, Down: down, Ctrl: async(0x11), Shift: async(0x10), Alt: async(0x12), Held: t.mods.Held(),
 	}}
 }

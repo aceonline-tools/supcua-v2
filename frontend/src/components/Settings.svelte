@@ -4,6 +4,7 @@
   import Icon from './Icon.svelte';
   import type { IconName } from '../lib/icons';
   import Toggle from './Toggle.svelte';
+  import HotkeyRecorder from './HotkeyRecorder.svelte';
   import TextSetting from './TextSetting.svelte';
   import OverlayStyle from './OverlayStyle.svelte';
   let { store }: { store: AppStore } = $props();
@@ -63,7 +64,7 @@
     {#if cfg}
       <div class="setting-row">
         <div><strong>Overlay hotkey</strong></div>
-        <TextSetting label="Overlay hotkey" value={cfg.overlay_hotkey} commit={(v) => store.updateSettings({ overlay_hotkey: String(v) })} />
+        <HotkeyRecorder label="Overlay hotkey" field="overlay_hotkey" value={cfg.overlay_hotkey} api={store.api} save={(d) => store.updateSettings({ overlay_hotkey: d })} />
       </div>
     {/if}
     <OverlayStyle {store} />
@@ -75,11 +76,11 @@
     <div class="section-title"><h2>Configuration</h2></div>
     <div class="setting-row">
       <div><strong>Global hotkey</strong></div>
-      <TextSetting label="Global hotkey" value={cfg.global_hotkey} commit={(v) => store.updateSettings({ global_hotkey: String(v) })} />
+      <HotkeyRecorder label="Global hotkey" field="global_hotkey" value={cfg.global_hotkey} api={store.api} save={(d) => store.updateSettings({ global_hotkey: d })} />
     </div>
     <div class="setting-row">
       <div><strong>Capture hotkey</strong><p>Captures the cursor position.</p></div>
-      <TextSetting label="Capture hotkey" value={cfg.capture_hotkey} commit={(v) => store.updateSettings({ capture_hotkey: String(v) })} />
+      <HotkeyRecorder label="Capture hotkey" field="capture_hotkey" value={cfg.capture_hotkey} api={store.api} save={(d) => store.updateSettings({ capture_hotkey: d })} />
     </div>
     <div class="setting-row">
       <div>

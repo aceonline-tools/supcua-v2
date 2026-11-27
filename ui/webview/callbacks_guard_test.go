@@ -76,7 +76,7 @@ func TestHostCallbacksAreTheKnownOnceGuardedSites(t *testing.T) {
 		"callbacks_windows.go:newCallback":   1, // the counting wrapper itself
 		"callbacks_windows.go:NewCallback":   1, // exported counted wrapper for ui/overlay.go
 		"ui_windows.go:createHostWindow":     1, // inside hostClassOnce.Do
-		"capture_windows.go:StartKeyCapture": 1, // inside keyHookOnce.Do
+		"capture_windows.go:startKeyCapture": 1, // inside keyHookOnce.Do
 	}
 	if len(got) != len(want) {
 		t.Fatalf("callback sites changed: got %v want %v", got, want)

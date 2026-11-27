@@ -220,6 +220,7 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 	if s.Host != nil {
 		s.editorLifecycle()
 		s.realEditorSuite()
+		s.settingsHotkeySuite()
 	}
 
 	trayDone := make(chan bool, 1)
