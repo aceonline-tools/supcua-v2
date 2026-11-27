@@ -6,7 +6,7 @@ const now = () => t;
 const advance = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
 
 function boot() {
-  document.body.innerHTML = '<div id="boot"><p id="boot-st">Starting…</p><button id="boot-go" hidden>Continue</button></div><div id="app" inert aria-busy="true"></div>';
+  document.body.innerHTML = '<div id="boot"><p id="boot-st">Starting…</p><button id="boot-go" hidden>Continue</button></div><div id="app" inert aria-busy="true"><h1>Scripts</h1><button>x</button></div>';
 }
 const el = () => document.getElementById('boot');
 const app = () => document.getElementById('app')!;
@@ -136,6 +136,27 @@ describe('error state', () => {
     expect(app().hasAttribute('inert')).toBe(false);
     advance(150);
     expect(el()).toBeNull();
+  });
+
+  it('after Continue, focus moves into #app (the heading), not lost', () => {
+    const l = createLoader({ now, reducedMotion: () => false });
+    advance(300);
+    l.fail('boom');
+    const go = document.getElementById('boot-go') as HTMLButtonElement;
+    expect(document.activeElement).toBe(go);
+    go.click();
+    expect(app().contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(app().querySelector('h1'));
+  });
+
+  it('a normal hand-off does not steal focus', () => {
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    const l = createLoader({ now, reducedMotion: () => false });
+    advance(300);
+    l.done();
+    expect(document.activeElement).toBe(outside);
   });
 });
 

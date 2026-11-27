@@ -52,10 +52,19 @@ export function createLoader(opts: LoaderOptions = {}): Loader {
   timers.push(setTimeout(() => { slow = true; root.dataset.status = 'visible'; render(); }, Math.max(0, slowMs - now())));
 
   const remove = () => { timers.splice(0).forEach(clearTimeout); root.remove(); };
+  const focusApp = () => {
+    if (!app) return;
+    const heading = app.querySelector<HTMLElement>('h1,h2,[role=heading]');
+    const target = heading ?? app.querySelector<HTMLElement>('button,a[href],input,select,textarea,[tabindex]:not([tabindex="-1"])') ?? app;
+    if (target === heading || target === app) target.setAttribute('tabindex', '-1');
+    target.focus();
+  };
   const leave = () => {
     finished = true;
     timers.splice(0).forEach(clearTimeout);
+    const hadFocus = root.contains(doc.activeElement);
     release();
+    if (hadFocus) focusApp();
     if (now() < fastMs || reduced()) return root.remove();
     root.classList.add('out');
     timers.push(setTimeout(remove, fadeMs));

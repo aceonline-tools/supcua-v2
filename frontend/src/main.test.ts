@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const calls: string[] = [];
+let bootMode = 'licensed';
 let scriptsResult: () => Promise<unknown> = async () => ({});
 let finishInit!: () => void;
 
@@ -10,6 +11,7 @@ vi.mock('./App.svelte', () => ({ default: {} }));
 vi.mock('./api/bootstrap', () => ({ createAppClient: async () => ({ call: (m: string) => { calls.push(m); return m === 'scripts.list' ? scriptsResult() : Promise.resolve(); }, on: () => () => {} }) }));
 vi.mock('./lib/store.svelte', () => ({
   AppStore: class {
+    boot = { mode: bootMode };
     constructor(private c: { call(m: string): Promise<unknown> }) {}
     init() { void this.c.call('scripts.list').catch(() => {}); return new Promise<void>((r) => { finishInit = r; }); }
   },
@@ -19,6 +21,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   calls.length = 0;
   scriptsResult = async () => ({});
+  bootMode = 'licensed';
   document.body.innerHTML = '<div id="boot"><p id="boot-st"></p></div><div id="app" inert aria-busy="true"></div><button id="boot-go" hidden></button>';
   vi.resetModules();
 });
@@ -59,4 +62,14 @@ it('init resolving early (settings failed) while scripts.list is pending does no
   expect(document.getElementById('boot')!.classList.contains('err')).toBe(true);
   expect(document.getElementById('boot-st')!.textContent).toContain('scripts exploded');
   expect(document.getElementById('app')!.hasAttribute('inert')).toBe(true);
+});
+
+it('an unlicensed install (scripts/settings reject by design) hands off to the licence screen instead of the error state', async () => {
+  bootMode = 'notLicensed';
+  scriptsResult = () => Promise.reject(new Error('not licensed'));
+  await import('./main');
+  finishInit();
+  await vi.advanceTimersByTimeAsync(300);
+  expect(document.getElementById('boot')).toBeNull();
+  expect(calls).toContain('app.log');
 });
