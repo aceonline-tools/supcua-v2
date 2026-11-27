@@ -55,7 +55,7 @@ describe('recording with host-reported modifier flags', () => {
 
 describe('typing, reordering', () => {
   it('parses typed strokes', () => {
-    expect(parseStroke('Ctrl+Shift+A')).toEqual({ key: 'a', mods: ['ctrl', 'shift'] });
+    expect(parseStroke('Ctrl+Shift+A')).toEqual({ key: 'A', mods: ['ctrl', 'shift'] });
     expect(parseStroke('shift+ctrl+Enter')).toEqual({ key: 'enter', mods: ['ctrl', 'shift'] });
     expect(parseStroke('ctrl++')).toEqual({ key: '+', mods: ['ctrl'] });
     expect(parseStroke('nosuchkey')).toBeNull();
@@ -68,6 +68,18 @@ describe('typing, reordering', () => {
     expect(moveStroke(['a', 'b', 'c'], 0, 1)).toEqual(['b', 'a', 'c']);
     expect(moveStroke(['a', 'b', 'c'], 0, -1)).toEqual(['a', 'b', 'c']);
     expect(moveStroke(['a', 'b', 'c'], 2, 1)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('single-character case (matches Go)', () => {
+  it('uppercase keys survive load -> save unchanged, names are lowercased', () => {
+    const loaded = { type: 'key_press', keys: [{ key: 'A' }, { key: 'b' }, { key: 'ENTER' }], key_delay_ms: 50 };
+    expect(toKeyPressPayload(loaded, sequenceOf(loaded), 50).keys).toEqual([{ key: 'A' }, { key: 'b' }, { key: 'enter' }]);
+    expect(toKeyPressPayload({ type: 'key_press', key: 'Q' }, [{ key: 'Q', mods: [] }], 50)).toEqual({ type: 'key_press', key: 'Q' });
+  });
+  it('a recorded letter keeps whatever case the host reports', () => {
+    expect(recordEvent({ keys: [], mods: [] }, 'A', []).keys).toEqual([{ key: 'A', mods: [] }]);
+    expect(recordEvent({ keys: [], mods: [] }, 'a', ['shift']).keys).toEqual([{ key: 'a', mods: ['shift'] }]);
   });
 });
 

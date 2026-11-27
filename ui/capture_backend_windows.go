@@ -59,7 +59,7 @@ func (c *CaptureBackend) Start(mode bridge.CaptureMode, pick model.Hotkey, sink 
 			if !ev.Down {
 				return false
 			}
-			sink.KeyWithMods(keyToName(ev.VK), keyMods(ev.Ctrl, ev.Shift, ev.Alt))
+			sink.KeyWithMods(keyToName(ev.VK), keyMods(ev.Ctrl, ev.Shift, ev.Alt, ev.Win))
 			return true // also keeps Tab from moving focus (parity)
 		})
 		if err != nil {

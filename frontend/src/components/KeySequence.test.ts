@@ -159,3 +159,45 @@ describe('existing capture behaviour is unchanged', () => {
     expect(store.editor.capturing).toBeNull();
   });
 });
+
+describe('recording lifecycle and focus', () => {
+  const calls = (m: string) => mock.calls.filter((c) => c.method === m).length;
+
+  it('a start queued behind the dialog closing never leaves a live capture', async () => {
+    await openDialog(null);
+    void store.editor.startKeyRecording();
+    store.editor.closeActionDialog();
+    await settle();
+    await settle();
+    expect(store.editor.capturing).toBeNull();
+    expect(calls('capture.key.start')).toBe(calls('capture.stop'));
+  });
+
+  it('submitting while a start is queued also cancels it', async () => {
+    await openDialog(null);
+    void store.editor.startKeyRecording();
+    await click(ok());
+    await settle();
+    expect(store.editor.capturing).toBeNull();
+    expect(calls('capture.key.start')).toBe(calls('capture.stop'));
+  });
+
+  it('Esc ends a recording even when no dialog is open', async () => {
+    await openDialog(null);
+    await click(q('button[aria-label="Record keys"]'));
+    expect(store.editor.capturing).toBe('keys');
+    store.editor.actionDialog = null;
+    mock.pushKey('x', []);
+    await settle();
+    expect(store.editor.capturing).toBe('keys');
+    mock.pushKey('escape', []);
+    await settle();
+    expect(store.editor.capturing).toBeNull();
+    expect(calls('capture.stop')).toBe(1);
+  });
+
+  it('the sequence dialog focuses its first control', async () => {
+    await openDialog(null);
+    expect(document.activeElement).toBe(q('input[aria-label="Add key"]'));
+  });
+});

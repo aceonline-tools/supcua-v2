@@ -1,7 +1,8 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import { KEY_NAMES, MAX_KEYS, MAX_DELAY_MS, formatStroke, formatSequence, parseStroke, type KeyErrors, type KeyStroke } from '../lib/keySequence';
-  let { keys, delay, errors, recording, note, onkeys, ondelay, onrecord, onstop }: {
+  let { keys, delay, errors, recording, note, onkeys, ondelay, onrecord, onstop, first = $bindable() }: {
+    first?: HTMLElement;
     keys: KeyStroke[]; delay: string; errors: KeyErrors; recording: boolean; note: string;
     onkeys: (k: KeyStroke[]) => void; ondelay: (v: string) => void; onrecord: () => void; onstop: () => void;
   } = $props();
@@ -45,7 +46,7 @@
     {/if}
   </div>
   <div class="inline">
-    <input class="input" type="text" list="key-names" placeholder="e.g. Ctrl+Shift+A" aria-label="Add key" aria-invalid={typedBad}
+    <input class="input" type="text" list="key-names" bind:this={first} placeholder="e.g. Ctrl+Shift+A" aria-label="Add key" aria-invalid={typedBad}
       bind:value={typed} oninput={() => (typedBad = false)}
       onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); add(); } }} />
     <datalist id="key-names">{#each KEY_NAMES as n (n)}<option value={n}></option>{/each}</datalist>

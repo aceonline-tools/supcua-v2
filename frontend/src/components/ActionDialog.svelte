@@ -20,7 +20,7 @@
   const setKeys = (k: KeyStroke[]) => { if (kp) { kp.keys = k; delete kp.key; } };
   function submit() {
     if (!d) return;
-    if (ed.capturing) void ed.cancelCapture();
+    if (ed.capturing || ed.capturePending()) void ed.cancelCapture();
     const snap = $state.snapshot(d.action) as KeyPressAction;
     const action = isKeyPress ? toKeyPressPayload(snap, sequenceOf(snap), Number(delayText)) : snap;
     void ed.applyActionDialog(action as Action);
@@ -45,7 +45,7 @@
       <div class="dialog-title" id="ad-title">Edit: {d.action.type}</div>
       <div class="dialog-body">
         {#if isKeyPress && kp}
-          <KeySequenceInput keys={sequenceOf(kp)} delay={delayText} errors={keyErrors} recording={ed.capturing === 'keys'} note={ed.recordNote}
+          <KeySequenceInput bind:first keys={sequenceOf(kp)} delay={delayText} errors={keyErrors} recording={ed.capturing === 'keys'} note={ed.recordNote}
             onkeys={setKeys} ondelay={(v) => (delayText = v)} onrecord={() => ed.startKeyRecording()} onstop={() => ed.cancelCapture()} />
         {:else}
         {#each d.spec.params as p, i (p.name)}

@@ -17,6 +17,7 @@ type KeyEvent struct {
 	VK               uint32
 	Down             bool
 	Ctrl, Shift, Alt bool
+	Win              bool // either Windows key
 }
 
 // ErrCaptureActive: only one keyboard capture can run at a time.
@@ -66,7 +67,7 @@ func keyHookProc(nCode int, wParam, lParam uintptr) uintptr {
 		}
 		down := wParam == 0x0100 || wParam == 0x0104
 		if down || wParam == 0x0101 || wParam == 0x0105 {
-			ev := KeyEvent{VK: k.vkCode, Down: down, Ctrl: asyncDown(0x11), Shift: asyncDown(0x10), Alt: asyncDown(0x12)}
+			ev := KeyEvent{VK: k.vkCode, Down: down, Ctrl: asyncDown(0x11), Shift: asyncDown(0x10), Alt: asyncDown(0x12), Win: asyncDown(0x5B) || asyncDown(0x5C)}
 			if s.onKey(ev) {
 				return 1
 			}

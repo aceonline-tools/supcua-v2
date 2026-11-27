@@ -18,7 +18,8 @@ export function isKnownKey(name: string): boolean {
   return KEY_SET.has(name) || (name.length === 1 && name.charCodeAt(0) < 128);
 }
 
-const canonKey = (k: string) => (k.length > 1 || /^[A-Z]$/.test(k) ? k.toLowerCase() : k);
+// Matches model/action.go ResolveKeys: single characters keep their case, names are lowercased.
+const canonKey = (k: string) => (k.length > 1 ? k.toLowerCase() : k);
 
 export function canonMods(mods: readonly string[] | undefined): string[] {
   const set = new Set((mods ?? []).map((m) => m.toLowerCase()));

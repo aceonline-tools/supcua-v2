@@ -153,7 +153,7 @@ export class EditorStore {
 
   closeActionDialog(): void {
     this.actionDialog = null;
-    if (this.capturing === 'key' || this.capturing === 'keys') this.cancelCapture();
+    if (this.capturing === 'key' || this.capturing === 'keys' || this.capturePending()) void this.cancelCapture();
   }
 
   async deleteSelected(): Promise<void> {
@@ -367,12 +367,13 @@ export class EditorStore {
 
   private onRecordKey(key: string, mods?: string[] | null): void {
     const a = this.actionDialog?.action as KeyPressAction | undefined;
-    if (!a) return;
-    const r = recordEvent({ keys: sequenceOf(a), mods: this.recordMods }, key, mods);
-    this.recordNote = r.ignored ? (r.stop ? 'Maximum keys reached.' : `Unsupported key ignored (${key}).`) : '';
-    a.keys = r.keys;
-    delete a.key;
-    this.recordMods = r.mods;
+    const r = recordEvent({ keys: a ? sequenceOf(a) : [], mods: this.recordMods }, key, mods);
+    if (a) {
+      this.recordNote = r.ignored ? (r.stop ? 'Maximum keys reached.' : `Unsupported key ignored (${key}).`) : '';
+      a.keys = r.keys;
+      delete a.key;
+      this.recordMods = r.mods;
+    }
     if (r.stop) {
       this.capturing = null;
       this.capturingOp = null;
