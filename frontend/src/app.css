@@ -119,20 +119,23 @@ strong{font-weight:400}
 .progress span{display:block;height:100%;background:var(--accent)}
 .editor-main{height:100%;display:flex;flex-direction:column;overflow:auto;padding:10px 14px 8px}
 .editor-main>*{flex:none}
-.editor-main>.editor-grid{flex:1 0 auto}
+.editor-main>.editor-grid{flex:1 1 0;min-height:0;grid-template-rows:minmax(0,1fr)}
 .editor-loading{padding:14px}
 .head-text{flex:1;min-width:0;contain:inline-size}
 .editor-main .page-head{margin-bottom:8px}
 .indicator{white-space:nowrap;font-size:12px;line-height:16px;color:var(--danger)}
 .indicator.ok{color:var(--green)}
 .editor-grid{display:grid;grid-template-columns:minmax(210px,26fr) minmax(270px,34fr) minmax(190px,30fr);gap:8px}
-.editor-grid>.card{min-width:0}
+.editor-grid>.card{min-width:0;min-height:0}
+.editor-card{overflow-y:auto}
 /* intrinsic measurement (editor-window contract §5.2): no viewport units, natural column widths, bounded actions height */
 html[data-measure],html[data-measure] body,html[data-measure] #app{height:auto}
 html[data-measure] body{overflow:visible}
 html[data-measure] .editor-main{height:auto;width:max-content}
 html[data-measure]:not([data-measure-fit]) .editor-grid{grid-template-columns:260px 340px 300px}
 html[data-measure][data-measure-fit] .editor-main{width:var(--measure-w)}
+html[data-measure] .editor-main>.editor-grid{flex:none;grid-template-rows:auto}
+html[data-measure] .editor-card{overflow:visible}
 html[data-measure] .action-list{min-height:var(--actions-pref-h)}
 /* end intrinsic measurement */
 .editor-card{padding:8px 10px}
