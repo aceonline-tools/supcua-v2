@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.4.1...v1.5.0) (2026-11-27)
+
+
+### Features
+
+* overlay style, button icons, key sequences and startup loader ([a22dfa5](https://github.com/aceonline-tools/supcua-v2/commit/a22dfa5590e0832f360ee8d815d526cabf08c0f0))
+
 ## [1.4.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.4.0...v1.4.1) (2026-11-27)
 
 
