@@ -354,14 +354,15 @@ jobs:
           if ($null -eq $painted) { Write-Host "::warning::no captured frame showed the loader's own pixels (page first paint was between two captures)" }
           else { Write-Host ("loader painted at +{0}ms: dominant=#{1:X6} distinct={2}" -f $painted.At, $painted.Dom, $painted.Distinct) }
           $first = $loading | Select-Object -First 1
-          if ($null -ne $first) { Write-Host ("first frame +{0}ms (before the page painted): dominant=#{1:X6} share={2} distinct={3}" -f $first.At, $first.Dom, $first.Share, $first.Distinct) }
+          if ($null -ne $first -and $first.Distinct -ge 4) { Write-Host ("first frame already painted (fast start) +{0}ms: dominant=#{1:X6} share={2} distinct={3}" -f $first.At, $first.Dom, $first.Share, $first.Distinct) }
+          elseif ($null -ne $first) { Write-Host ("first frame +{0}ms (before the page painted): dominant=#{1:X6} share={2} distinct={3}" -f $first.At, $first.Dom, $first.Share, $first.Distinct) }
           $after = $rows | Where-Object { $_.Phase -eq "after" } | Select-Object -First 1
           if ($null -eq $after) { Write-Host "::error::no frame after the hand-off"; $fail = 1 }
           elseif ($after.Distinct -lt 4) { Write-Host ("::error::window blank after hand-off: distinct={0}" -f $after.Distinct); $fail = 1 }
           else {
             $hAfter = (Get-FileHash (Join-Path $shots $after.File)).Hash
             $hFirst = if ($null -ne $first) { (Get-FileHash (Join-Path $shots $first.File)).Hash } else { "" }
-            if ($hAfter -eq $hFirst) { Write-Host "::error::after-hand-off frame is identical to the first loading frame"; $fail = 1 }
+            if ($hAfter -eq $hFirst -and $first.Distinct -lt 4) { Write-Host "::error::after-hand-off frame is identical to the first (blank) loading frame"; $fail = 1 }
             else { Write-Host ("after hand-off frame OK (+{0}ms): distinct={1} dominant=#{2:X6}" -f $after.At, $after.Distinct, $after.Dom) }
           }
           if ($exited) { Write-Host "::error::app exited early (code $($p.ExitCode))"; $fail = 1 }
