@@ -38,9 +38,17 @@ export class AppStore {
   private sidebarPending = 0;
   private sidebarConfirmed = false;
   private sidebarChain: Promise<void> = Promise.resolve();
-  private ovSeq = 0;
+  // Overlay style: ovServer = last value known from the backend (setter confirmation or fetch);
+  // ovUser holds only the fields the user edited that are not yet confirmed (ovDirty: field -> edit
+  // number). The visible style is ovServer overlaid with ovUser, so external changes (a drag) reach
+  // every field the user has not touched. ovConfirms counts setter confirmations; a settings fetch
+  // that started before one is stale for the overlay and is dropped and repeated.
+  private ovServer: OverlayStyleDTO | null = null;
+  private ovUser: Partial<OverlayStyleDTO> = {};
+  private ovDirty = new Map<keyof OverlayStyleDTO, number>();
+  private ovEditSeq = 0;
+  private ovConfirms = 0;
   private ovPending = 0;
-  private ovConfirmed: OverlayStyleDTO | null = null;
   private ovTimer: ReturnType<typeof setTimeout> | null = null;
   private ovChain: Promise<void> = Promise.resolve();
   selectedId = $state<string | null>(null);
@@ -154,11 +162,14 @@ export class AppStore {
 
   async loadSettings(): Promise<void> {
     const seq = this.sidebarSeq;
-    const ovGen = this.ovSeq;
+    const confirms = this.ovConfirms;
     const next = await this.api.call('settings.get');
     if (this.sidebarSeq !== seq || this.sidebarPending > 0) next.sidebar_collapsed = this.settings?.sidebar_collapsed ?? next.sidebar_collapsed;
-    if (this.ovSeq !== ovGen || this.ovTimer !== null || this.ovPending > 0) next.overlay_style = this.settings?.overlay_style ?? next.overlay_style;
+    const stale = this.ovServer !== null && confirms !== this.ovConfirms;
+    if (!stale) this.ovServer = { ...next.overlay_style };
     this.settings = next;
+    this.composeOverlay();
+    if (stale) void this.loadSettings();
   }
 
   // Every way out of the editor goes through the guarded autosave-and-close.
@@ -298,43 +309,63 @@ export class AppStore {
   // one at a time like the sidebar toggle; a failure rolls back to the last backend-confirmed style
   // unless a newer edit is waiting. The backend's clamped answer replaces the local value.
   setOverlayStyle(patch: Partial<OverlayStyleDTO>): Promise<void> {
-    if (!this.settings) return Promise.resolve();
-    this.beginOverlayEdit();
-    this.settings.overlay_style = { ...this.settings.overlay_style, ...patch };
+    if (!this.settings || !this.ovServer) return Promise.resolve();
+    this.markDirty(patch);
+    if (this.ovTimer !== null) clearTimeout(this.ovTimer);
     this.ovTimer = setTimeout(() => { this.ovTimer = null; void this.sendOverlayStyle('overlay.setStyle'); }, 120);
     return this.ovChain;
   }
 
+  // Reset is an edit of every field (to the defaults), so it overrides earlier pending edits and
+  // loses to later ones.
   resetOverlayStyle(): Promise<void> {
-    if (!this.settings) return Promise.resolve();
-    this.beginOverlayEdit();
-    this.settings.overlay_style = { ...OVERLAY_DEFAULTS };
+    if (!this.settings || !this.ovServer) return Promise.resolve();
+    if (this.ovTimer !== null) { clearTimeout(this.ovTimer); this.ovTimer = null; }
+    this.markDirty({ ...OVERLAY_DEFAULTS });
     return this.sendOverlayStyle('overlay.resetStyle');
   }
 
-  // Every edit advances the generation at once: a response or failure only touches the visible
-  // state when no newer edit exists, and a rollback goes to the last backend-confirmed style.
-  private beginOverlayEdit(): void {
-    if (this.ovPending === 0 && this.ovTimer === null && this.settings) this.ovConfirmed = { ...this.settings.overlay_style };
-    if (this.ovTimer !== null) { clearTimeout(this.ovTimer); this.ovTimer = null; }
-    this.ovSeq++;
+  private markDirty(patch: Partial<OverlayStyleDTO>): void {
+    for (const k of Object.keys(patch) as (keyof OverlayStyleDTO)[]) {
+      (this.ovUser as Record<string, unknown>)[k] = patch[k];
+      this.ovDirty.set(k, ++this.ovEditSeq);
+    }
+    this.composeOverlay();
+  }
+
+  private composeOverlay(): void {
+    if (this.settings && this.ovServer) this.settings.overlay_style = { ...this.ovServer, ...this.ovUser };
+  }
+
+  // Edits made after a send keep their fields dirty; the rest is settled by the response.
+  private settleOverlay(sent: Map<keyof OverlayStyleDTO, number>): void {
+    for (const [k, n] of sent) {
+      if (this.ovDirty.get(k) === n) { this.ovDirty.delete(k); delete this.ovUser[k]; }
+    }
   }
 
   private sendOverlayStyle(method: 'overlay.setStyle' | 'overlay.resetStyle'): Promise<void> {
-    if (!this.settings) return this.ovChain;
-    const style = { ...this.settings.overlay_style };
-    const gen = this.ovSeq;
+    if (!this.settings || !this.ovServer) return this.ovChain;
+    const sentKeys = new Map(this.ovDirty);
     this.ovPending++;
     const run = async () => {
+      // Built when the request actually goes out: user-edited fields plus the newest external
+      // values (a drag that happened meanwhile).
+      const style = { ...this.ovServer!, ...this.ovUser } as OverlayStyleDTO;
       try {
         const eff = method === 'overlay.resetStyle' ? await this.api.call(method) : await this.api.call(method, style);
-        this.ovConfirmed = eff;
-        if (gen === this.ovSeq && this.settings) this.settings.overlay_style = eff;
+        this.ovConfirms++;
+        const server = this.ovServer!;
+        for (const k of Object.keys(eff) as (keyof OverlayStyleDTO)[]) {
+          if (sentKeys.has(k) || style[k] !== eff[k]) (server as unknown as Record<string, unknown>)[k] = eff[k];
+        }
+        this.settleOverlay(sentKeys);
       } catch (e) {
-        if (gen === this.ovSeq && this.settings && this.ovConfirmed) this.settings.overlay_style = this.ovConfirmed;
+        this.settleOverlay(sentKeys);
         this.error = errorText(e);
       } finally {
         this.ovPending--;
+        this.composeOverlay();
       }
     };
     this.ovChain = this.ovChain.then(run);

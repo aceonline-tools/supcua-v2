@@ -278,8 +278,7 @@ type devMode struct {
 var _ = [1]byte{}[unsafe.Sizeof(devMode{})-220]
 
 const (
-	displayAttachedToDesktop = 0x1
-	enumCurrentSettings      = ^uintptr(0) // (DWORD)-1
+	enumCurrentSettings = ^uintptr(0) // (DWORD)-1
 )
 
 var (
@@ -297,7 +296,7 @@ func Monitors() []model.Rect {
 		if ok, _, _ := procEnumDisplayDevices.Call(0, uintptr(i), uintptr(unsafe.Pointer(&dd)), 0); ok == 0 {
 			break
 		}
-		if dd.StateFlags&displayAttachedToDesktop == 0 {
+		if !monitorDeviceActive(dd.StateFlags) {
 			continue
 		}
 		dm := devMode{Size: uint16(unsafe.Sizeof(devMode{}))}

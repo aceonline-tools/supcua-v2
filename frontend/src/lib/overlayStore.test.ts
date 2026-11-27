@@ -56,6 +56,7 @@ describe('overlay style edit races', () => {
     await tick(10);
     expect(st()).toMatchObject({ width: 300 });
     await tick();
+    expect(gates[1].params).toMatchObject({ radius: 0, width: 300 });
     gates[1].release(true);
     await tick(10);
     expect(st()).toMatchObject({ radius: 0, width: 136 });
@@ -100,5 +101,61 @@ describe('overlay style edit races', () => {
     resolveGet!();
     await load;
     expect(st().radius).toBe(9);
+  });
+
+  const seed = () => (mock as unknown as { seed: { settings: { overlay_style: OverlayStyleDTO } } }).seed.settings.overlay_style;
+  const drag = async (x: number, y: number) => {
+    seed().x = x; seed().y = y;
+    mock.push('settings.changed', { fields: ['overlay_style'] });
+    await tick(1);
+  };
+
+  it('a settings fetch started during an edit cannot overwrite the edit\'s completed result', async () => {
+    const orig = mock.call.bind(mock);
+    let hold: (() => void) | undefined;
+    let first = true;
+    mock.call = (m: string, p: unknown) => {
+      if (m === 'settings.get' && first) { // snapshot taken NOW (the backend's previous value), delivered late
+        first = false;
+        return orig(m, p).then((r) => new Promise((res) => { hold = () => res(r); }));
+      }
+      return orig(m, p);
+    };
+    store.setOverlayStyle({ radius: 10 });
+    await tick();
+    expect(gates).toHaveLength(1);
+    const load = store.loadSettings();
+    await tick(1);
+    gates[0].release(); // A completes; the backend now has radius 10
+    await tick(10);
+    expect(st().radius).toBe(10);
+    hold!(); // the old fetch lands after A's confirmation
+    await load;
+    await tick(10);
+    expect(st().radius).toBe(10);
+  });
+
+  it('a pending colour edit + a drag: the sent style has the new colour AND the dragged X/Y', async () => {
+    store.setOverlayStyle({ background: '#112233' });
+    await drag(640, 360);
+    expect(st()).toMatchObject({ background: '#112233', x: 640, y: 360 });
+    await tick();
+    expect(gates).toHaveLength(1);
+    expect(gates[0].params).toMatchObject({ background: '#112233', x: 640, y: 360 });
+  });
+
+  it('X/Y typed by the user win over a drag that lands before the debounce fires', async () => {
+    store.setOverlayStyle({ x: 111, y: 222 });
+    await drag(640, 360);
+    expect(st()).toMatchObject({ x: 111, y: 222 });
+    await tick();
+    expect(gates[0].params).toMatchObject({ x: 111, y: 222 });
+  });
+
+  it('a drag that happened before the edit is not reverted by it', async () => {
+    await drag(500, 300);
+    store.setOverlayStyle({ radius: 8 });
+    await tick();
+    expect(gates[0].params).toMatchObject({ radius: 8, x: 500, y: 300 });
   });
 });
