@@ -591,3 +591,35 @@ func TestE1bBlockingLogSinkNeverStallsSealOrCleanup(t *testing.T) {
 	waitFor(t, func() bool { sess.lateMu.Lock(); defer sess.lateMu.Unlock(); return !sess.lateRunning })
 	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 && len(recoveryFiles(t, e2.dir)) == 1 })
 }
+
+// Empty reservations (a write in progress) are neither counted toward the kept five nor pruned;
+// a stale empty one (crash leftover) is removed.
+func TestE1bPruneIgnoresInProgressReservationsAndRemovesStaleOnes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "recovered")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(dir, "a-0000000000001-0000000001.json")  // oldest name, write in progress
+	stale := filepath.Join(dir, "a-0000000000002-0000000001.json") // crash leftover
+	for _, p := range []string{live, stale} {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-staleReservation - time.Minute)
+	_ = os.Chtimes(stale, old, old)
+	for rev := uint64(1); rev <= 5; rev++ {
+		if _, err := writeRecovery(dir, RecoveryEnvelope{V: 1, ScriptID: "a", Revision: rev, Script: edScript("a")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Fatal("an in-progress reservation must survive pruning")
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("a stale empty reservation must be removed")
+	}
+	if n := len(recoveryFiles(t, dir)); n != 5 {
+		t.Fatalf("five real files kept: %d", n)
+	}
+}

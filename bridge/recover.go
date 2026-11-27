@@ -388,6 +388,9 @@ func parseRecoveryName(name, prefix string) (recName, bool) {
 
 // pruneRecovery keeps the newest recoveredKeep files of a script, ordered numerically by
 // (ms, revision, n) — never lexically.
+// staleReservation is the age after which an empty reserved name is a crash leftover.
+const staleReservation = 10 * time.Minute
+
 func pruneRecovery(dir, prefix string) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -395,9 +398,19 @@ func pruneRecovery(dir, prefix string) {
 	}
 	var mine []recName
 	for _, e := range ents {
-		if r, ok := parseRecoveryName(e.Name(), prefix); ok {
-			mine = append(mine, r)
+		r, ok := parseRecoveryName(e.Name(), prefix)
+		if !ok {
+			continue
 		}
+		if info, err := e.Info(); err != nil || info.Size() == 0 {
+			// an empty file is a reservation: still being written (never counted or pruned), or
+			// left by a crash (removed once it is clearly stale)
+			if err == nil && time.Since(info.ModTime()) > staleReservation {
+				_ = os.Remove(filepath.Join(dir, e.Name()))
+			}
+			continue
+		}
+		mine = append(mine, r)
 	}
 	sort.Slice(mine, func(i, j int) bool {
 		a, b := mine[i], mine[j]
