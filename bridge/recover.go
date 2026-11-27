@@ -74,7 +74,7 @@ const (
 // then is abandoned (file only); a file write still running is logged when it lands. released is
 // called as soon as persistence is settled, before any wait on file I/O (the gate never waits on it).
 func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool, deadline time.Time, released func()) RecoverResult {
-	snap := sess.snap.Load()
+	snap := sess.seal()
 	if snap == nil || !snap.ok || snap.rev <= snap.lastSaved {
 		released()
 		return RecoverResult{}
@@ -89,7 +89,7 @@ func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool, deadline 
 		err  error
 	}
 	var fileCh chan fileRes
-	var late atomic.Bool
+	var fileSt atomic.Int32 // the completion/abandonment handshake: exactly one side wins
 	if b.recoveredDir != "" && clk.Now().Before(deadline) {
 		fileCh = make(chan fileRes, 1)
 		env := RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: snap.rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: snap.script}
@@ -97,10 +97,10 @@ func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool, deadline 
 		go func() {
 			b.at("recover.file")
 			path, err := writeRecovery(dir, env)
-			if late.Load() {
+			fileCh <- fileRes{path, err}
+			if !fileSt.CompareAndSwap(recPending, recEnqueued) { // cleanup gave up on it first
 				log.Printf("bridge: late recovery file for script %s: path=%q err=%v", sess.scriptID, path, err)
 			}
-			fileCh <- fileRes{path, err}
 		}()
 	}
 
@@ -125,17 +125,12 @@ func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool, deadline 
 	if fileCh != nil {
 		var r fileRes
 		got := false
-		select { // a finished write wins over an expired deadline
+		select {
 		case r, got = <-fileCh:
-		default:
-			select {
-			case r, got = <-fileCh:
-			case <-expired:
-				late.Store(true)
-				select { // the write may have landed while the flag was being set
-				case r, got = <-fileCh:
-				default:
-				}
+			fileSt.Store(recEnqueued)
+		case <-expired:
+			if !fileSt.CompareAndSwap(recPending, recAbandoned) {
+				r, got = <-fileCh // it completed first: its result is already sent
 			}
 		}
 		switch {
@@ -188,6 +183,8 @@ func (b *Bridge) persistRecovery(sess *editorSession, snap *recSnap, st *atomic.
 		return false
 	}
 	cur := b.liveLocked()
+	b.admitMu.Lock() // a newer generation registers its script either before this check or after the enqueue
+	b.at("recover.admit")
 	_, queued := rs.QueueSaveIf(script.ID, sess.etag, false, func() bool {
 		if cur != nil && cur.scriptID == script.ID {
 			return false
@@ -199,6 +196,7 @@ func (b *Bridge) persistRecovery(sess *editorSession, snap *recSnap, st *atomic.
 		}
 		return clk.Now().Before(deadline) && st.CompareAndSwap(recPending, recEnqueued)
 	}, script)
+	b.admitMu.Unlock()
 	if !queued {
 		b.mu.Unlock()
 		b.qMu.Unlock()
@@ -223,6 +221,22 @@ func (b *Bridge) persistRecovery(sess *editorSession, snap *recSnap, st *atomic.
 	return true
 }
 
+// lateRecoveryFile writes a payload published after its session was sealed as an extra file-only
+// recovery file (amendment I), on its own goroutine, and logs the outcome. Nothing is dropped.
+func (b *Bridge) lateRecoveryFile(sess *editorSession, script model.Script, rev uint64) {
+	dir := b.recoveredDir
+	log.Printf("bridge: save payload rev %d of script %s arrived after recovery sealed the session; writing it file-only", rev, sess.scriptID)
+	if dir == "" {
+		return
+	}
+	env := RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: script}
+	go func() {
+		path, err := writeRecovery(dir, env)
+		log.Printf("bridge: late-payload recovery file for script %s rev %d: path=%q err=%v", sess.scriptID, rev, path, err)
+		b.at("recover.latefile")
+	}()
+}
+
 // writeRecovery writes the envelope as compact JSON, atomically (temp + rename), 0600. The script
 // is bounded by the same compact measure as every draft (maxDraftBytes); the envelope adds only its
 // fixed fields, so no slack is allowed.
@@ -237,8 +251,7 @@ func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("%s-%d.json", safeName(env.ScriptID), time.Now().UnixMilli())
-	final := filepath.Join(dir, name)
+	base := fmt.Sprintf("%s-%d-%d", safeName(env.ScriptID), time.Now().UnixMilli(), env.Revision)
 	tmp, err := os.CreateTemp(dir, ".recover-*")
 	if err != nil {
 		return "", err
@@ -254,12 +267,42 @@ func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
 		_ = os.Remove(tmpName)
 		return "", err
 	}
-	if err := os.Rename(tmpName, final); err != nil {
+	final, err := linkRecoveryName(dir, base, tmpName)
+	if err != nil {
 		_ = os.Remove(tmpName)
 		return "", err
 	}
 	pruneRecovery(dir, safeName(env.ScriptID))
 	return final, nil
+}
+
+// linkRecoveryName publishes the finished temp file under a unique final name: os.Link fails when
+// the name exists, so two recovery files written in the same millisecond never replace each other
+// and readers never see a partial file.
+func linkRecoveryName(dir, base, tmpName string) (string, error) {
+	for n := 0; n < 100; n++ {
+		name := base + ".json"
+		if n > 0 {
+			name = fmt.Sprintf("%s-%d.json", base, n)
+		}
+		p := filepath.Join(dir, name)
+		err := os.Link(tmpName, p)
+		if err == nil {
+			_ = os.Remove(tmpName)
+			return p, nil
+		}
+		if os.IsExist(err) {
+			continue
+		}
+		// no hard links on this filesystem: rename onto a name that does not exist yet
+		if _, serr := os.Lstat(p); os.IsNotExist(serr) {
+			if rerr := os.Rename(tmpName, p); rerr != nil {
+				return "", rerr
+			}
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no free recovery file name")
 }
 
 func safeName(id string) string {

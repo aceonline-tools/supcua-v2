@@ -167,6 +167,9 @@ func TestE1bItem2DetachedRecoveryNeverOverwritesANewerSaveOfTheSameScript(t *tes
 // Item 3 (amendment C): the recovery file is written on its own goroutine; a stalled write neither
 // holds the gate nor delays cleanup past the deadline, and lands late (logged).
 func TestE1bItem3StalledRecoveryFileWriteIsBoundedAndNeverHoldsTheGate(t *testing.T) {
+	buf := &syncBuf{}
+	log.SetOutput(buf)
+	defer log.SetOutput(os.Stderr)
 	e := newEdRig(t, edScript("a"))
 	e.openAll(t, "a")
 	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Draft")+`}`)
@@ -187,6 +190,8 @@ func TestE1bItem3StalledRecoveryFileWriteIsBoundedAndNeverHoldsTheGate(t *testin
 	}
 	close(h.release["recover.file"])
 	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 })
+	// the completion/abandonment handshake: a write that lands after cleanup gave up is always logged
+	waitFor(t, func() bool { return strings.Contains(buf.String(), "late recovery file for script a") })
 }
 
 // Item 4 (amendment D): a save paused before its commit check past the lease bound is still the
@@ -342,4 +347,106 @@ func TestE1bItem8CleanupIsBoundedWithBridgeLocksAndCaptureEndBlocked(t *testing.
 		t.Fatalf("persisted after abandonment: %v", queuedNames(e))
 	}
 	waitFor(t, func() bool { return len(recoveryFiles(t, e.dir)) == 1 })
+}
+
+// Review fix 1 (amendment I): a save paused before it publishes its entry draft, resumed after
+// recovery sealed the session and finished, is never dropped: it lands as a second, file-only
+// recovery file with its own revision, and the save itself gets SESSION_CLOSING.
+func TestE1bSealLatePublishAfterRecoveryIsWrittenAsItsOwnRecoveryFile(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Checkpoint")+`}`)
+	h := hookStages(e, []string{"publish"}, []string{"lease.wait", "recover.latefile"})
+	saveErr := make(chan error, 1)
+	go func() {
+		_, err := e.m["editor.save"](json.RawMessage(`{"sessionId":"` + e.sid + `","snapshotRev":3,"script":` + scriptJSON("a", "Late Payload") + `}`))
+		saveErr <- err
+	}()
+	recv(t, h.in["publish"], "the save paused before publishing")
+	e.b.win.ProcessFailed(e.gen, 1)
+	_, done := e.b.win.waitChans()
+	recv(t, h.reached["lease.wait"], "the lease wait")
+	e.clk.Advance(saveLeaseWaitMax + time.Millisecond)
+	recv(t, done, "recovery sealed and finished")
+	if f := recoveryFiles(t, e.dir); len(f) != 1 || f[0].Revision != 2 {
+		t.Fatalf("the sealed snapshot is the checkpoint: %+v", f)
+	}
+	close(h.release["publish"])
+	wantCode(t, <-saveErr, CodeSessionClosing)
+	recv(t, h.reached["recover.latefile"], "the late payload's file")
+	f := recoveryFiles(t, e.dir)
+	late := false
+	for _, env := range f {
+		late = late || env.Revision == 3 && env.Script.Name == "Late Payload"
+	}
+	if len(f) != 2 || !late {
+		t.Fatalf("the late payload must be a second recovery file: %+v", f)
+	}
+	if e.scr("a").Name != "S a" {
+		t.Fatalf("file-only: %q", e.scr("a").Name)
+	}
+}
+
+// Review fix 2 (amendment J): B's openWindow interleaving exactly between recovery's admission
+// check and its enqueue waits on the admission lock, so recovery enqueues first and B's session
+// opens on the recovered script and the store revision it produced.
+func TestE1bAdmissionOpenBetweenRecoveryCheckAndEnqueueSeesTheRecoveredRevision(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "A Draft")+`}`)
+	h := hookStages(e, []string{"recover.admit"}, []string{"recover.persisted"})
+	e.b.win.ProcessFailed(e.gen, 1)
+	_, doneA := e.b.win.waitChans()
+	recv(t, h.in["recover.admit"], "recovery inside its admission")
+
+	opened := make(chan uint64, 1)
+	go func() {
+		v, err := e.m["editor.openWindow"](json.RawMessage(`{"id":"a"}`))
+		if err != nil {
+			opened <- 0
+			return
+		}
+		raw, _ := json.Marshal(v)
+		var r struct{ Gen uint64 }
+		_ = json.Unmarshal(raw, &r)
+		opened <- r.Gen
+	}()
+	select {
+	case <-opened:
+		t.Fatal("B registered its script while recovery held the admission")
+	case <-time.After(60 * time.Millisecond):
+	}
+	close(h.release["recover.admit"])
+	recv(t, h.reached["recover.persisted"], "recovery deciding")
+	recv(t, doneA, "A's cleanup")
+	var genB uint64
+	select {
+	case genB = <-opened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's open never completed")
+	}
+	if genB == 0 || !hasQueued(e, "a=A Draft") {
+		t.Fatalf("recovery enqueued first: gen=%d %v", genB, queuedNames(e))
+	}
+	e.gen = genB
+	e.b.win.WindowReady(genB)
+	e.mustCall(t, "editor.windowReady", ``)
+	s := e.mustCall(t, "editor.open", `{"id":"a"}`)
+	if s["script"].(map[string]any)["name"] != "A Draft" {
+		t.Fatalf("B must open on the recovered script: %v", s["script"])
+	}
+	if sess := e.b.curSess(); sess == nil || sess.etag != e.store.Revision("a") {
+		t.Fatal("B's etag is the revision recovery produced")
+	}
+}
+
+// Two recovery files of one script written back to back (same millisecond) never replace each other.
+func TestE1bRecoveryFilesInTheSameMillisecondDoNotOverwrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "recovered")
+	env := RecoveryEnvelope{V: 1, ScriptID: "a", Revision: 7, Script: edScript("a")}
+	p1, err1 := writeRecovery(dir, env)
+	p2, err2 := writeRecovery(dir, env)
+	if err1 != nil || err2 != nil || p1 == p2 || len(recoveryFiles(t, dir)) != 2 {
+		t.Fatalf("%q %q %v %v", p1, p2, err1, err2)
+	}
 }

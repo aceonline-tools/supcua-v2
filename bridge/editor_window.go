@@ -125,7 +125,7 @@ type windowCtl struct {
 
 	pendingOut *BoundsOut // fallback size waiting for the page's measureAck or the grace timer
 
-	activeScript atomic.Pointer[string] // the script of the active generation (lock-free, read by recovery)
+	activeScript atomic.Pointer[string] // the script of the active generation; set under Bridge.admitMu
 
 	destroyed chan struct{} // closed when this window's HWND is gone
 	done      chan struct{} // closed when its session cleanup (recovery included) finished
@@ -245,7 +245,9 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 	// is disabled BEFORE the editor can be interactive (contract §4.2).
 	c.mainWasVisible = visible
 	c.state, c.gen, c.scriptID = stCreating, 0, id
+	c.b.admitMu.Lock() // atomic with recovery's admission + enqueue (amendment J)
 	c.activeScript.Store(id)
+	c.b.admitMu.Unlock()
 	c.shown, c.shutdown, c.token, c.tries = false, false, 0, 0
 	c.recoverBy = time.Time{}
 	c.destroyed, c.done = make(chan struct{}), make(chan struct{})

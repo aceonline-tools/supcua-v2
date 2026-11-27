@@ -30,11 +30,17 @@ type editorSession struct {
 	etag         uint64 // the store revision of scriptID this session last saw (open or its own enqueue)
 
 	// Lock-free state: the UI-thread teardown and the bounded recovery must never wait on Bridge.mu.
-	closingFlag atomic.Bool             // cleanup began: new saves are refused, uncommitted ones rejected
-	detachedA   atomic.Bool             // teardown released it: no lookup returns it (Bridge.session is cleared lazily)
-	savingN     atomic.Int32            // saves holding the lease
-	notify      chan struct{}           // a lease was released (cap 1)
-	snap        atomic.Pointer[recSnap] // newest unsaved draft, republished under Bridge.mu on every change
+	closingFlag atomic.Bool // cleanup began: new saves are refused, uncommitted ones rejected
+	detachedA   atomic.Bool // teardown released it: no lookup returns it (Bridge.session is cleared lazily)
+
+	// sealed orders entry publication against recovery's final snapshot without a lock (amendment
+	// I): recovery stores sealed then loads snap; a publish stores snap then loads sealed. With
+	// sequentially consistent atomics a payload is in the snapshot, or its publisher sees sealed and
+	// writes its own file (possibly both: an extra file, never a lost one).
+	sealed  atomic.Bool
+	savingN atomic.Int32            // saves holding the lease
+	notify  chan struct{}           // a lease was released (cap 1)
+	snap    atomic.Pointer[recSnap] // newest unsaved draft, republished under Bridge.mu on every change
 }
 
 // recSnap is what recovery reads without any lock.
@@ -43,6 +49,12 @@ type recSnap struct {
 	script    model.Script
 	rev       uint64
 	lastSaved uint64
+}
+
+// seal takes recovery's final snapshot and seals the session against later entry publication.
+func (s *editorSession) seal() *recSnap {
+	s.sealed.Store(true)
+	return s.snap.Load()
 }
 
 // isClosing reports whether cleanup began.
@@ -209,12 +221,13 @@ func (b *Bridge) publishEntry(sess *editorSession, script model.Script, snapshot
 // publishEntryRev makes a save's payload the session's newest draft at save entry, before any
 // check that can reject it (editor-window §6.5 amendment D), so recovery always sees it.
 func (b *Bridge) publishEntryRev(sess *editorSession, script model.Script, rev uint64) {
+	b.at("publish")
 	if draftBytes(script) > maxDraftBytes {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if rev <= sess.lastSavedRev || rev <= sess.entryRev {
+		b.mu.Unlock()
 		return
 	}
 	sess.entry, sess.entryRev = &script, rev
@@ -222,6 +235,10 @@ func (b *Bridge) publishEntryRev(sess *editorSession, script model.Script, rev u
 		sess.dirtyRev = rev
 	}
 	sess.publishLocked()
+	b.mu.Unlock()
+	if sess.sealed.Load() { // recovery may have taken its final snapshot before this publish
+		b.lateRecoveryFile(sess, script, rev)
+	}
 }
 
 // maxRevision is the largest JS-safe integer (2^53-1).
