@@ -13,6 +13,16 @@ type RoleLists struct {
 	Both, MainOnly, EditorOnly, TransitionalMain []string
 }
 
+// SelftestMainAllow lists the editor-only methods the Windows self-test harness (ui/selftest_windows.go)
+// still drives from the main page as a raw-RPC leak test. main.go passes it as the matrix's transitional
+// set only under -selftest; the shipped app allows main none of them.
+func SelftestMainAllow() []string {
+	return []string{
+		"editor.open", "editor.save", "editor.describeActions", "editor.toJSON", "editor.fromJSON",
+		"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.mouse.stop", "capture.stop",
+	}
+}
+
 // Roles returns the method classification. Names for methods that do not exist yet (E1b) are
 // listed so their registration needs no matrix change.
 func Roles() RoleLists {

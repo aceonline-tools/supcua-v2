@@ -609,11 +609,15 @@ func main() {
 	var navLogged sync.Once
 	stages.Mark("creating webview")
 	roleLists := bridge.Roles()
+	transitional := roleLists.TransitionalMain
+	if selftest != nil {
+		transitional = bridge.SelftestMainAllow()
+	}
 	webUI, err := webview.New(webview.Config{
 		Title:           title,
 		Methods:         methods,
 		CtxMethods:      br.CtxMethods(),
-		Roles:           rpc.NewMatrix(roleLists.Both, roleLists.MainOnly, roleLists.EditorOnly, roleLists.TransitionalMain),
+		Roles:           rpc.NewMatrix(roleLists.Both, roleLists.MainOnly, roleLists.EditorOnly, transitional),
 		Assets:          assets.FS(),
 		DarkTitleBar:    wantDark(appConfig.Theme),
 		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},

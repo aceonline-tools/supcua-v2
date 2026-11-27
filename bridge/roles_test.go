@@ -85,3 +85,19 @@ func TestLegacyEditorCloseIsMainOnly(t *testing.T) {
 		t.Fatalf("editor.close must be classified main-only only: %+v", r)
 	}
 }
+
+func TestSelftestMainAllowIsEditorOnlyAndNotShipped(t *testing.T) {
+	r := Roles()
+	if len(r.TransitionalMain) != 0 {
+		t.Fatalf("shipped matrix must give main no editor-only method: %v", r.TransitionalMain)
+	}
+	editor := map[string]bool{}
+	for _, n := range r.EditorOnly {
+		editor[n] = true
+	}
+	for _, n := range SelftestMainAllow() {
+		if !editor[n] {
+			t.Errorf("%s in SelftestMainAllow must be editor-only", n)
+		}
+	}
+}
