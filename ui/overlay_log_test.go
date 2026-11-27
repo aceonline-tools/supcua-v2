@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,5 +131,87 @@ func TestTapMayCallBackIntoLogger(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("tap deadlocked on the logger lock")
+	}
+}
+
+func collectSink(size int, gate <-chan struct{}) (*asyncSink, func() []string, chan struct{}) {
+	var mu sync.Mutex
+	var got []string
+	started := make(chan struct{}, 1)
+	a := newAsyncSink(size, func(s string) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		if gate != nil {
+			<-gate
+		}
+		mu.Lock()
+		got = append(got, s)
+		mu.Unlock()
+	})
+	return a, func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), got...) }, started
+}
+
+func waitLines(t *testing.T, get func() []string, n int) []string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if g := get(); len(g) >= n {
+			return g
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d lines, got %q", n, get())
+	return nil
+}
+
+func TestAsyncSinkPreservesOrder(t *testing.T) {
+	a, get, _ := collectSink(64, nil)
+	for i := 0; i < 50; i++ {
+		a.enqueue(fmt.Sprintf("overlay: %d", i))
+	}
+	got := waitLines(t, get, 50)
+	for i, l := range got {
+		if l != fmt.Sprintf("overlay: %d", i) {
+			t.Fatalf("out of order at %d: %q", i, l)
+		}
+	}
+}
+
+func TestAsyncSinkBlockedWriterDoesNotBlockProducer(t *testing.T) {
+	gate := make(chan struct{})
+	a, _, _ := collectSink(4, gate)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			a.enqueue("overlay: x")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("producer blocked on a stuck writer")
+	}
+	close(gate)
+}
+
+func TestAsyncSinkFullBufferReportsDropCount(t *testing.T) {
+	gate := make(chan struct{})
+	a, get, started := collectSink(4, gate)
+	a.enqueue("overlay: first")
+	<-started // writer is now stuck inside the first line; the buffer is empty
+	for i := 0; i < 4; i++ {
+		a.enqueue(fmt.Sprintf("overlay: buffered %d", i))
+	}
+	for i := 0; i < 3; i++ {
+		a.enqueue("overlay: lost")
+	}
+	close(gate)
+	got := waitLines(t, get, 6)
+	want := []string{"overlay: first", "overlay: 3 log lines dropped (log writer busy)", "overlay: buffered 0", "overlay: buffered 1", "overlay: buffered 2", "overlay: buffered 3"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q", got)
 	}
 }

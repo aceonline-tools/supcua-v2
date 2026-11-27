@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,7 +38,40 @@ func newOverlayLogger(out func(string), now func() time.Time) *overlayLogger {
 	return &overlayLogger{out: out, now: now, kinds: map[string]*overlayErrKind{}}
 }
 
-var overlayLog = newOverlayLogger(func(s string) { log.Print(s) }, time.Now)
+const overlayLogBuffer = 256
+
+// overlayLog writes through an async sink so a producer (the status hub subscriber, the UI
+// thread) never waits on the log writer.
+var overlayLog = newOverlayLogger(newAsyncSink(overlayLogBuffer, func(s string) { log.Print(s) }).enqueue, time.Now)
+
+// asyncSink hands lines to one goroutine that calls write in order. enqueue never blocks: when
+// the buffer is full the line is dropped and counted, and the count is reported before the next
+// line that gets through.
+type asyncSink struct {
+	ch      chan string
+	dropped atomic.Int64
+}
+
+func newAsyncSink(size int, write func(string)) *asyncSink {
+	a := &asyncSink{ch: make(chan string, size)}
+	go func() {
+		for line := range a.ch {
+			if n := a.dropped.Swap(0); n > 0 {
+				write(fmt.Sprintf("overlay: %d log lines dropped (log writer busy)", n))
+			}
+			write(line)
+		}
+	}()
+	return a
+}
+
+func (a *asyncSink) enqueue(line string) {
+	select {
+	case a.ch <- line:
+	default:
+		a.dropped.Add(1)
+	}
+}
 
 // oneLine keeps a line from being split by control characters.
 func oneLine(s string) string {

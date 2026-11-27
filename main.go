@@ -54,7 +54,7 @@ func (l *lateUI) tryPost(f func()) (bool, string) {
 	if u == nil {
 		return false, "UI window not ready"
 	}
-	if u.Closed() {
+	if u.Closed() { // best effort: a Quit between this check and Post still drops silently
 		return false, "UI closing"
 	}
 	u.Post(f)
