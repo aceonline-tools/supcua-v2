@@ -688,8 +688,8 @@ func TestRetryableRenameClassification(t *testing.T) {
 	if retryableRename(wrap(32)) != win || retryableRename(wrap(33)) != win {
 		t.Fatal("32/33 are retryable on Windows only")
 	}
-	if retryableRename(wrap(5)) || retryableRename(wrap(2)) || retryableRename(errors.New("x")) {
-		t.Fatal("access denied, not found and other errors are permanent")
+	if retryableRename(wrap(5)) != win || retryableRename(wrap(2)) || retryableRename(errors.New("x")) {
+		t.Fatal("access denied is retryable on Windows only; not found and other errors are permanent")
 	}
 }
 
@@ -700,4 +700,45 @@ func writeTmp(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// The Windows evidence for retrying ERROR_ACCESS_DENIED: while another handle (here a reader) holds
+// the destination open, MoveFileEx(REPLACE_EXISTING) fails; renameRetry waits it out and succeeds
+// once the handle is closed. The first error code is logged as the evidence.
+func TestRenameRetryWaitsOutAReaderHoldingTheDestinationWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows file-sharing semantics")
+	}
+	dir := t.TempDir()
+	src, dst := writeTmp(t, dir), filepath.Join(dir, "dst.json")
+	if err := os.WriteFile(dst, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dst) // a reader holding the reservation
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first error
+	n := 0
+	withRename(t, func(a, b string) error {
+		n++
+		e := os.Rename(a, b)
+		if e != nil && first == nil {
+			first = e
+			go func() { time.Sleep(100 * time.Millisecond); f.Close() }()
+		}
+		return e
+	}, retryableRename)
+	renameBackoff = 20 * time.Millisecond
+	err = renameRetry(src, dst)
+	f.Close()
+	var errno syscall.Errno
+	errors.As(first, &errno)
+	t.Logf("first rename error with the destination held open: %v (errno %d), attempts %d", first, uint(errno), n)
+	if first == nil {
+		t.Skip("this Windows build replaced a file held open: no sharing error to retry")
+	}
+	if err != nil || !retryableRename(first) {
+		t.Fatalf("renameRetry must wait out the reader: err=%v first=%v", err, first)
+	}
 }

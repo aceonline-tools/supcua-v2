@@ -325,10 +325,14 @@ func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
 	return final, nil
 }
 
-// renameRetry renames, retrying ONLY a transient Windows sharing or lock violation (a reader or an
-// antivirus scanner holding the reserved file open for a moment). Any other error returns at once.
-// Bounded (~1 s); it runs on the recovery-file goroutine only. ERROR_ACCESS_DENIED is not retried:
-// there is no evidence that a transient AV hold surfaces as it, and it is also the permanent error.
+// renameRetry renames, retrying ONLY a transient Windows sharing/lock violation or access denial (a
+// reader or an antivirus scanner holding the reserved file open for a moment). Any other error
+// returns at once. Bounded (~1 s); it runs on the recovery-file goroutine only.
+//
+// ERROR_ACCESS_DENIED is included on evidence: MoveFileEx(REPLACE_EXISTING) onto a destination
+// another handle holds open without FILE_SHARE_DELETE fails with 5, not 32 (CI run 46054332339,
+// and TestRenameRetryWaitsOutAReaderHoldingTheDestinationWindows). A permanent 5 (no permission)
+// costs at most the ~1 s bound.
 func renameRetry(from, to string) error {
 	var err error
 	for i := 0; i < renameTries; i++ {
@@ -347,14 +351,15 @@ var (
 	isRetryable   = retryableRename
 )
 
-// retryableRename reports a Windows ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33). The
-// errno values are Windows-specific (32 is EPIPE elsewhere), so other platforms never retry.
+// retryableRename reports a Windows ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32) or
+// ERROR_LOCK_VIOLATION (33). The errno values are Windows-specific (32 is EPIPE elsewhere), so other
+// platforms never retry.
 func retryableRename(err error) bool {
 	if runtime.GOOS != "windows" {
 		return false
 	}
 	var errno syscall.Errno
-	return errors.As(err, &errno) && (errno == 32 || errno == 33)
+	return errors.As(err, &errno) && (errno == 5 || errno == 32 || errno == 33)
 }
 
 // reserveRecoveryName creates base.json (or base-n.json) exclusively and returns its path.
