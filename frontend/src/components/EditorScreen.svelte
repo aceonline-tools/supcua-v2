@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
+  import type { IconName } from '../lib/icons';
   import type { AppStore } from '../lib/store.svelte';
   import type { HotkeyField } from '../api/types';
   import { gapAt, dropIndex, scrollStep } from '../lib/reorder';
@@ -12,13 +14,13 @@
   const ed = $derived(store.editor);
   const sc = $derived(ed.script);
   const num = (i: number) => String(i + 1).padStart(2, '0');
-  const mouseButtons: [string, string][] = [
-    ['Left Click', 'mouse_left_click'], ['Right Click', 'mouse_right_click'], ['Left Double', 'mouse_left_double'],
-    ['Right Double', 'mouse_right_double'], ['Left Down', 'mouse_left_down'], ['Right Down', 'mouse_right_down'],
-    ['Left Up', 'mouse_left_up'], ['Right Up', 'mouse_right_up'], ['Store Pos', 'mouse_store_pos'], ['Move Stored', 'mouse_move_stored'],
+  const mouseButtons: [string, string, IconName][] = [
+    ['Left Click', 'mouse_left_click', 'mouse-left'], ['Right Click', 'mouse_right_click', 'mouse-right'], ['Left Double', 'mouse_left_double', 'mouse-pointer-click'],
+    ['Right Double', 'mouse_right_double', 'mouse-pointer-click'], ['Left Down', 'mouse_left_down', 'arrow-down-to-line'], ['Right Down', 'mouse_right_down', 'arrow-down-to-line'],
+    ['Left Up', 'mouse_left_up', 'arrow-up-from-line'], ['Right Up', 'mouse_right_up', 'arrow-up-from-line'], ['Store Pos', 'mouse_store_pos', 'map-pin'], ['Move Stored', 'mouse_move_stored', 'locate-fixed'],
   ];
-  const locks: [string, string][] = [
-    ['Lock Mouse', 'lock_mouse'], ['Unlock Mouse', 'unlock_mouse'], ['Lock Keyboard', 'lock_keyboard'], ['Unlock Keyboard', 'unlock_keyboard'],
+  const locks: [string, string, IconName][] = [
+    ['Lock Mouse', 'lock_mouse', 'mouse-off'], ['Unlock Mouse', 'unlock_mouse', 'mouse'], ['Lock Keyboard', 'lock_keyboard', 'keyboard-off'], ['Unlock Keyboard', 'unlock_keyboard', 'keyboard'],
   ];
   const hk = (field: HotkeyField) => (field === 'toggle' ? sc?.toggle_hotkey : field === 'start' ? sc?.start_hotkey : sc?.stop_hotkey);
 
@@ -170,28 +172,28 @@
         <section>
           <h3>Mouse</h3>
           <div class="inline" style:margin-bottom="8px"><span>X: {ed.mouse.x}</span><span>Y: {ed.mouse.y}</span><span class="spacer"></span>
-            <button onclick={() => ed.addMouseMove()}>Move</button></div>
-          <div class="button-grid">{#each mouseButtons as [label, type] (type)}<button onclick={() => ed.addSimple(type)}>{label}</button>{/each}</div>
+            <button onclick={() => ed.addMouseMove()}><Icon name="move" />Move</button></div>
+          <div class="button-grid">{#each mouseButtons as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
           <div class="muted small tight">Press {store.settings?.capture_hotkey ?? 'P'} to capture cursor position</div>
         </section>
         <section>
           <h3>Keyboard</h3>
           <div class="inline" style:margin-bottom="6px">
             <button type="button" class="input hk-field" class:capturing={ed.capturing === 'key'} aria-label="Key"
-              onclick={() => ed.startKeyCapture()}>{#if ed.capturing === 'key'}<span class="accent">Press a key…</span>{:else if ed.builder.key}{ed.builder.key}{:else}<span class="muted">Click &amp; press key</span>{/if}</button>
-            <button onclick={() => ed.addKey('key_press')}>Press</button>
+              onclick={() => ed.startKeyCapture()}><Icon name="keyboard" />{#if ed.capturing === 'key'}<span class="accent">Press a key…</span>{:else if ed.builder.key}{ed.builder.key}{:else}<span class="muted">Click &amp; press key</span>{/if}</button>
+            <button onclick={() => ed.addKey('key_press')}><Icon name="corner-down-left" />Press</button>
           </div>
-          <div class="button-grid"><button onclick={() => ed.addKey('key_down')}>Key Down</button><button onclick={() => ed.addKey('key_up')}>Key Up</button></div>
+          <div class="button-grid"><button onclick={() => ed.addKey('key_down')}><Icon name="arrow-down-to-line" />Key Down</button><button onclick={() => ed.addKey('key_up')}><Icon name="arrow-up-from-line" />Key Up</button></div>
         </section>
         <section class="inline"><h3 class="side">Wait</h3>
           <input class="input" type="number" min="1" aria-label="Wait ms" bind:value={ed.builder.delay} /><span class="muted">ms</span>
-          <button onclick={() => ed.addDelay()}>Wait</button></section>
+          <button onclick={() => ed.addDelay()}><Icon name="timer" />Wait</button></section>
         <section class="inline"><h3 class="side">Loop</h3>
           <input class="input" type="number" min="0" title="0 = infinite" aria-label="Loop count" bind:value={ed.builder.loop} />
-          <button onclick={() => ed.addLoop()}>Start Loop</button><button onclick={() => ed.addSimple('loop_end')}>End Loop</button></section>
+          <button onclick={() => ed.addLoop()}><Icon name="repeat" />Start Loop</button><button onclick={() => ed.addSimple('loop_end')}><Icon name="circle-stop" />End Loop</button></section>
         <section>
           <h3>Lock</h3>
-          <div class="button-grid">{#each locks as [label, type] (type)}<button onclick={() => ed.addSimple(type)}>{label}</button>{/each}</div>
+          <div class="button-grid">{#each locks as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
         </section>
       </div>
 
@@ -203,7 +205,7 @@
               onclick={() => ed.selectAction(i)} ondblclick={() => ed.editSelected()}
               onkeydown={(e) => { if (e.key === 'Enter') ed.editSelected(); else if (e.key === ' ') { e.preventDefault(); ed.selectAction(i); } }}>
               <span class="grip" role="button" tabindex="-1" aria-label="Drag to reorder" title="Drag to reorder"
-                onpointerdown={(e) => startDrag(e, i)} ondblclick={(e) => e.stopPropagation()}>⋮⋮</span>
+                onpointerdown={(e) => startDrag(e, i)} ondblclick={(e) => e.stopPropagation()}><Icon name="grip-vertical" size={14} /></span>
               <span class="num">{num(i)}</span>{ed.labels[i] ?? a.type}
             </div>
           {/each}
@@ -211,16 +213,16 @@
           {#if indicatorTop !== null}<div class="drop-line" style="top:{indicatorTop}px"></div>{/if}
         </div>
         <div class="action-tools">
-          <button disabled={ed.selected < 0} onclick={() => ed.editSelected()}>Edit</button>
-          <button disabled={ed.selected < 0} onclick={() => ed.deleteSelected()}>Delete</button>
-          <button disabled={ed.selected <= 0} onclick={() => ed.move(-1)}>Up</button>
-          <button disabled={ed.selected < 0 || ed.selected >= sc.actions.length - 1} onclick={() => ed.move(1)}>Down</button>
+          <button disabled={ed.selected < 0} onclick={() => ed.editSelected()}><Icon name="pencil" />Edit</button>
+          <button disabled={ed.selected < 0} onclick={() => ed.deleteSelected()}><Icon name="trash-2" />Delete</button>
+          <button disabled={ed.selected <= 0} onclick={() => ed.move(-1)}><Icon name="arrow-up" />Up</button>
+          <button disabled={ed.selected < 0 || ed.selected >= sc.actions.length - 1} onclick={() => ed.move(1)}><Icon name="arrow-down" />Down</button>
         </div>
       </div>
     </div>
 
-    <div class="editor-foot"><button onclick={() => ed.openRaw()}>Raw JSON</button><span class="spacer"></span>
-      <button class="primary" onclick={() => ed.close()}>Close</button></div>
+    <div class="editor-foot"><button onclick={() => ed.openRaw()}><Icon name="braces" />Raw JSON</button><span class="spacer"></span>
+      <button class="primary" onclick={() => ed.close()}><Icon name="x" />Close</button></div>
   </main>
   <ActionDialog {ed} />
   <RawEditorDialog {ed} />

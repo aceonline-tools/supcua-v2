@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AppStore } from './lib/store.svelte';
+  import Icon from './components/Icon.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Scripts from './components/Scripts.svelte';
   import Settings from './components/Settings.svelte';
@@ -23,7 +24,7 @@
     <Sidebar {store} />
     <main>
       {#if store.error}
-        <div class="banner" role="alert">{store.error}<button onclick={() => (store.error = '')}>Dismiss</button></div>
+        <div class="banner" role="alert">{store.error}<button onclick={() => (store.error = '')}><Icon name="x" />Dismiss</button></div>
       {/if}
       {#if !store.loaded}
         <p class="muted">Loading…</p>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import { FIELD_LABEL, type EditorStore } from '../lib/editor.svelte';
   import { formatHotkey } from '../lib/format';
   let { ed }: { ed: EditorStore } = $props();
@@ -17,8 +18,8 @@
         {/each}
       </div>
       <div class="dialog-footer">
-        <button bind:this={yes} class="primary" onclick={() => ed.resolveConflict(true)}>Yes</button>
-        <button onclick={() => ed.resolveConflict(false)}>No</button>
+        <button bind:this={yes} class="primary" onclick={() => ed.resolveConflict(true)}><Icon name="check" />Yes</button>
+        <button onclick={() => ed.resolveConflict(false)}><Icon name="x" />No</button>
       </div>
     </div>
   </div>

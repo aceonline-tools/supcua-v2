@@ -1,8 +1,9 @@
 import { ApiError, type Transport } from './client';
 import { formatHotkey, parseHotkey } from '../lib/format';
+import { OVERLAY_DEFAULTS, clampOverlayStyle, validateOverlayStyle } from '../lib/overlayStyle';
 import type {
   Action, ActionSpec, BootState, GroupDTO, HotkeyConflict, ParamSpec, RunMode, Script, ScriptList,
-  ScriptSummary, SettingsDTO, StateDTO,
+  ScriptSummary, SettingsDTO, StateDTO, OverlayStyleDTO,
 } from './types';
 
 export interface MockSeed {
@@ -31,6 +32,7 @@ export function defaultSeed(): MockSeed {
       theme: 'dark', global_hotkey: 'RCtrl', capture_hotkey: 'P', overlay_hotkey: 'Ctrl + O',
       overlay_enabled: true, key_press_duration_ms: 10, scripts_dir: './scripts',
       auto_active_enabled: true, auto_active_process_name: 'game.exe', collapsed_groups: [], sidebar_collapsed: false,
+      overlay_style: { ...OVERLAY_DEFAULTS },
     },
     state: {
       global_active: true, running_id: '', running_name: '', editor_open: false,
@@ -60,7 +62,8 @@ export const MOCK_CATALOG: ActionSpec[] = [
   spec('mouse_move', 'mouse', [P('x', 'int', 0, 10000, 0), P('y', 'int', 0, 10000, 0)]),
   ...['mouse_left_click', 'mouse_right_click', 'mouse_left_double', 'mouse_right_double', 'mouse_left_down', 'mouse_left_up',
     'mouse_right_down', 'mouse_right_up', 'mouse_store_pos', 'mouse_move_stored'].map((t) => spec(t, 'mouse')),
-  ...['key_press', 'key_down', 'key_up'].map((t) => spec(t, 'keyboard', [P('key', 'string')])),
+  spec('key_press', 'keyboard', [P('key', 'string'), P('keys', 'keys'), P('key_delay_ms', 'int', 0, 5000, 50)]),
+  ...['key_down', 'key_up'].map((t) => spec(t, 'keyboard', [P('key', 'string')])),
   spec('delay', 'wait', [P('ms', 'int', 1, 600000, 100)]),
   spec('loop', 'loop', [P('count', 'int', 0, 100000, 1)]),
   spec('loop_end', 'loop'),
@@ -77,10 +80,12 @@ const LABELS: Record<string, string> = {
   loop_end: 'End Loop',
 };
 
+import { describeKeyPress } from '../lib/keySequence';
+
 function describe(a: Action): string {
   switch (a.type) {
     case 'mouse_move': return `Mouse Move → (${a.x ?? 0}, ${a.y ?? 0})`;
-    case 'key_press': return `Key Press: ${a.key ?? ''}`;
+    case 'key_press': return describeKeyPress(a);
     case 'key_down': return `Key Down: ${a.key ?? ''}`;
     case 'key_up': return `Key Up: ${a.key ?? ''}`;
     case 'delay': return `Delay: ${a.ms ?? 0}ms`;
@@ -123,6 +128,11 @@ export class MockBackend implements Transport {
 
   subscribe(handler: (name: string, payload: unknown) => void): void {
     this.emit = handler;
+  }
+
+  /** Emits a host key-down for the active capture; mods null mimics a host that reports no modifier state. */
+  pushKey(key: string, mods: string[] | null = []): void {
+    this.push('capture.key', { capture_id: this.currentCaptureId, key, mods });
   }
 
   push(name: string, payload: unknown): void {
@@ -325,6 +335,21 @@ export class MockBackend implements Transport {
         for (const k of ['enabled', 'visible', 'draggable'] as const) if (typeof p[k] === 'boolean') st.state.overlay[k] = p[k];
         st.settings.overlay_enabled = st.state.overlay.enabled;
         return st.state.overlay;
+      }
+      case 'overlay.setStyle': {
+        const v = validateOverlayStyle(p as unknown as OverlayStyleDTO);
+        if (v) throw new ApiError({ code: 'INVALID_SETTING', message: 'Invalid setting', field: v });
+        const eff = clampOverlayStyle(p as unknown as OverlayStyleDTO);
+        st.settings.overlay_style = eff;
+        st.state.overlay.x = eff.x; st.state.overlay.y = eff.y;
+        this.emit('settings.changed', { fields: ['overlay_style'] });
+        return eff;
+      }
+      case 'overlay.resetStyle': {
+        st.settings.overlay_style = { ...OVERLAY_DEFAULTS };
+        st.state.overlay.x = OVERLAY_DEFAULTS.x; st.state.overlay.y = OVERLAY_DEFAULTS.y;
+        this.emit('settings.changed', { fields: ['overlay_style'] });
+        return st.settings.overlay_style;
       }
       case 'autoactive.set': {
         if (typeof p.enabled === 'boolean') st.state.auto_active.enabled = p.enabled;

@@ -86,6 +86,8 @@ func keyToName(vk uint32) string {
 		return "shift"
 	case 0x12, 0xA4, 0xA5:
 		return "alt"
+	case 0x5B, 0x5C:
+		return "win"
 	}
 	return fmt.Sprintf("0x%02X", vk)
 }

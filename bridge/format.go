@@ -185,7 +185,7 @@ func describeAction(a model.Action) string {
 		}
 		return fmt.Sprintf("Mouse Move -> (%d, %d)", a.X, a.Y)
 	case model.ActionKeyPress:
-		return "Key Press: " + a.Key
+		return describeKeyPress(a)
 	case model.ActionKeyDown:
 		return "Key Down: " + a.Key
 	case model.ActionKeyUp:
@@ -203,6 +203,15 @@ func describeAction(a model.Action) string {
 		return fmt.Sprintf("If Image (then: %d, else: %d)", len(a.ThenActions), len(a.ElseActions))
 	}
 	return a.Type
+}
+
+func describeKeyPress(a model.Action) string {
+	seq := a.Sequence()
+	parts := make([]string, len(seq))
+	for i, k := range seq {
+		parts[i] = strings.Join(append(append([]string(nil), k.Mods...), k.Key), "+")
+	}
+	return "Key Press: " + strings.Join(parts, " → ")
 }
 
 func intp(v int) *int { return &v }
@@ -223,7 +232,11 @@ func buildCatalog() []ActionSpec {
 		{model.ActionMouseRightUp, "mouse", none},
 		{model.ActionMouseStorePos, "mouse", none},
 		{model.ActionMouseMoveStored, "mouse", none},
-		{model.ActionKeyPress, "keyboard", key},
+		{model.ActionKeyPress, "keyboard", []ParamSpec{
+			{Name: "key", Kind: "string", Default: ""},
+			{Name: "keys", Kind: "keys"},
+			{Name: "key_delay_ms", Kind: "int", Min: intp(0), Max: intp(model.MaxKeyDelayMs), Default: model.DefaultKeyDelayMs},
+		}},
 		{model.ActionKeyDown, "keyboard", key},
 		{model.ActionKeyUp, "keyboard", key},
 		{model.ActionDelay, "wait", []ParamSpec{{Name: "ms", Kind: "int", Min: intp(1), Max: intp(catalogMaxMs), Default: 100}}},
@@ -291,13 +304,17 @@ func validateActions(actions []model.Action, known map[string]bool, depth int, c
 	if depth > maxActionDeep {
 		return badRequest()
 	}
-	for _, a := range actions {
+	for i := range actions {
+		a := &actions[i]
 		*count++
 		if *count > maxActions || (!known[a.Type] && a.Type != "loop_end") {
 			return badRequest()
 		}
 		if a.DelayMs < 0 || a.DelayMs > maxDelayMs || a.TimeoutMs < 0 || a.TimeoutMs > maxDelayMs ||
 			a.LoopCount < 0 || a.LoopCount > maxLoopCount || len(a.Key) > 32 || len(a.Image) > maxImageBytes {
+			return badRequest()
+		}
+		if a.Type == model.ActionKeyPress && !a.NormalizeKeys() {
 			return badRequest()
 		}
 		*imgTotal += len(a.Image)

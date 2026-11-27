@@ -7,9 +7,31 @@
     <title>supcua</title>
     <script src="./diag-init.js"></script>
     <script src="./theme-init.js"></script>
+    <style>
+      html{background:#101318}
+      html[data-theme=light]{background:#f3f6fb}
+      #boot{position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#101318;color:#eef2f8;font:500 15px/1.4 system-ui,"Segoe UI",sans-serif;opacity:1;transition:opacity .15s ease-out}
+      html[data-theme=light] #boot{background:#f3f6fb;color:#19283b}
+      #boot.out{opacity:0;pointer-events:none}
+      #boot .name{font-size:22px;font-weight:650;letter-spacing:.02em}
+      #boot .ring{width:30px;height:30px;box-sizing:border-box;border:3px solid #8bb8ff40;border-top-color:#8bb8ff;border-radius:50%;animation:boot-spin .9s linear infinite}
+      html[data-theme=light] #boot .ring{border-color:#155db133;border-top-color:#155db1}
+      #boot .st{margin:0;min-height:1.4em;font-size:13px;color:#a6b1c2;opacity:0;animation:boot-in .2s ease-out .7s forwards}
+      html[data-theme=light] #boot .st{color:#5c6b7e}
+      #boot.err .ring{animation:none;border-color:#ff8a8a;opacity:.9}
+      html[data-theme=light] #boot.err .ring{border-color:#b3261e}
+      #boot.err .st{max-width:min(520px,86vw);text-align:center;color:#ff8a8a;opacity:1;animation:none}
+      html[data-theme=light] #boot.err .st{color:#b3261e}
+      #boot .go{font:inherit;font-size:13px;padding:6px 16px;border-radius:8px;border:1px solid #303946;background:#222934;color:inherit;cursor:pointer}
+      html[data-theme=light] #boot .go{background:#fff;border-color:#dce3ee}
+      @keyframes boot-spin{to{transform:rotate(360deg)}}
+      @keyframes boot-in{to{opacity:1}}
+      @media (prefers-reduced-motion:reduce){#boot{transition:none}#boot .ring{animation:none;border-color:#8bb8ff;opacity:.7}html[data-theme=light] #boot .ring{border-color:#155db1}#boot .st{animation-duration:.01s}}
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="boot" role="status" aria-live="polite"><div class="name">supcua</div><div class="ring"></div><p class="st" id="boot-st">Starting…</p><button type="button" class="go" id="boot-go" hidden>Continue</button></div>
+    <div id="app" inert aria-busy="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

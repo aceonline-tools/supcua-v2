@@ -171,6 +171,17 @@ func New(cfg Config) (*UI, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	bgR, bgG, bgB := uint8(0xf3), uint8(0xf6), uint8(0xfb)
+	if cfg.DarkTitleBar {
+		bgR, bgG, bgB = 0x10, 0x13, 0x18
+	}
+	// Layer 1: read by WebView2 when the environment/controller is created, so the very first frame is themed.
+	bgEnv := fmt.Sprintf("FF%02X%02X%02X", bgR, bgG, bgB)
+	if err = os.Setenv("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", bgEnv); err != nil {
+		log.Printf("webview: default background env: %v", err)
+	} else {
+		log.Printf("webview: default background %s (env WEBVIEW2_DEFAULT_BACKGROUND_COLOR)", bgEnv)
+	}
 	if err = b.EmbedTimeout(uintptr(u.hwnd), timeout); err != nil {
 		u.browser = nil // never completed: nothing to Close
 		return nil, fmt.Errorf("webview startup: %w", err)
@@ -178,6 +189,9 @@ func New(cfg Config) (*UI, error) {
 	// Fail closed: a host whose protections could not all be applied is never shown.
 	if err = b.Lockdown(cfg.Debug); err != nil {
 		return nil, fmt.Errorf("webview lockdown: %w", err)
+	}
+	if err := b.SetDefaultBackground(bgR, bgG, bgB); err != nil {
+		log.Printf("webview: default background: %v", err)
 	}
 	if err = b.AddResourceFilter(serve.Filter); err != nil {
 		return nil, fmt.Errorf("webview resource filter: %w", err)

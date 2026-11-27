@@ -1,9 +1,12 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -158,7 +161,7 @@ func TestSaveRenameRemovesOldFile(t *testing.T) {
 func TestSaveRemovesLegacyUUIDFile(t *testing.T) {
 	dir := t.TempDir()
 	legacy := filepath.Join(dir, "123e4567-e89b-12d3-a456-426614174000.json")
-	os.WriteFile(legacy, []byte(`{"id":"legacy-1","name":"Legacy"}`), 0644)
+	os.WriteFile(legacy, []byte(`{"id":"legacy-1","name":"legacy"}`), 0644)
 	store := NewScriptStore(dir)
 	if err := store.Save(model.Script{ID: "legacy-1", Name: "Legacy", Enabled: true}); err != nil {
 		t.Fatal(err)
@@ -318,5 +321,82 @@ func TestSaveSupersedesPendingQueuedSave(t *testing.T) {
 	got, err := getByID(store, "b")
 	if err != nil || got.Name != "Newer" || got.Enabled || fileExists(dir, "old.json") {
 		t.Errorf("stale pending snapshot won: %+v %v", got, err)
+	}
+}
+
+func TestLegacyKeyPressFileSurvivesSaveReload(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"id":"leg","name":"legacy","enabled":true,"run_mode":"once","hotkey_mode":"toggle","actions":[{"type":"loop","count":2,"actions":[{"type":"key_press","key":"2"}]},{"type":"key_press","key":"f5"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "legacy.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := NewScriptStore(dir)
+	list, err := st.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("load: %v %d", err, len(list))
+	}
+	if seq := list[0].Actions[1].Sequence(); len(seq) != 1 || seq[0].Key != "f5" {
+		t.Fatalf("legacy not a sequence of one: %+v", seq)
+	}
+	if err := st.Save(list[0]); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "legacy.json"))
+	if strings.Contains(string(raw), `"keys"`) || !strings.Contains(string(raw), `"key": "2"`) {
+		t.Fatalf("single plain key must stay legacy-form:\n%s", raw)
+	}
+	again, err := NewScriptStore(dir).List()
+	if err != nil || !reflect.DeepEqual(list, again) {
+		t.Fatalf("reload differs: %v", err)
+	}
+
+	multi := list[0]
+	multi.Actions = []model.Action{{Type: model.ActionKeyPress, Keys: []model.KeyStroke{{Key: "a", Mods: []string{"ctrl"}}, {Key: "b"}}}}
+	if err := st.Save(multi); err != nil {
+		t.Fatal(err)
+	}
+	again, _ = NewScriptStore(dir).List()
+	if !reflect.DeepEqual(again[0].Actions, multi.Actions) {
+		t.Fatalf("multi-key lost: %+v", again[0].Actions)
+	}
+}
+
+// oldAction is the Action struct on origin/main d3e5cf5 (model/action.go), before key sequences.
+type oldAction struct {
+	Type             string      `json:"type"`
+	X                int         `json:"x,omitempty"`
+	Y                int         `json:"y,omitempty"`
+	Source           string      `json:"source,omitempty"`
+	OffsetX          int         `json:"offset_x,omitempty"`
+	OffsetY          int         `json:"offset_y,omitempty"`
+	Key              string      `json:"key,omitempty"`
+	DelayMs          int         `json:"ms,omitempty"`
+	LoopCount        int         `json:"count,omitempty"`
+	Actions          []oldAction `json:"actions,omitempty"`
+	Image            string      `json:"image,omitempty"`
+	TimeoutMs        int         `json:"timeout_ms,omitempty"`
+	UseFoundPosition bool        `json:"use_found_position,omitempty"`
+	ThenActions      []oldAction `json:"then,omitempty"`
+	ElseActions      []oldAction `json:"else,omitempty"`
+}
+
+// Documents the downgrade behaviour the key-sequence format must live with: the
+// old reader accepts any action type on load and silently drops unknown fields.
+func TestOldReaderDropsUnknownFieldsKeepsUnknownType(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"key_press","keys":[{"key":"a"},{"key":"b"}],"key_delay_ms":80}`,
+		`{"type":"key_sequence","keys":[{"key":"a"},{"key":"b"}],"key_delay_ms":80}`,
+	} {
+		var a oldAction
+		if err := json.Unmarshal([]byte(in), &a); err != nil {
+			t.Fatalf("old reader must load it: %v", err)
+		}
+		out, _ := json.Marshal(a)
+		if !strings.Contains(string(out), `"type":"`+a.Type+`"`) || a.Type == "" {
+			t.Fatalf("unknown type must survive the old reader, got %s", out)
+		}
+		if strings.Contains(string(out), "keys") || strings.Contains(string(out), "key_delay_ms") {
+			t.Fatalf("expected old reader to drop new fields, got %s", out)
+		}
 	}
 }
