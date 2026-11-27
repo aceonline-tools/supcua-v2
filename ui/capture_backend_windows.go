@@ -55,13 +55,7 @@ func (c *CaptureBackend) Start(mode bridge.CaptureMode, pick model.Hotkey, sink 
 		}
 		c.stopKey = stop
 	case bridge.CaptureKey:
-		stop, err := webview.StartKeyCapture(webview.ForegroundIs(c.HWND), func(ev webview.KeyEvent) bool {
-			if !ev.Down {
-				return false
-			}
-			sink.Key(keyToName(ev.VK))
-			return true // also keeps Tab from moving focus (parity)
-		})
+		stop, err := webview.StartKeyCapture(webview.ForegroundIs(c.HWND), keyCaptureHandler(sink, keyToName))
 		if err != nil {
 			return err
 		}

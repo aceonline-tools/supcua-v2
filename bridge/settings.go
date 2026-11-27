@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ func settingsOf(c model.AppConfig) SettingsDTO {
 		KeyPressDurationMs: c.KeyPressDurationMs, ScriptsDir: c.ScriptsDir,
 		AutoActiveEnabled: c.AutoActiveEnabled, AutoActiveProcessName: c.AutoActiveProcessName,
 		CollapsedGroups: groups, SidebarCollapsed: c.SidebarCollapsed,
+		OverlayStyle: overlayStyleOf(c.OverlayStyle, c.OverlayPosition.X, c.OverlayPosition.Y),
 	}
 }
 
@@ -343,4 +345,116 @@ func (b *Bridge) autoActiveSet(p struct {
 		Enabled     bool   `json:"enabled"`
 		ProcessName string `json:"processName"`
 	}{next.AutoActiveEnabled, next.AutoActiveProcessName}, nil
+}
+
+func overlayStyleOf(s model.OverlayStyle, x, y int) OverlayStyleDTO {
+	r := s.Resolve()
+	return OverlayStyleDTO{
+		Radius: r.Radius, Background: r.Background, TextColor: r.TextColor, BackgroundOpacity: r.BackgroundOpacity,
+		Opacity: r.Opacity, Width: r.Width, Height: r.Height, X: x, Y: y,
+	}
+}
+
+type overlayStyleParams struct {
+	Radius            int     `json:"radius"`
+	Background        string  `json:"background"`
+	TextColor         string  `json:"text_color"`
+	BackgroundOpacity float64 `json:"background_opacity"`
+	Opacity           float64 `json:"opacity"`
+	Width             int     `json:"width"`
+	Height            int     `json:"height"`
+	X                 int     `json:"x"`
+	Y                 int     `json:"y"`
+}
+
+// overlaySetStyle validates (malformed or absurd values are rejected; in-range values are clamped to
+// the floors in model.OverlayStyle.Resolve), applies live, persists, and returns the effective style.
+func (b *Bridge) overlaySetStyle(p overlayStyleParams) (any, error) {
+	switch {
+	case !model.ValidHexColor(p.Background):
+		return nil, invalidSetting("overlay_background")
+	case p.TextColor != "" && !model.ValidHexColor(p.TextColor):
+		return nil, invalidSetting("overlay_text_color")
+	case math.IsNaN(p.BackgroundOpacity) || p.BackgroundOpacity < 0 || p.BackgroundOpacity > 1:
+		return nil, invalidSetting("overlay_background_opacity")
+	case math.IsNaN(p.Opacity) || p.Opacity < 0 || p.Opacity > 1:
+		return nil, invalidSetting("overlay_opacity")
+	case p.Radius < 0 || p.Radius > 4096:
+		return nil, invalidSetting("overlay_radius")
+	case p.Width < 1 || p.Width > 4096:
+		return nil, invalidSetting("overlay_width")
+	case p.Height < 1 || p.Height > 4096:
+		return nil, invalidSetting("overlay_height")
+	case p.X < -32768 || p.X > 32767:
+		return nil, invalidSetting("overlay_x")
+	case p.Y < -32768 || p.Y > 32767:
+		return nil, invalidSetting("overlay_y")
+	}
+	bgOpacity := p.BackgroundOpacity
+	return b.applyOverlayStyle(model.OverlayStyle{
+		Radius: p.Radius, Width: p.Width, Height: p.Height, Background: p.Background, TextColor: p.TextColor,
+		BackgroundOpacity: &bgOpacity, Opacity: p.Opacity,
+	}, p.X, p.Y)
+}
+
+func (b *Bridge) overlayResetStyle() (any, error) {
+	pos := model.DefaultConfig().OverlayPosition
+	return b.applyOverlayStyle(model.OverlayStyle{}, pos.X, pos.Y)
+}
+
+func (b *Bridge) applyOverlayStyle(style model.OverlayStyle, x, y int) (any, error) {
+	if b.d.Overlay == nil {
+		return nil, newErr(CodeInternal)
+	}
+	style = style.Normalize()
+	old := b.d.Config.Get()
+	var cx, cy int
+	err := b.callUI(func() error {
+		var e error
+		cx, cy, e = b.d.Overlay.ApplyStyle(style, x, y)
+		return e
+	})
+	if err != nil {
+		if _, ok := err.(*Error); !ok {
+			log.Printf("bridge: overlay apply style failed: %v", err)
+			err = newErr(CodeInternal)
+		}
+		return nil, err
+	}
+	if err := b.d.Config.Update(func(c *model.AppConfig) {
+		c.OverlayStyle = style
+		c.OverlayPosition.X, c.OverlayPosition.Y = cx, cy
+	}); err != nil {
+		log.Printf("bridge: persist overlay style failed: %v", err)
+		if rerr := b.callUI(func() error {
+			_, _, e := b.d.Overlay.ApplyStyle(old.OverlayStyle, old.OverlayPosition.X, old.OverlayPosition.Y)
+			return e
+		}); rerr != nil {
+			log.Printf("bridge: overlay style rollback failed: %v", rerr)
+		}
+		return nil, newErr(CodeSaveFailed)
+	}
+	b.refreshOverlay(true)
+	b.emit(EvSettingsChanged, settingsChangedEvent{Fields: []string{"overlay_style"}})
+	return overlayStyleOf(style, cx, cy), nil
+}
+
+// persistOverlayPosition stores the overlay's live position after a drag ends (UI thread) and tells
+// the frontend. The overlay only reports a position while it exists.
+func (b *Bridge) persistOverlayPosition() {
+	if b.d.Overlay == nil || b.d.Config == nil {
+		return
+	}
+	st := b.overlayState()
+	if !st.Enabled {
+		return
+	}
+	if p := b.d.Config.Get().OverlayPosition; p.X == st.X && p.Y == st.Y {
+		return
+	}
+	if err := b.d.Config.Update(func(c *model.AppConfig) { c.OverlayPosition.X, c.OverlayPosition.Y = st.X, st.Y }); err != nil {
+		log.Printf("bridge: persist overlay position failed: %v", err)
+		return
+	}
+	b.emit(EvSettingsChanged, settingsChangedEvent{Fields: []string{"overlay_style"}})
 }

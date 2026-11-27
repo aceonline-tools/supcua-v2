@@ -2,8 +2,10 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -218,11 +220,7 @@ func (scriptExecutor *Executor) executeOneAction(ctx context.Context, currentAct
 		return nil
 
 	case model.ActionKeyPress:
-		if err := scriptExecutor.inputSimulator.KeyDown(currentAction.Key); err != nil {
-			return err
-		}
-		time.Sleep(time.Duration(scriptExecutor.keyPressDurationMs) * time.Millisecond)
-		return scriptExecutor.inputSimulator.KeyUp(currentAction.Key)
+		return scriptExecutor.executeKeyPress(ctx, currentAction)
 
 	case model.ActionKeyDown:
 		return scriptExecutor.inputSimulator.KeyDown(currentAction.Key)
@@ -358,4 +356,86 @@ func (scriptExecutor *Executor) executeIfImage(ctx context.Context, currentActio
 		return scriptExecutor.executeActions(ctx, currentAction.ElseActions)
 	}
 	return nil
+}
+
+// sleepCtx waits for d or until ctx is cancelled; tests replace it to observe delays.
+var sleepCtx = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// executeKeyPress types the action's key sequence in order, pausing KeyDelay
+// between keys (not after the last). Cancellation is checked before each key and
+// interrupts every wait; whatever is held is released on any exit path.
+func (scriptExecutor *Executor) executeKeyPress(ctx context.Context, currentAction model.Action) error {
+	sequence, delayMs, err := currentAction.ResolveKeys(false)
+	if err != nil {
+		return err
+	}
+	delay := time.Duration(delayMs) * time.Millisecond
+	for i, stroke := range sequence {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := scriptExecutor.pressStroke(ctx, stroke); err != nil {
+			return err
+		}
+		if i < len(sequence)-1 && delay > 0 {
+			if err := sleepCtx(ctx, delay); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// pressStroke holds the modifiers and key for keyPressDurationMs, then releases
+// everything in reverse. Every release is attempted even if one fails or panics;
+// release failures are returned so the action (and script) fails.
+func (scriptExecutor *Executor) pressStroke(ctx context.Context, stroke model.KeyStroke) (err error) {
+	var held []string
+	defer func() {
+		if releaseErr := scriptExecutor.releaseAll(held); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
+	}()
+	for _, name := range append(append([]string(nil), stroke.Mods...), stroke.Key) {
+		if err := scriptExecutor.inputSimulator.KeyDown(name); err != nil {
+			return err
+		}
+		held = append(held, name)
+	}
+	return sleepCtx(ctx, time.Duration(scriptExecutor.keyPressDurationMs)*time.Millisecond)
+}
+
+func truncateStack(stack []byte) []byte {
+	const limit = 2048
+	if len(stack) > limit {
+		return stack[:limit]
+	}
+	return stack
+}
+
+func (scriptExecutor *Executor) releaseAll(held []string) error {
+	var errs []error
+	for j := len(held) - 1; j >= 0; j-- {
+		name := held[j]
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					errs = append(errs, fmt.Errorf("release %q panicked: %v\n%s", name, r, truncateStack(debug.Stack())))
+				}
+			}()
+			if err := scriptExecutor.inputSimulator.KeyUp(name); err != nil {
+				errs = append(errs, fmt.Errorf("release %q: %w", name, err))
+			}
+		}()
+	}
+	return errors.Join(errs...)
 }

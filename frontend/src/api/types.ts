@@ -61,6 +61,19 @@ export interface BootState {
   runtimeVersion: string;
 }
 
+// Overlay look; x/y are the top-left in virtual-screen pixels. text_color "" = status colours.
+export interface OverlayStyleDTO {
+  radius: number;
+  background: string;
+  text_color: string;
+  background_opacity: number;
+  opacity: number;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+}
+
 // §9.4 config field names. Hotkeys are display strings on this surface.
 export interface SettingsDTO {
   theme: ThemeSetting;
@@ -74,9 +87,10 @@ export interface SettingsDTO {
   auto_active_process_name: string;
   collapsed_groups: string[];
   sidebar_collapsed: boolean;
+  overlay_style: OverlayStyleDTO;
 }
 
-export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed'>>;
+export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed' | 'overlay_style'>>;
 
 export interface SettingsUpdateResult {
   applied: string[];
@@ -96,6 +110,12 @@ export interface Region {
   height: number;
 }
 
+// model/action.go KeyStroke: one key of a key_press sequence, pressed with its modifiers.
+export interface KeyStroke {
+  key: string;
+  mods?: string[];
+}
+
 // model/action.go json tags; zero-valued fields are omitted on the wire.
 export interface Action {
   type: string;
@@ -105,6 +125,8 @@ export interface Action {
   offset_x?: number;
   offset_y?: number;
   key?: string;
+  keys?: KeyStroke[];
+  key_delay_ms?: number;
   ms?: number;
   count?: number;
   actions?: Action[];
@@ -136,7 +158,7 @@ export type ActionGroup = 'mouse' | 'keyboard' | 'wait' | 'loop' | 'lock' | 'ima
 // ASSUMED: param `name` equals the Action JSON tag it edits; kind is int|string|bool.
 export interface ParamSpec {
   name: string;
-  kind: 'int' | 'string' | 'bool';
+  kind: 'int' | 'string' | 'bool' | 'keys';
   min?: number;
   max?: number;
   default?: number | string | boolean;
@@ -212,6 +234,8 @@ export interface Methods {
   'settings.get': { params: undefined; result: SettingsDTO };
   'settings.update': { params: { patch: SettingsPatch }; result: SettingsUpdateResult };
   'overlay.set': { params: Partial<Pick<OverlayDTO, 'enabled' | 'visible' | 'draggable'>>; result: OverlayDTO };
+  'overlay.setStyle': { params: OverlayStyleDTO; result: OverlayStyleDTO };
+  'overlay.resetStyle': { params: undefined; result: OverlayStyleDTO };
   'autoactive.set': { params: { enabled?: boolean; processName?: string }; result: { enabled: boolean; processName: string } };
 }
 
@@ -223,7 +247,8 @@ export interface Events {
   'settings.changed': { fields: string[] };
   'save.failed': { scriptId: string; name: string; message: string };
   'capture.hotkey': { capture_id: number; field: HotkeyField; hotkey: Hotkey | null; display: string };
-  'capture.key': { capture_id: number; key: string };
+  // mods: modifier state at the key-down (bridge/capture.go keyEvent); null/absent when the host does not report it.
+  'capture.key': { capture_id: number; key: string; mods?: string[] | null };
   'capture.mouse': { capture_id: number; x: number; y: number };
   'capture.ended': { capture_id: number; reason: CaptureEndReason };
   'editor.reset': { reason: string; session_id: string };

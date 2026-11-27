@@ -212,6 +212,8 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 		res.Step("overlay on UI thread", false, "UI thread did not respond")
 	}
 
+	s.overlayVisual(res)
+
 	trayDone := make(chan bool, 1)
 	post(func() {
 		s.Tray.Dispose()
