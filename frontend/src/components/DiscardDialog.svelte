@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import type { EditorStore } from '../lib/editor.svelte';
   let { ed }: { ed: EditorStore } = $props();
   let keep = $state<HTMLButtonElement>();
@@ -14,8 +15,8 @@
         <p class="muted">Keep editing to fix it, or discard your changes and close.</p>
       </div>
       <div class="dialog-footer">
-        <button bind:this={keep} class="primary" onclick={() => ed.keepEditing()}>Keep editing</button>
-        <button onclick={() => ed.discardAndClose()}>Discard changes</button>
+        <button bind:this={keep} class="primary" onclick={() => ed.keepEditing()}><Icon name="pencil" />Keep editing</button>
+        <button onclick={() => ed.discardAndClose()}><Icon name="undo-2" />Discard changes</button>
       </div>
     </div>
   </div>

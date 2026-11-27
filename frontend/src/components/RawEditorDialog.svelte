@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import type { EditorStore } from '../lib/editor.svelte';
   let { ed }: { ed: EditorStore } = $props();
 </script>
@@ -12,8 +13,8 @@
         {#if ed.raw.error}<div class="err" role="alert">{ed.raw.error}</div>{/if}
       </div>
       <div class="dialog-footer">
-        <button class="primary" onclick={() => ed.raw && ed.applyRaw(ed.raw.text)}>Apply</button>
-        <button onclick={() => ed.closeRaw()}>Cancel</button>
+        <button class="primary" onclick={() => ed.raw && ed.applyRaw(ed.raw.text)}><Icon name="check" />Apply</button>
+        <button onclick={() => ed.closeRaw()}><Icon name="x" />Cancel</button>
       </div>
     </div>
   </div>

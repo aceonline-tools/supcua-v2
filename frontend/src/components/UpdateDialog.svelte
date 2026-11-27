@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import type { AppStore } from '../lib/store.svelte';
   let { store }: { store: AppStore } = $props();
   const u = $derived(store.update);
@@ -16,8 +17,8 @@
         {#if u.failed}<div class="err" role="alert">{u.failed}</div>{/if}
       </div>
       <div class="dialog-footer">
-        <button class="primary" disabled={u.applying} onclick={() => store.applyUpdate()}>Update</button>
-        <button disabled={u.applying} onclick={() => store.skipUpdate()}>Skip</button>
+        <button class="primary" disabled={u.applying} onclick={() => store.applyUpdate()}><Icon name="download" />Update</button>
+        <button disabled={u.applying} onclick={() => store.skipUpdate()}><Icon name="skip-forward" />Skip</button>
       </div>
     </div>
   </div>

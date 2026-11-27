@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import type { AppStore } from '../lib/store.svelte';
   let { store }: { store: AppStore } = $props();
   let confirmBtn = $state<HTMLButtonElement>();
@@ -11,8 +12,8 @@
       <div class="dialog-title" id="del-title">Delete script</div>
       <div class="dialog-body">Delete “{store.pendingDelete.name}”? This cannot be undone.</div>
       <div class="dialog-footer">
-        <button bind:this={confirmBtn} class="primary" onclick={() => store.confirmDelete()}>Delete</button>
-        <button onclick={() => store.cancelDelete()}>Cancel</button>
+        <button bind:this={confirmBtn} class="primary" onclick={() => store.confirmDelete()}><Icon name="trash-2" />Delete</button>
+        <button onclick={() => store.cancelDelete()}><Icon name="x" />Cancel</button>
       </div>
     </div>
   </div>

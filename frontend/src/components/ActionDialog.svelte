@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import type { EditorStore } from '../lib/editor.svelte';
   import type { Action } from '../api/types';
   let { ed }: { ed: EditorStore } = $props();
@@ -32,7 +33,7 @@
                 onchange={(e) => (rec(d.action)[p.name] = e.currentTarget.checked)} /></label>
             {:else if p.name === 'key'}
               <button type="button" id={'ap-' + p.name} class="input hk-field full" class:capturing={ed.capturing === 'key'}
-                bind:this={first} onclick={() => ed.startKeyCapture()}>
+                bind:this={first} onclick={() => ed.startKeyCapture()}><Icon name="keyboard" />
                 {#if ed.capturing === 'key'}<span class="accent">Press a key…</span>{:else}{d.action.key ?? ''}{/if}</button>
             {:else}
               <input id={'ap-' + p.name} class="input full" type="number" min={p.min} max={p.max}
@@ -43,8 +44,8 @@
         {/each}
       </div>
       <div class="dialog-footer">
-        <button type="submit" class="primary" disabled={invalid}>OK</button>
-        <button type="button" onclick={() => ed.closeActionDialog()}>Cancel</button>
+        <button type="submit" class="primary" disabled={invalid}><Icon name="check" />OK</button>
+        <button type="button" onclick={() => ed.closeActionDialog()}><Icon name="x" />Cancel</button>
       </div>
     </form>
     </div>

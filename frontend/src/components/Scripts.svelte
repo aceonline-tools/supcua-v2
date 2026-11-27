@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import type { AppStore } from '../lib/store.svelte';
   import { runModeLabel } from '../lib/format';
   import Toggle from './Toggle.svelte';
@@ -14,7 +15,7 @@
 
 <div class="page-head">
   <div><h1>Scripts</h1><p>Your routines, one hotkey away.</p></div>
-  <button class="primary" onclick={() => store.openNew()}>+ New</button>
+  <button class="primary" onclick={() => store.openNew()}><Icon name="plus" />New</button>
 </div>
 
 <div class="card status">
@@ -30,9 +31,9 @@
 <div class="toolbar">
   <h2>Script library</h2>
   <span class="spacer"></span>
-  <button disabled={!store.selected} onclick={() => store.openEditor()}>Edit</button>
-  <button disabled={!store.selected} onclick={() => store.cloneSelected()}>Clone script</button>
-  <button disabled={!store.selected} onclick={() => store.requestDelete()}>Delete</button>
+  <button disabled={!store.selected} onclick={() => store.openEditor()}><Icon name="pencil" />Edit</button>
+  <button disabled={!store.selected} onclick={() => store.cloneSelected()}><Icon name="copy" />Clone script</button>
+  <button disabled={!store.selected} onclick={() => store.requestDelete()}><Icon name="trash-2" />Delete</button>
 </div>
 
 {#if failed > 0}
@@ -43,7 +44,7 @@
   <div class="card empty">
     <h2>No scripts yet</h2>
     <p>Create your first script to bind actions to a hotkey.</p>
-    <button class="primary" onclick={() => store.openNew()}>+ New</button>
+    <button class="primary" onclick={() => store.openNew()}><Icon name="plus" />New</button>
   </div>
 {:else}
   <div class="card table" role="table" aria-label="Script library">
@@ -58,7 +59,7 @@
           </label>
           <span>
             <button class="chev" aria-expanded={!row.collapsed} aria-label={`${row.collapsed ? 'Expand' : 'Collapse'} ${row.group.name}`}
-              onclick={() => store.toggleCollapsed(row.group.name)}>{row.collapsed ? '▸' : '▾'}</button>{row.group.name}<small>{row.group.count} {row.group.count === 1 ? 'script' : 'scripts'}</small>
+              onclick={() => store.toggleCollapsed(row.group.name)}><Icon name={row.collapsed ? 'chevron-right' : 'chevron-down'} size={12} /></button>{row.group.name}<small>{row.group.count} {row.group.count === 1 ? 'script' : 'scripts'}</small>
           </span>
           <span></span><span></span>
         </div>
@@ -73,7 +74,7 @@
             {sc.name}
             {#if store.unsaved[sc.id]}
               <span class="badge-unsaved" title={store.unsaved[sc.id]}>unsaved</span>
-              <button class="link" onclick={(e) => { e.stopPropagation(); store.retrySave(sc.id); }}>Retry</button>
+              <button class="link" onclick={(e) => { e.stopPropagation(); store.retrySave(sc.id); }}><Icon name="refresh-cw" size={12} />Retry</button>
             {/if}
           </span>
           <span><kbd>{sc.hotkey_label}</kbd></span>
