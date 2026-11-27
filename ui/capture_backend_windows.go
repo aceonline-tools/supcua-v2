@@ -46,7 +46,7 @@ func (c *CaptureBackend) Start(mode bridge.CaptureMode, pick model.Hotkey, sink 
 			if ev.Shift {
 				mods = append(mods, "shift")
 			}
-			if ev.Alt {
+			if ev.Alt || ev.Held.Alt { // the hook swallows Alt, so only the tracked state sees it
 				mods = append(mods, "alt")
 			}
 			sink.Hotkey(model.Hotkey{Modifiers: mods, Key: name})

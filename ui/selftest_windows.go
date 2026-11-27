@@ -83,6 +83,9 @@ type SelfTest struct {
 	shutdownBefore int
 	shutdownName   string // E1c: the real page's draft name ("" = the fixture's)
 	e1cScriptID    string
+	shotsOK        int
+	shotsWant      int
+	shotErrs       []string
 
 	reports chan selfReport
 }

@@ -207,20 +207,50 @@ func (s *SelfTest) openRealEditor(id string) (h uintptr, mainEnabledWhileOpen bo
 
 func (s *SelfTest) shot(name string, h uintptr) {
 	dir := os.Getenv(edShotsEnv)
-	if dir == "" || h == 0 {
+	if dir == "" {
 		return
 	}
-	_ = os.MkdirAll(dir, 0o755)
-	var r win.RECT
-	win.GetWindowRect(win.HWND(h), &r)
-	w, ht := int(r.Right-r.Left), int(r.Bottom-r.Top)
-	if w <= 0 || ht <= 0 {
+	s.shotsWant++
+	err := func() error {
+		if h == 0 {
+			return errors.New("no window")
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		var last error
+		for try := 0; try < 3; try++ {
+			time.Sleep(250 * time.Millisecond) // the last frame is on screen
+			var r win.RECT
+			if !win.GetWindowRect(win.HWND(h), &r) {
+				last = errors.New("GetWindowRect failed")
+				continue
+			}
+			w, ht := int(r.Right-r.Left), int(r.Bottom-r.Top)
+			if w <= 0 || ht <= 0 {
+				last = fmt.Errorf("empty rect %v", r)
+				continue
+			}
+			pix, err := captureScreen(int(r.Left), int(r.Top), w, ht)
+			if err != nil {
+				last = err
+				continue
+			}
+			path := filepath.Join(dir, name+".png")
+			savePNG(path, pix, w, ht, 1)
+			if st, err := os.Stat(path); err != nil || st.Size() == 0 {
+				last = fmt.Errorf("png not written: %v", err)
+				continue
+			}
+			return nil
+		}
+		return last
+	}()
+	if err != nil {
+		s.shotErrs = append(s.shotErrs, name+": "+err.Error())
 		return
 	}
-	time.Sleep(200 * time.Millisecond) // the last frame is on screen
-	if pix, err := captureScreen(int(r.Left), int(r.Top), w, ht); err == nil {
-		savePNG(filepath.Join(dir, name+".png"), pix, w, ht, 1)
-	}
+	s.shotsOK++
 }
 
 func (s *SelfTest) scriptIDByName(name string) string {
@@ -364,6 +394,10 @@ func (s *SelfTest) realEditorSuite() {
 	s.shot("4-existing-larger-editor", h)
 
 	s.captureTargeting(h)
+	if os.Getenv(edShotsEnv) != "" {
+		s.estep("screenshots of both windows written (natural, floor, larger)", s.shotsOK == s.shotsWant && s.shotsWant > 0,
+			fmt.Sprintf("%d of %d to %s errors=%v", s.shotsOK, s.shotsWant, os.Getenv(edShotsEnv), s.shotErrs))
+	}
 
 	t0 = time.Now()
 	_, err = s.driveEd(`(function(){var b=document.querySelector('.editor-foot .primary');b.click();return !!b})()`, 5*time.Second)
@@ -439,7 +473,8 @@ func (s *SelfTest) captureTargeting(h uintptr) {
 		if e != nil || json.Unmarshal(raw, &text) != nil {
 			return false
 		}
-		return strings.Contains(strings.ToLower(text), "f8")
+		t := strings.ToLower(text)
+		return strings.Contains(t, "f8") && strings.Contains(t, "alt") && strings.Contains(t, "ctrl")
 	})
 	s.estep("capture targeting: Ctrl+Alt+F8 via SendInput is captured by the editor's hotkey field", ok, fmt.Sprintf("field=%q", strings.TrimSpace(text)))
 }
