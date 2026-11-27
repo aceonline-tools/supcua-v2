@@ -174,7 +174,46 @@ func SelftestEditorWindow(u *UI, res *Result) bool {
 		w.respFrames.Load() == respBefore && u.respFrames.Load() == mainBefore,
 		fmt.Sprintf("editorFrames %d->%d mainFrames %d->%d", respBefore, w.respFrames.Load(), mainBefore, u.respFrames.Load()))
 
+	ok = selftestEditorSecurityFailure(u, step) && ok
+
 	cbAfter := CallbackCount()
 	step("no new NewCallback sites (same class and hostProc)", cbBefore == cbAfter, fmt.Sprintf("count %d -> %d", cbBefore, cbAfter))
 	return ok
+}
+
+// selftestEditorSecurityFailure fires the editor's FatalCallback (a security handler failure) and
+// asserts the native teardown still runs: HWND destroyed, registry entry removed, controller
+// closed (its environment reference released), generation invalidated, main window untouched.
+func selftestEditorSecurityFailure(u *UI, step func(string, bool, string)) bool {
+	ready := make(chan struct{}, 1)
+	var w *Window
+	var cerr error
+	if !u.onUIThread(func() {
+		w, cerr = u.CreateEditorWindow(EditorOptions{Title: "editor security failure", Fixture: editorFixture,
+			OnReady: func(*Window) { ready <- struct{}{} }})
+	}) || cerr != nil {
+		step("security failure: created", false, fmt.Sprint(cerr))
+		return false
+	}
+	select {
+	case <-ready:
+	case <-time.After(30 * time.Second):
+		u.onUIThread(func() { u.destroyEditor(w) })
+		step("security failure: controller ready", false, "timeout")
+		return false
+	}
+	hwnd := w.hwnd
+	mainHwnd := u.hwnd
+	u.onUIThread(func() { w.browser.FatalCallback(fmt.Errorf("selftest: injected security failure")) })
+	torn := waitUntil(10*time.Second, func() bool { return w.torn.Load() })
+	var detail string
+	var good bool
+	u.onUIThread(func() {
+		good = torn && !isWindow(hwnd) && windowOf(hwnd) == nil && u.Editor() == nil && u.editorGen.Load() == 0 &&
+			w.browser == nil && w.gone.Load() && isWindow(mainHwnd) && u.browser != nil
+		detail = fmt.Sprintf("torn=%v hwndAlive=%v registered=%v editorNil=%v genCleared=%v controllerReleased=%v gone=%v mainAlive=%v",
+			torn, isWindow(hwnd), windowOf(hwnd) != nil, u.Editor() == nil, u.editorGen.Load() == 0, w.browser == nil, w.gone.Load(), isWindow(mainHwnd))
+	})
+	step("security failure: native teardown still runs (HWND, registry, controller/env ref, generation)", good, detail)
+	return good
 }

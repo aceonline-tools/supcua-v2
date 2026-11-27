@@ -17,7 +17,6 @@ import (
 // EditorOptions configures CreateEditorWindow. Callbacks run on the UI thread and must not block.
 type EditorOptions struct {
 	Title          string
-	Query          string        // appended to index.html (default "window=editor&gen=<gen>")
 	StartupTimeout time.Duration // controller creation + navigation start; default 10 s
 	Fixture        string        // self-test only: HTML served instead of the app
 	OnReady        func(w *Window)
@@ -118,11 +117,8 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 				fail(err)
 				return
 			}
-			url := serve.Origin + "/" + serve.Index + "?window=editor&gen=" + fmt.Sprint(w.gen)
-			switch {
-			case o.Query != "":
-				url = serve.Origin + "/" + serve.Index + "?" + o.Query
-			case o.Fixture != "":
+			url := editorURL(w.gen)
+			if o.Fixture != "" {
 				url = serve.Origin + fixturePath
 			}
 			if err := w.browser.NavigateChecked(url); err != nil {
@@ -149,7 +145,7 @@ func (u *UI) destroyEditor(w *Window) {
 	if w == nil || w.role != rpc.RoleEditor {
 		return
 	}
-	first := !w.gone.Swap(true)
+	first := w.beginTeardown()
 	if u.editor == w {
 		u.editor = nil
 		u.editorWin.Store(nil)

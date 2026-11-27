@@ -72,3 +72,18 @@ func TestEmitDeliversThroughTargetEmitterAndFallsBackForSingleWindowHosts(t *tes
 		t.Fatalf("single-window emitter got %v", pe.got)
 	}
 }
+
+func TestLegacyEditorCloseIsMainOnly(t *testing.T) {
+	r := Roles()
+	in := func(l []string, n string) bool {
+		for _, x := range l {
+			if x == n {
+				return true
+			}
+		}
+		return false
+	}
+	if !in(r.MainOnly, "editor.close") || in(r.EditorOnly, "editor.close") || in(r.Both, "editor.close") || in(r.TransitionalMain, "editor.close") {
+		t.Fatalf("editor.close must be classified main-only only: %+v", r)
+	}
+}

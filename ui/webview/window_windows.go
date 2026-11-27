@@ -28,7 +28,7 @@ type Window struct {
 	browser *edge.Chromium
 	nav     navGate
 
-	gone atomic.Bool // closed or superseded: nothing more is delivered to it
+	lifecycle // gone: delivery invalidated; torn: native teardown claimed
 
 	blockedNav atomic.Int64
 	deniedWin  atomic.Int64
@@ -40,8 +40,6 @@ type Window struct {
 	onProcessFailed func(kind int32)
 	onCloseRequest  func()
 }
-
-const fixturePath = "/__selftest/editor-fixture.html"
 
 var (
 	winMu       sync.RWMutex
@@ -119,7 +117,11 @@ func (u *UI) callerCurrent(c rpc.Caller) bool {
 }
 
 func (w *Window) allowNavigation(uri string) bool {
-	if w.nav.allow(serve.AllowNavigation(uri)) {
+	originOK := serve.AllowNavigation(uri)
+	if w.role == rpc.RoleEditor { // the editor may only ever load its own page (contract §2.1)
+		originOK = editorNavAllowed(uri, w.gen, w.fixtureHTML != "")
+	}
+	if w.nav.allow(originOK) {
 		return true
 	}
 	w.blockedNav.Add(1)
@@ -179,7 +181,7 @@ func (w *Window) newBrowser(dataPath string) *edge.Chromium {
 			return
 		}
 		log.Printf("webview: editor security handler failed: %v", err)
-		w.gone.Store(true)
+		w.invalidate() // cut delivery now; the teardown below must still run (lifecycle)
 		w.nav.quarantined = true
 		u.Post(func() { u.destroyEditor(w) }) // never tear a controller down inside its own event; main is unaffected
 	}
@@ -238,3 +240,18 @@ func (w *Window) presentSurface(reason string) {
 		reason, w.role, cr.Right-cr.Left, cr.Bottom-cr.Top, st.Bounds.Right-st.Bounds.Left, st.Bounds.Bottom-st.Bounds.Top,
 		st.Bounds.Left, st.Bounds.Top, st.Visible, win.IsWindowVisible(w.hwnd), dpi)
 }
+
+// Show restores (when iconic) and activates the window. UI thread only.
+func (w *Window) Show() {
+	if win.IsIconic(w.hwnd) {
+		win.ShowWindow(w.hwnd, win.SW_RESTORE)
+	}
+	win.ShowWindow(w.hwnd, win.SW_SHOW)
+	win.SetForegroundWindow(w.hwnd)
+}
+
+// Hide hides the window (tray state for main). UI thread only.
+func (w *Window) Hide() { win.ShowWindow(w.hwnd, win.SW_HIDE) }
+
+// Visible reports whether the window is shown and not minimized. UI thread only.
+func (w *Window) Visible() bool { return win.IsWindowVisible(w.hwnd) && !win.IsIconic(w.hwnd) }

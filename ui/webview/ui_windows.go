@@ -309,21 +309,6 @@ func (u *UI) Eval(js string) {
 	})
 }
 
-// Show restores and activates the host window.
-func (u *UI) Show() {
-	if win.IsIconic(u.hwnd) {
-		win.ShowWindow(u.hwnd, win.SW_RESTORE)
-	}
-	win.ShowWindow(u.hwnd, win.SW_SHOW)
-	win.SetForegroundWindow(u.hwnd)
-}
-
-// Hide hides the host window (tray state).
-func (u *UI) Hide() { win.ShowWindow(u.hwnd, win.SW_HIDE) }
-
-// Visible reports whether the host window is shown and not minimized.
-func (u *UI) Visible() bool { return win.IsWindowVisible(u.hwnd) && !win.IsIconic(u.hwnd) }
-
 // SetDarkTitleBar follows the app theme; safe from any goroutine.
 func (u *UI) SetDarkTitleBar(dark bool) {
 	u.Post(func() { _ = ApplyDarkTitleBar(uintptr(u.hwnd), dark) })
