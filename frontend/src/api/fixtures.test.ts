@@ -27,7 +27,7 @@ describe('fixtures', () => {
     expect(Object.keys(typed.state).sort()).toEqual(['auto_active', 'editor_open', 'global_active', 'keyboard_locked', 'mouse_locked', 'overlay', 'running_id', 'running_name', 'theme']);
     expect(Object.keys(typed.summary).sort()).toEqual(['enabled', 'group', 'hotkey_label', 'hotkey_mode', 'id', 'name', 'run_mode', 'running']);
     expect(Object.keys(typed.group).sort()).toEqual(['all_enabled', 'collapsed', 'count', 'name']);
-    expect(Object.keys(typed.settings)).toHaveLength(11);
+    expect(Object.keys(typed.settings)).toHaveLength(12);
     expect(Object.keys(typed.events).sort()).toEqual(['app.closing', 'capture.ended', 'capture.hotkey', 'capture.key', 'capture.mouse', 'editor.reset', 'nav.goto', 'save.failed', 'scripts.changed', 'settings.changed', 'state', 'update.available', 'update.failed', 'update.progress']);
     expect(Object.keys(typed.script).sort()).toEqual(['actions', 'enabled', 'group', 'hotkey_mode', 'id', 'name', 'run_mode', 'start_hotkey', 'stop_hotkey', 'toggle_hotkey']);
     expect(Object.keys(typed.conflict).sort()).toEqual(['field', 'hotkey', 'name', 'scriptId']);

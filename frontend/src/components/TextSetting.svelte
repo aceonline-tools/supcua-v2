@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SettingResult } from '../lib/store.svelte';
-  let { value, label, numeric = false, commit }: {
-    value: string | number; label: string; numeric?: boolean;
+  let { value, label, numeric = false, placeholder = '', commit }: {
+    value: string | number; label: string; numeric?: boolean; placeholder?: string;
     commit: (v: string | number) => Promise<SettingResult>;
   } = $props();
   let draft = $state<string | null>(null);
@@ -18,7 +18,7 @@
 </script>
 
 <div>
-  <input class="input" class:invalid aria-label={label} aria-invalid={invalid} type={numeric ? 'number' : 'text'} value={shown}
+  <input class="input" class:invalid aria-label={label} aria-invalid={invalid} type={numeric ? 'number' : 'text'} {placeholder} value={shown}
     oninput={(e) => { draft = e.currentTarget.value; invalid = false; }}
     onblur={save} onkeydown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); else if (e.key === 'Escape') { draft = null; invalid = false; } }} />
   {#if invalid}<div class="err" role="alert">Invalid value</div>{/if}
