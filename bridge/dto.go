@@ -12,6 +12,20 @@ type OverlayDTO struct {
 	Y         int  `json:"y"`
 }
 
+// OverlayStyleDTO is the resolved overlay look plus its top-left position in virtual-screen pixels.
+// text_color "" means the status colours.
+type OverlayStyleDTO struct {
+	Radius            int     `json:"radius"`
+	Background        string  `json:"background"`
+	TextColor         string  `json:"text_color"`
+	BackgroundOpacity float64 `json:"background_opacity"`
+	Opacity           float64 `json:"opacity"`
+	Width             int     `json:"width"`
+	Height            int     `json:"height"`
+	X                 int     `json:"x"`
+	Y                 int     `json:"y"`
+}
+
 type AutoActiveDTO struct {
 	Enabled     bool   `json:"enabled"`
 	ProcessName string `json:"process_name"`
@@ -61,17 +75,18 @@ type BootState struct {
 }
 
 type SettingsDTO struct {
-	Theme                 string   `json:"theme"`
-	GlobalHotkey          string   `json:"global_hotkey"`
-	CaptureHotkey         string   `json:"capture_hotkey"`
-	OverlayHotkey         string   `json:"overlay_hotkey"`
-	OverlayEnabled        bool     `json:"overlay_enabled"`
-	KeyPressDurationMs    int      `json:"key_press_duration_ms"`
-	ScriptsDir            string   `json:"scripts_dir"`
-	AutoActiveEnabled     bool     `json:"auto_active_enabled"`
-	AutoActiveProcessName string   `json:"auto_active_process_name"`
-	CollapsedGroups       []string `json:"collapsed_groups"`
-	SidebarCollapsed      bool     `json:"sidebar_collapsed"`
+	Theme                 string          `json:"theme"`
+	GlobalHotkey          string          `json:"global_hotkey"`
+	CaptureHotkey         string          `json:"capture_hotkey"`
+	OverlayHotkey         string          `json:"overlay_hotkey"`
+	OverlayEnabled        bool            `json:"overlay_enabled"`
+	KeyPressDurationMs    int             `json:"key_press_duration_ms"`
+	ScriptsDir            string          `json:"scripts_dir"`
+	AutoActiveEnabled     bool            `json:"auto_active_enabled"`
+	AutoActiveProcessName string          `json:"auto_active_process_name"`
+	CollapsedGroups       []string        `json:"collapsed_groups"`
+	SidebarCollapsed      bool            `json:"sidebar_collapsed"`
+	OverlayStyle          OverlayStyleDTO `json:"overlay_style"`
 }
 
 type SettingsPatch struct {

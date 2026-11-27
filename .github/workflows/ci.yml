@@ -165,6 +165,7 @@ jobs:
               $name = $mode.TrimStart('-')
               $exe = Join-Path $PWD "out/$v/supcua-v2.exe"
               $o = "out/$v/stdout$mode.txt"; $e = "out/$v/stderr$mode.txt"
+              $env:SUPCUA_OVERLAY_SHOTS = Join-Path $PWD "out/overlay-shots/$v-$name"
               $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru `
                    -RedirectStandardOutput $o -RedirectStandardError $e
               if (-not $p.WaitForExit(120000)) {
@@ -283,6 +284,13 @@ jobs:
         with:
           name: app-selftest-results
           path: out/results/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: overlay-shots
+          path: out/overlay-shots/
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v7

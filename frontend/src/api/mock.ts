@@ -1,8 +1,9 @@
 import { ApiError, type Transport } from './client';
 import { formatHotkey, parseHotkey } from '../lib/format';
+import { OVERLAY_DEFAULTS, clampOverlayStyle, validateOverlayStyle } from '../lib/overlayStyle';
 import type {
   Action, ActionSpec, BootState, GroupDTO, HotkeyConflict, ParamSpec, RunMode, Script, ScriptList,
-  ScriptSummary, SettingsDTO, StateDTO,
+  ScriptSummary, SettingsDTO, StateDTO, OverlayStyleDTO,
 } from './types';
 
 export interface MockSeed {
@@ -31,6 +32,7 @@ export function defaultSeed(): MockSeed {
       theme: 'dark', global_hotkey: 'RCtrl', capture_hotkey: 'P', overlay_hotkey: 'Ctrl + O',
       overlay_enabled: true, key_press_duration_ms: 10, scripts_dir: './scripts',
       auto_active_enabled: true, auto_active_process_name: 'game.exe', collapsed_groups: [], sidebar_collapsed: false,
+      overlay_style: { ...OVERLAY_DEFAULTS },
     },
     state: {
       global_active: true, running_id: '', running_name: '', editor_open: false,
@@ -325,6 +327,21 @@ export class MockBackend implements Transport {
         for (const k of ['enabled', 'visible', 'draggable'] as const) if (typeof p[k] === 'boolean') st.state.overlay[k] = p[k];
         st.settings.overlay_enabled = st.state.overlay.enabled;
         return st.state.overlay;
+      }
+      case 'overlay.setStyle': {
+        const v = validateOverlayStyle(p as unknown as OverlayStyleDTO);
+        if (v) throw new ApiError({ code: 'INVALID_SETTING', message: 'Invalid setting', field: v });
+        const eff = clampOverlayStyle(p as unknown as OverlayStyleDTO);
+        st.settings.overlay_style = eff;
+        st.state.overlay.x = eff.x; st.state.overlay.y = eff.y;
+        this.emit('settings.changed', { fields: ['overlay_style'] });
+        return eff;
+      }
+      case 'overlay.resetStyle': {
+        st.settings.overlay_style = { ...OVERLAY_DEFAULTS };
+        st.state.overlay.x = OVERLAY_DEFAULTS.x; st.state.overlay.y = OVERLAY_DEFAULTS.y;
+        this.emit('settings.changed', { fields: ['overlay_style'] });
+        return st.settings.overlay_style;
       }
       case 'autoactive.set': {
         if (typeof p.enabled === 'boolean') st.state.auto_active.enabled = p.enabled;

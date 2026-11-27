@@ -61,6 +61,19 @@ export interface BootState {
   runtimeVersion: string;
 }
 
+// Overlay look; x/y are the top-left in virtual-screen pixels. text_color "" = status colours.
+export interface OverlayStyleDTO {
+  radius: number;
+  background: string;
+  text_color: string;
+  background_opacity: number;
+  opacity: number;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+}
+
 // §9.4 config field names. Hotkeys are display strings on this surface.
 export interface SettingsDTO {
   theme: ThemeSetting;
@@ -74,9 +87,10 @@ export interface SettingsDTO {
   auto_active_process_name: string;
   collapsed_groups: string[];
   sidebar_collapsed: boolean;
+  overlay_style: OverlayStyleDTO;
 }
 
-export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed'>>;
+export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed' | 'overlay_style'>>;
 
 export interface SettingsUpdateResult {
   applied: string[];
@@ -212,6 +226,8 @@ export interface Methods {
   'settings.get': { params: undefined; result: SettingsDTO };
   'settings.update': { params: { patch: SettingsPatch }; result: SettingsUpdateResult };
   'overlay.set': { params: Partial<Pick<OverlayDTO, 'enabled' | 'visible' | 'draggable'>>; result: OverlayDTO };
+  'overlay.setStyle': { params: OverlayStyleDTO; result: OverlayStyleDTO };
+  'overlay.resetStyle': { params: undefined; result: OverlayStyleDTO };
   'autoactive.set': { params: { enabled?: boolean; processName?: string }; result: { enabled: boolean; processName: string } };
 }
 
