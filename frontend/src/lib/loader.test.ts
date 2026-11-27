@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLoader, delayCalls } from './loader';
+import { createLoader, delayCalls, trackFirstCalls } from './loader';
 
 let t = 0;
 const now = () => t;
 const advance = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
 
 function boot() {
-  document.body.innerHTML = '<div id="boot"><p id="boot-st">Starting…</p></div><div id="app"></div>';
+  document.body.innerHTML = '<div id="boot"><p id="boot-st">Starting…</p><button id="boot-go" hidden>Continue</button></div><div id="app" inert aria-busy="true"></div>';
 }
 const el = () => document.getElementById('boot');
+const app = () => document.getElementById('app')!;
 const text = () => document.getElementById('boot-st')!.textContent;
 
 beforeEach(() => { vi.useFakeTimers(); t = 0; boot(); });
@@ -85,19 +86,82 @@ describe('hand-off', () => {
     expect(el()).toBeNull();
   });
 
-  it('failsafe: a hung initial load still removes the screen', () => {
-    createLoader({ now, reducedMotion: () => false, failsafeMs: 10000 });
+  it('slow start: after 10s the status turns calm and the app is NOT revealed', () => {
+    createLoader({ now, reducedMotion: () => false });
     advance(9999);
-    expect(el()).not.toBeNull();
+    expect(text()).toBe('Starting…');
     advance(1);
-    advance(150);
-    expect(el()).toBeNull();
+    expect(text()).toBe('Still loading… this is taking longer than usual');
+    advance(60000);
+    expect(el()).not.toBeNull();
+    expect(app().hasAttribute('inert')).toBe(true);
   });
 
   it('is a no-op without the inline markup', () => {
     document.body.innerHTML = '';
     const l = createLoader({ now });
     expect(() => { l.stage('scripts'); l.done(); }).not.toThrow();
+  });
+});
+
+describe('inert / aria-busy', () => {
+  it('app root is inert+busy until the hand-off starts, then released (fade path)', () => {
+    const l = createLoader({ now, reducedMotion: () => false });
+    advance(500);
+    expect(app().hasAttribute('inert')).toBe(true);
+    expect(app().getAttribute('aria-busy')).toBe('true');
+    l.done();
+    expect(app().hasAttribute('inert')).toBe(false);
+    expect(app().hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it('released on the instant paths too', () => {
+    createLoader({ now, reducedMotion: () => true }).done();
+    expect(app().hasAttribute('inert')).toBe(false);
+  });
+});
+
+describe('error state', () => {
+  it('shows the message, keeps the app inert, and reveals it only on Continue', () => {
+    const l = createLoader({ now, reducedMotion: () => false });
+    advance(300);
+    l.fail('boom');
+    l.done();
+    expect(text()).toBe('boom');
+    expect(el()!.classList.contains('err')).toBe(true);
+    expect(app().hasAttribute('inert')).toBe(true);
+    const go = document.getElementById('boot-go') as HTMLButtonElement;
+    expect(go.hidden).toBe(false);
+    go.click();
+    expect(app().hasAttribute('inert')).toBe(false);
+    advance(150);
+    expect(el()).toBeNull();
+  });
+});
+
+describe('trackFirstCalls', () => {
+  it('waits for every first call to settle and reports a rejection', async () => {
+    let rejectSettings!: (e: Error) => void;
+    let resolveScripts!: () => void;
+    const inner = {
+      call: vi.fn((m: string) => m === 'settings.get' ? new Promise((_, rj) => { rejectSettings = rj; }) : m === 'scripts.list' ? new Promise<void>((r) => { resolveScripts = r; }) : Promise.resolve()),
+    };
+    const { client, loads } = trackFirstCalls(inner as never, ['settings.get', 'scripts.list']) as { client: typeof inner; loads: { settled(): Promise<string | null> } };
+    void client.call('settings.get'); void client.call('scripts.list'); void client.call('other');
+    let out: string | null | undefined;
+    void loads.settled().then((v) => { out = v; });
+    rejectSettings(new Error('settings failed'));
+    await Promise.resolve(); await Promise.resolve();
+    expect(out).toBeUndefined();
+    resolveScripts();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(out).toBe('settings failed');
+  });
+
+  it('null when all first loads succeed', async () => {
+    const { client, loads } = trackFirstCalls({ call: async () => 1 } as never, ['a']) as unknown as { client: { call(m: string): Promise<number> }; loads: { settled(): Promise<string | null> } };
+    await client.call('a');
+    expect(await loads.settled()).toBeNull();
   });
 });
 
