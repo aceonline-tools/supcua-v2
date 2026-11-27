@@ -9,6 +9,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -322,4 +324,116 @@ func savePNG(path string, bgra []byte, w, h, scale int) {
 	}
 	defer f.Close()
 	_ = png.Encode(f, img)
+}
+
+type overlayObs struct {
+	text string
+	rgb  [3]uint8
+	pix  []byte
+	w, h int
+}
+
+func (s *SelfTest) observeOverlay() (o overlayObs) {
+	s.onUI(func() {
+		if ow := s.Overlay.Window(); ow != nil {
+			o.text, o.rgb = ow.LastStatus()
+			o.pix, o.w, o.h = ow.Snapshot()
+		}
+	})
+	return o
+}
+
+func (s *SelfTest) waitOverlay(cond func(overlayObs) bool) overlayObs {
+	var o overlayObs
+	waitFor(4*time.Second, func() bool { o = s.observeOverlay(); return cond(o) })
+	return o
+}
+
+// solidGlyphPixels counts fully covered pixels that equal the text colour exactly.
+func solidGlyphPixels(o overlayObs, rgb [3]uint8) int {
+	n := 0
+	for i := 0; i+3 < len(o.pix); i += 4 {
+		if o.pix[i+3] == 255 && o.pix[i] == rgb[2] && o.pix[i+1] == rgb[1] && o.pix[i+2] == rgb[0] {
+			n++
+		}
+	}
+	return n
+}
+
+// overlayStatusE2E drives the real controller through the production hotkey path (hotkey ->
+// StartScript -> status hub -> Post -> Refresh) and asserts the overlay text, colour and pixels for
+// running, idle and global-off. The global hotkey is toggled off and left off.
+func (s *SelfTest) overlayStatusE2E(res *webview.Result, h ProductionHooks, name, colour string, fire func(model.Hotkey, string, func() bool) bool) {
+	s.statusLogLines() // installs the tap and drops earlier lines
+	s.onUI(func() { s.Overlay.ApplyStyle(model.OverlayStyle{TextColor: colour}, 260, 180) })
+	dir := os.Getenv(overlayShotsEnv)
+	if dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	want := func(green [3]uint8) [3]uint8 {
+		if colour != "" {
+			r, g, b := parseHex(colour)
+			return [3]uint8{r, g, b}
+		}
+		return green
+	}
+	check := func(label, prefix string, rgb [3]uint8, o overlayObs) {
+		n := solidGlyphPixels(o, rgb)
+		res.Step(fmt.Sprintf("overlay e2e [%s] %s", name, label),
+			len(o.text) >= len(prefix) && o.text[:len(prefix)] == prefix && o.rgb == rgb && n >= 10,
+			fmt.Sprintf("text=%q rgb=%v want=%q/%v glyphPixels=%d", o.text, o.rgb, prefix, rgb, n))
+		if dir != "" && len(o.pix) > 0 {
+			savePNG(filepath.Join(dir, fmt.Sprintf("e2e-%s-%s.png", name, label)), o.pix, o.w, o.h, 4)
+		}
+	}
+	if !fire(h.ProbeHotkey, "overlay e2e ["+name+"] script started via hotkey", func() bool { return h.RunningScriptID() == h.ProbeID }) {
+		return
+	}
+	run := s.waitOverlay(func(o overlayObs) bool { return len(o.text) >= 5 && o.text[:5] == "RUN: " })
+	check("running", "RUN: ", want(colorGreenActive), run)
+	fire(h.ProbeHotkey, "overlay e2e ["+name+"] script stopped via hotkey", func() bool { return h.RunningScriptID() == "" })
+	idle := s.waitOverlay(func(o overlayObs) bool { return o.text == "IDLE" })
+	check("idle", "IDLE", want(colorGrayIdle), idle)
+	fire(h.GlobalHotkey, "overlay e2e ["+name+"] global off via hotkey", func() bool { return !h.GlobalActive() })
+	off := s.waitOverlay(func(o overlayObs) bool { return o.text == "DISABLE" })
+	check("disabled", "DISABLE", want(colorRedInactive), off)
+	logs := s.statusLogLines()
+	res.Step(fmt.Sprintf("overlay e2e [%s] status log lines (state and shown: RUN, IDLE, DISABLE)", name),
+		containsAll(logs, `overlay: state "IDLE" → "RUN: fixture_probe"`, `overlay: shown `, `→ "RUN: fixture_probe" colour`, `→ "IDLE" colour`, `→ "DISABLE" colour`, `overlay: state "RUN: fixture_probe" → "IDLE"`, `→ "DISABLE" (script=`), strings.Join(logs, " | "))
+	fire(h.GlobalHotkey, "overlay e2e ["+name+"] global on via hotkey", h.GlobalActive)
+	waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() > 0 })
+}
+
+var (
+	tapMu    sync.Mutex
+	tapLines []string
+	tapOnce  sync.Once
+)
+
+// statusLogLines returns the "overlay: state/shown" lines logged since the previous call.
+func (s *SelfTest) statusLogLines() []string {
+	tapOnce.Do(func() {
+		overlayLog.Tap(func(l string) {
+			if strings.HasPrefix(l, "overlay: state ") || strings.HasPrefix(l, "overlay: shown ") {
+				tapMu.Lock()
+				tapLines = append(tapLines, l)
+				tapMu.Unlock()
+			}
+		})
+	})
+	tapMu.Lock()
+	defer tapMu.Unlock()
+	out := tapLines
+	tapLines = nil
+	return out
+}
+
+func containsAll(lines []string, subs ...string) bool {
+	joined := strings.Join(lines, "\n")
+	for _, s := range subs {
+		if !strings.Contains(joined, s) {
+			return false
+		}
+	}
+	return true
 }

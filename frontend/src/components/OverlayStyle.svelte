@@ -92,7 +92,7 @@
   .ov-style { border-top: 1px solid var(--line); }
   .ov-style :global(.ov-num .input) { width: 84px; }
   .ov-style :global(.ov-hex .input) { width: 92px; font-family: var(--mono, monospace); }
-  .ov-pct { min-width: 38px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ov-pct { min-width: 42px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
   input[type='color'] { width: 32px; height: var(--ctl-h); padding: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
   input[type='range'] { width: 150px; accent-color: var(--accent); }
 </style>

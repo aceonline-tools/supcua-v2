@@ -17,9 +17,9 @@
   }
 </script>
 
-<div>
+<div class="field-wrap">
   <input class="input" class:invalid aria-label={label} aria-invalid={invalid} type={numeric ? 'number' : 'text'} {placeholder} value={shown}
     oninput={(e) => { draft = e.currentTarget.value; invalid = false; }}
     onblur={save} onkeydown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); else if (e.key === 'Escape') { draft = null; invalid = false; } }} />
-  {#if invalid}<div class="err" role="alert">Invalid value</div>{/if}
+  {#if invalid}<div class="err msg-float" role="alert">Invalid value</div>{/if}
 </div>

@@ -39,7 +39,7 @@ type Config struct {
 	Methods        map[string]rpc.Handler
 	CtxMethods     map[string]rpc.HandlerCtx // handlers that need the caller identity (rpc.CallerFrom)
 	Roles          *rpc.Matrix               // role matrix; nil = no policy
-	Assets         fs.FS                     // frontend root served at https://app.local/
+	Assets         fs.FS                     // frontend root served at https://app.invalid/
 	DataDir        string
 	Debug          bool // DevTools, context menu and browser accelerators on
 	DarkTitleBar   bool
@@ -96,7 +96,7 @@ type UI struct {
 var hostActive atomic.Bool // one host per process
 
 // New builds the hidden walk pump owner, the host window and the WebView2 controller, and
-// navigates to https://app.local/index.html. Call on the main goroutine before Run.
+// navigates to https://app.invalid/index.html. Call on the main goroutine before Run.
 func New(cfg Config) (*UI, error) {
 	if cfg.Assets == nil || cfg.Methods == nil {
 		return nil, errors.New("webview: Assets and Methods are required")
@@ -266,6 +266,9 @@ func (u *UI) ThreadID() uint32 { return u.threadID }
 
 // Loaded is closed after the first completed navigation.
 func (u *UI) Loaded() <-chan struct{} { return u.loaded }
+
+// Closed reports whether Quit ran; Post drops everything after that.
+func (u *UI) Closed() bool { return u.closed.Load() }
 
 // Post runs f on the UI thread. Safe from any goroutine; dropped after Quit.
 func (u *UI) Post(f func()) {

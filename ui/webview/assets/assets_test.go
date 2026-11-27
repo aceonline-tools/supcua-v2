@@ -16,7 +16,7 @@ func TestPlaceholderServedWithMatchingCSP(t *testing.T) {
 	if !strings.Contains(string(b), serve.CSP) {
 		t.Fatal("index.html meta CSP must equal serve.CSP")
 	}
-	r := (&serve.Server{FS: FS()}).Handle("GET", "https://app.local/")
+	r := (&serve.Server{FS: FS()}).Handle("GET", "https://app.invalid/")
 	if r.Status != 200 {
 		t.Fatalf("%+v", r)
 	}

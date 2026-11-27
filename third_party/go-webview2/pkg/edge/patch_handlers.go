@@ -476,7 +476,7 @@ func (e *Chromium) Respond(args *ICoreWebView2WebResourceRequestedEventArgs, sta
 	return hrErr("put_Response", r)
 }
 
-// AddResourceFilter registers a WebResourceRequested filter (e.g. "https://app.local/*").
+// AddResourceFilter registers a WebResourceRequested filter (e.g. "https://app.invalid/*").
 func (e *Chromium) AddResourceFilter(filter string) error {
 	p, err := windows.UTF16PtrFromString(filter)
 	if err != nil {

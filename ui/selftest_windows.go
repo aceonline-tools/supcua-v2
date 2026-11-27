@@ -128,7 +128,7 @@ func (s *SelfTest) Run() {
 
 	select {
 	case <-s.Ready:
-		res.Step("page loaded over https://app.local under CSP, app.ready (JS->Go)", true, "")
+		res.Step("page loaded over https://app.invalid under CSP, app.ready (JS->Go)", true, "")
 	case <-time.After(20 * time.Second):
 		fail("page loaded + app.ready", errors.New("timeout"))
 		return
@@ -201,7 +201,7 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 		fmt.Sprintf("ui-layer calls %d -> %d (max %d: host proc, key hook, overlay proc)", cbBefore, cbAfter, maxUICallbacks))
 	res.Callbacks = []int32{cbBefore, cbAfter}
 
-	res.Step("navigation locked to app.local", s.UI.ProbeNavigationLock(5*time.Second), fmt.Sprintf("stats=%+v", s.UI.Stats()))
+	res.Step("navigation locked to app.invalid", s.UI.ProbeNavigationLock(5*time.Second), fmt.Sprintf("stats=%+v", s.UI.Stats()))
 
 	overlayDone := make(chan struct{})
 	post(func() {
@@ -359,6 +359,11 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 	}
 	if fire(h.GlobalHotkey, "global hotkey (SendInput) turns global active on", h.GlobalActive) {
 		step("script hotkeys registered once active", waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() > 0 }), fmt.Sprintf("count=%d", h.ScriptHotkeyCount()))
+		for _, oc := range []struct {
+			name, colour string
+		}{{"status colours", ""}, {"custom colour", "#FF00FF"}} {
+			s.overlayStatusE2E(res, h, oc.name, oc.colour, fire)
+		}
 		if fire(h.ProbeHotkey, "script toggle hotkey (SendInput) starts the script", func() bool { return h.RunningScriptID() == h.ProbeID }) {
 			fire(h.ProbeHotkey, "script toggle hotkey (SendInput) stops the script", func() bool { return h.RunningScriptID() == "" })
 		}

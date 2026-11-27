@@ -48,6 +48,8 @@ type OverlayWindow struct {
 	threadID      uint32
 	style         model.ResolvedOverlayStyle
 	lastPix       []byte
+	lastText      string
+	lastRGB       [3]uint8
 
 	// OnMoved is called on the UI thread when a drag ends.
 	OnMoved func(x, y int)
@@ -110,7 +112,8 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 			HbrBackground: win.HBRUSH(win.GetStockObject(win.BLACK_BRUSH)),
 		}
 		if win.RegisterClassEx(&windowClass) == 0 {
-			overlayClassErr = fmt.Errorf("failed to register overlay class")
+			overlayClassErr = fmt.Errorf("failed to register overlay class: %w", syscall.GetLastError())
+			overlayLog.Failure("create", "%v", overlayClassErr)
 		}
 	})
 	if overlayClassErr != nil {
@@ -132,10 +135,13 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 	)
 	if overlayWindow.windowHandle == 0 {
 		overlayCurrent.Store(nil)
-		return nil, fmt.Errorf("failed to create overlay window")
+		err := fmt.Errorf("failed to create overlay window: %w", syscall.GetLastError())
+		overlayLog.Failure("create", "%v", err)
+		return nil, err
 	}
 
 	if err := overlayWindow.render(true); err != nil {
+		overlayLog.Failure("render", "initial render failed: %v", err)
 		overlayCurrent.Store(nil)
 		win.DestroyWindow(overlayWindow.windowHandle)
 		return nil, err
@@ -152,7 +158,9 @@ func (overlayWindow *OverlayWindow) paint() {
 	var paintStruct win.PAINTSTRUCT
 	win.BeginPaint(overlayWindow.windowHandle, &paintStruct)
 	win.EndPaint(overlayWindow.windowHandle, &paintStruct)
-	_ = overlayWindow.render(false)
+	if err := overlayWindow.render(false); err != nil {
+		overlayLog.Failure("render", "render failed (paint): %v", err)
+	}
 }
 
 func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
@@ -175,6 +183,8 @@ func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
 	if st.TextColor != "" {
 		rgb[0], rgb[1], rgb[2] = parseHex(st.TextColor)
 	}
+	overlayWindow.lastText, overlayWindow.lastRGB = text, rgb
+	overlayLog.Shown(text, rgb, overlayWindow.appController.IsGlobalActive())
 	overlayWindow.paints.Add(1)
 
 	screenDC := win.GetDC(0)
@@ -203,16 +213,26 @@ func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
 	defer win.SelectObject(memDC, previous)
 
 	pix := unsafe.Slice((*byte)(bits), w*h*4)
-	win.SetBkMode(memDC, win.TRANSPARENT)
-	win.SetTextColor(memDC, win.COLORREF(0x00FFFFFF))
+	if win.SetBkMode(memDC, win.TRANSPARENT) == 0 {
+		overlayLog.Failure("draw", "SetBkMode failed: %v", syscall.GetLastError())
+	}
+	if win.SetTextColor(memDC, win.COLORREF(0x00FFFFFF)) == win.CLR_INVALID {
+		overlayLog.Failure("draw", "SetTextColor failed: %v", syscall.GetLastError())
+	}
 	textUTF16, err := syscall.UTF16FromString(text)
 	if err != nil || len(textUTF16) < 2 {
+		overlayLog.Failure("text-fallback", "status text %q is not representable as UTF-16, drawing \"?\" instead", text)
 		textUTF16, _ = syscall.UTF16FromString("?")
 	}
 	textRect := win.RECT{Left: 0, Top: 0, Right: int32(w), Bottom: int32(h)}
-	win.DrawTextEx(memDC, &textUTF16[0], int32(len(textUTF16)-1), &textRect,
-		win.DT_CENTER|win.DT_VCENTER|win.DT_SINGLELINE, nil)
-	procGdiFlush.Call() // GDI batches drawing; the DIB bits are only valid to read after this
+	if win.DrawTextEx(memDC, &textUTF16[0], int32(len(textUTF16)-1), &textRect,
+		win.DT_CENTER|win.DT_VCENTER|win.DT_SINGLELINE, nil) == 0 {
+		overlayLog.Failure("draw", "DrawTextEx failed: %v", syscall.GetLastError())
+	}
+	// GDI batches drawing; the DIB bits are only valid to read after this
+	if ok, _, ferr := procGdiFlush.Call(); ok == 0 {
+		overlayLog.Failure("draw", "GdiFlush failed: %v", ferr)
+	}
 	mask := make([]uint8, w*h)
 	for i := range mask {
 		mask[i] = max(pix[4*i], pix[4*i+1], pix[4*i+2])
@@ -244,8 +264,11 @@ func (overlayWindow *OverlayWindow) ApplyStyle(style model.ResolvedOverlayStyle,
 	x, y = ClampToMonitors(x, y, style.Width, style.Height)
 	overlayWindow.positionX, overlayWindow.positionY = x, y
 	if err := overlayWindow.render(true); err != nil {
+		overlayLog.Failure("apply-style", "apply style failed, keeping the previous style: %v", err)
 		overlayWindow.style, overlayWindow.positionX, overlayWindow.positionY = prevStyle, prevX, prevY
-		_ = overlayWindow.render(true)
+		if rerr := overlayWindow.render(true); rerr != nil {
+			overlayLog.Failure("render", "render failed (style rollback): %v", rerr)
+		}
 		return prevX, prevY, err
 	}
 	return x, y, nil
@@ -336,7 +359,14 @@ func (overlayWindow *OverlayWindow) Style() model.ResolvedOverlayStyle { return 
 
 // Refresh triggers a repaint of the overlay.
 func (overlayWindow *OverlayWindow) Refresh() {
-	_ = overlayWindow.render(false)
+	if err := overlayWindow.render(false); err != nil {
+		overlayLog.Failure("render", "render failed (refresh): %v", err)
+	}
+}
+
+// LastStatus returns the text and colour of the last render (self-test hook; UI thread).
+func (overlayWindow *OverlayWindow) LastStatus() (string, [3]uint8) {
+	return overlayWindow.lastText, overlayWindow.lastRGB
 }
 
 // ToggleVisibility shows or hides the overlay.
