@@ -442,7 +442,7 @@ export class AppStore {
     } catch (e) {
       await this.loadSettings().catch(() => {});
       if (e instanceof ApiError && e.code === 'INVALID_SETTING') return { ok: false, field: e.body.field, code: e.code };
-      if (e instanceof ApiError && e.code === 'HOTKEY_REGISTER_FAILED') return { ok: false, code: e.code }; // shown inline by the recorder
+      if (e instanceof ApiError && (e.code === 'HOTKEY_REGISTER_FAILED' || e.code === 'HOTKEY_RESTORE_FAILED')) return { ok: false, code: e.code }; // shown inline by the recorder
       this.error = errorText(e);
       return { ok: false };
     }

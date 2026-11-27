@@ -98,28 +98,26 @@ func (f *fixedHotkeys) count() int {
 func (f *fixedHotkeys) rebind(kind string, hk model.Hotkey) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	old, cb := f.cur[kind], f.cb[kind]
+	cb := f.cb[kind]
 	if kind == bridge.HotkeyCapture || !f.on || cb == nil || f.pending || f.stopped {
 		f.cur[kind] = hk
 		return nil
 	}
-	if id := f.ids[kind]; id != 0 {
-		_ = f.mgr.Unregister(id)
-		f.ids[kind] = 0
-	}
+	oldID := f.ids[kind]
 	if hk.Key != "" {
+		// Register the new binding first: a failure leaves the old OS registration untouched.
 		id, err := f.mgr.Register(hk, cb)
 		if err != nil {
-			if old.Key != "" {
-				if rid, rerr := f.mgr.Register(old, cb); rerr == nil {
-					f.ids[kind] = rid
-				} else {
-					log.Printf("warning: could not restore %s hotkey: %v", kind, rerr)
-				}
-			}
 			return err
 		}
 		f.ids[kind] = id
+	} else {
+		f.ids[kind] = 0
+	}
+	if oldID != 0 {
+		if err := f.mgr.Unregister(oldID); err != nil {
+			log.Printf("warning: could not release the old %s hotkey: %v", kind, err)
+		}
 	}
 	f.cur[kind] = hk
 	return nil

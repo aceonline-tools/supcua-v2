@@ -32,6 +32,32 @@ afterEach(() => { if (cmp) unmount(cmp); host.remove(); cmp = undefined; });
 
 const start = async (label: string) => { btn(label).click(); await settle(); };
 
+describe('cancel while the start RPC is pending', () => {
+  for (const how of ['blur', 'unmount'] as const) {
+    it(`${how} before settings.capture.start resolves still stops the capture`, async () => {
+      unmount(cmp!); cmp = undefined;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const slow = {
+        subscribe: mock.subscribe.bind(mock),
+        call: async (m: string, p: unknown) => { if (m === 'settings.capture.start') await gate; return mock.call(m, p); },
+      };
+      const st = new AppStore(createClient(slow));
+      await st.init(); await st.loadSettings();
+      cmp = mount(Settings, { target: host, props: { store: st } });
+      flushSync();
+      btn('Global hotkey').click();
+      await settle();
+      if (how === 'blur') btn('Global hotkey').dispatchEvent(new FocusEvent('blur'));
+      else { unmount(cmp); cmp = undefined; }
+      release();
+      await settle();
+      expect(mock.hotkeysMuted).toBe(false);
+      expect(mock.calls.filter((c) => c.method === 'settings.capture.stop')).toHaveLength(1);
+    });
+  }
+});
+
 describe('Settings hotkey recorder', () => {
   it('idle row shows the current hotkey and a Capture button with an icon', () => {
     expect(value('Global hotkey')).toBe('RCtrl');
@@ -88,7 +114,6 @@ describe('Settings hotkey recorder', () => {
     key('keydown', 'KeyO', 'o', { ctrlKey: true });
     await settle();
     expect(row('Global hotkey').querySelector('[role="alert"]')?.textContent).toMatch(/already used/);
-    expect(value('Global hotkey')).toBe('RCtrl');
     expect(store.settings?.global_hotkey).toBe('RCtrl');
     expect(mock.hotkeysMuted).toBe(false);
     await start('Global hotkey'); // retrying clears the message
@@ -128,6 +153,17 @@ describe('Settings hotkey recorder', () => {
     const during = row('Global hotkey').querySelector('.hk-rec')!;
     expect(during).toBe(before);
     expect(during.children.length).toBe(kids);
+    expect(row('Global hotkey').querySelector('.msg-float')).toBeNull();
+  });
+
+  it('an error stays inside the field box (one ellipsized line, full text in the tooltip)', async () => {
+    await start('Global hotkey');
+    key('keydown', 'F12', 'F12', { ctrlKey: true, altKey: true });
+    await settle();
+    const box = row('Global hotkey').querySelector('.hk-rec-value') as HTMLElement;
+    expect(box.getAttribute('role')).toBe('alert');
+    expect(box.textContent).toMatch(/In use by another app/);
+    expect(box.title).toMatch(/another app may be using it/);
     expect(row('Global hotkey').querySelector('.msg-float')).toBeNull();
   });
 });

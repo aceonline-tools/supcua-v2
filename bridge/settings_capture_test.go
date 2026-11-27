@@ -156,3 +156,30 @@ func TestSettingsSaveKeepsOldValueOnConflictOrRegisterFailure(t *testing.T) {
 		t.Fatalf("old value lost: %+v", got.GlobalHotkey)
 	}
 }
+
+type restoreFailHost struct {
+	*fakeHost
+	failRestore string
+	restoring   bool
+}
+
+func (h *restoreFailHost) RebindHotkey(kind string, hk model.Hotkey) error {
+	if kind == HotkeyOverlay && hk.Key == "f12" {
+		h.restoring = true
+		return errors.New("in use")
+	}
+	if h.restoring && kind == HotkeyGlobal {
+		return errors.New("cannot restore")
+	}
+	return h.fakeHost.RebindHotkey(kind, hk)
+}
+
+func TestFailedRestoreOfThePreviousHotkeyIsReportedNotSilent(t *testing.T) {
+	r, _ := newCaptureRig(t)
+	r.b.d.Host = &restoreFailHost{fakeHost: r.host}
+	_, err := r.call(t, "settings.update", `{"patch":{"global_hotkey":"Ctrl + Alt + F8","overlay_hotkey":"F12"}}`)
+	var be *Error
+	if !errors.As(err, &be) || be.Code != CodeHotkeyRestoreFail {
+		t.Fatalf("want HOTKEY_RESTORE_FAILED, got %v", err)
+	}
+}

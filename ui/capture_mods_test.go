@@ -89,8 +89,9 @@ func TestSettingsHandlerSingleModifiersKeepTheirSide(t *testing.T) {
 	}{{0xA3, "rctrl"}, {0xA2, "lctrl"}, {0xA0, "lshift"}, {0xA1, "rshift"}, {0xA4, "lalt"}, {0xA5, "ralt"}} {
 		s := &hkSink{}
 		h := settingsHotkeyHandler(s, nameOf)
-		h(ev(c.vk, true, webview.Held{Ctrl: true, Shift: true, Alt: true}))
-		h(ev(c.vk, true, webview.Held{Ctrl: true, Shift: true, Alt: true})) // auto-repeat
+		down := webview.Held{Ctrl: c.vk == 0xA2 || c.vk == 0xA3, Shift: c.vk == 0xA0 || c.vk == 0xA1, Alt: c.vk == 0xA4 || c.vk == 0xA5}
+		h(ev(c.vk, true, down))
+		h(ev(c.vk, true, down)) // auto-repeat
 		h(ev(c.vk, false, webview.Held{}))
 		if len(s.got) != 1 || s.got[0].Key != c.want || len(s.got[0].Modifiers) != 0 {
 			t.Errorf("vk %#x: got %+v, want single %q", c.vk, s.got, c.want)
@@ -138,5 +139,23 @@ func TestSettingsHandlerEscapeIsReportedBareAndModifiersPassThrough(t *testing.T
 	h(ev(0x1B, true, webview.Held{}))
 	if len(s.got) != 2 || s.got[1].Key != "escape" || len(s.got[1].Modifiers) != 0 {
 		t.Fatalf("got %+v", s.got)
+	}
+}
+
+func TestSettingsHandlerModifierHeldBeforeRecordingMakesALaterTapAChord(t *testing.T) {
+	s := &hkSink{}
+	h := settingsHotkeyHandler(s, nameOf)
+	// Ctrl was already down when recording began: the hook never saw its key-down, but its tracked
+	// state (seeded from the keyboard) reports it on the first event.
+	h(ev(0xA0, true, webview.Held{Ctrl: true, Shift: true}))
+	h(ev(0xA0, false, webview.Held{Ctrl: true}))
+	if len(s.got) != 0 {
+		t.Fatalf("Shift tapped while Ctrl was held must not record LShift: %+v", s.got)
+	}
+	h(ev(0xA2, false, webview.Held{}))
+	h(ev(0xA0, true, webview.Held{Shift: true}))
+	h(ev(0xA0, false, webview.Held{}))
+	if len(s.got) != 1 || s.got[0].Key != "lshift" {
+		t.Fatalf("with nothing held a tap must record: %+v", s.got)
 	}
 }

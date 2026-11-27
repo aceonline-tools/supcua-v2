@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -161,5 +162,46 @@ func TestDeferredReconcileRegistersNothingUntilStart(t *testing.T) {
 	s.Start(nil)
 	if s.Count() != 1 {
 		t.Fatalf("count=%d", s.Count())
+	}
+}
+
+type failingRegistry struct {
+	*fakeRegistry
+	failKey      string
+	unregistered []int
+}
+
+func (r *failingRegistry) Register(hk model.Hotkey, cb hotkey.HotkeyCallback) (int, error) {
+	if hk.Key == r.failKey {
+		return 0, errors.New("in use by another app")
+	}
+	return r.fakeRegistry.Register(hk, cb)
+}
+
+func (r *failingRegistry) Unregister(id int) error {
+	r.unregistered = append(r.unregistered, id)
+	return r.fakeRegistry.Unregister(id)
+}
+
+func TestRebindFailureKeepsTheOldOSRegistrationForGlobalAndOverlay(t *testing.T) {
+	for _, kind := range []string{bridge.HotkeyGlobal, bridge.HotkeyOverlay} {
+		reg := &failingRegistry{fakeRegistry: newFakeRegistry(), failKey: "f9"}
+		f := newFixedHotkeys(reg, true)
+		f.add(bridge.HotkeyGlobal, model.Hotkey{Key: "f1"}, func(int) {})
+		f.add(bridge.HotkeyOverlay, model.Hotkey{Key: "f2"}, func(int) {})
+		f.start()
+		before := reg.keys()
+		if err := f.rebind(kind, model.Hotkey{Key: "f9"}); err == nil {
+			t.Fatalf("%s: rebind to a taken key must fail", kind)
+		}
+		if !eq(reg.keys(), before) || len(reg.unregistered) != 0 {
+			t.Fatalf("%s: old registration disturbed: keys=%v (was %v) unregistered=%v", kind, reg.keys(), before, reg.unregistered)
+		}
+		if err := f.rebind(kind, model.Hotkey{Key: "f8"}); err != nil {
+			t.Fatalf("%s: a later valid rebind: %v", kind, err)
+		}
+		if len(reg.keys()) != 2 {
+			t.Fatalf("%s: keys=%v", kind, reg.keys())
+		}
 	}
 }

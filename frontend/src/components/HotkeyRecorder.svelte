@@ -15,13 +15,15 @@
 
 <div class="field-wrap">
   <div class="ctl hk-rec">
-    <span class="input hk-rec-value" class:capturing={rec.recording} class:invalid={!!rec.error} role="status" aria-label={label} aria-live="polite">
-      {#if rec.recording}<span class="accent">{RECORDING_TEXT}</span>{:else}<kbd>{value}</kbd>{/if}
+    <span class="input hk-rec-value" class:capturing={rec.recording} class:invalid={!!rec.error} aria-label={label}
+      role={rec.error ? 'alert' : 'status'} aria-live="polite" title={rec.error && !rec.recording ? rec.error.full : undefined}>
+      {#if rec.recording}<span class="accent">{RECORDING_TEXT}</span>
+      {:else if rec.error}<span class="err hk-rec-err">{rec.error.short}</span>
+      {:else}<kbd>{value}</kbd>{/if}
     </span>
     <button type="button" class="hk-rec-btn" aria-label={`Capture ${label}`} aria-pressed={rec.recording}
       onclick={() => (rec.recording ? rec.cancel() : rec.start())} onblur={() => rec.recording && rec.cancel()}>
       <Icon name="keyboard" size={14} />Capture
     </button>
   </div>
-  {#if rec.error}<div class="err msg-float" role="alert">{rec.error}</div>{/if}
 </div>

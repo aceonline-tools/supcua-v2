@@ -3,9 +3,14 @@ import type { SettingsHotkeyField } from '../api/types';
 import type { SettingResult } from './store.svelte';
 
 export const RECORDING_TEXT = 'Press a key… (Esc to cancel)';
-const MSG_INVALID = 'That hotkey is invalid or already used by another hotkey.';
-const MSG_REGISTER = 'Could not register that hotkey. Another app may be using it.';
-const MSG_BUSY = 'Cannot record right now.';
+// Short text for the field box (one ellipsized line), the full sentence for its tooltip.
+export const MSGS = {
+  invalid: { short: 'Invalid or already used', full: 'That hotkey is invalid or already used by another hotkey. The previous hotkey is kept.' },
+  register: { short: 'In use by another app', full: 'Could not register that hotkey; another app may be using it. The previous hotkey is kept.' },
+  restore: { short: 'Could not restore old hotkey', full: 'Could not register the new hotkey and could not restore the previous one. Restart the app.' },
+  busy: { short: 'Cannot record now', full: 'Cannot record right now.' },
+};
+export type RecorderMessage = { short: string; full: string };
 
 /**
  * Records one Settings hotkey through the host (settings.capture.*). The host mutes every global
@@ -15,9 +20,11 @@ const MSG_BUSY = 'Cannot record right now.';
  */
 export class HotkeyRecorder {
   recording = $state(false);
-  error = $state('');
+  error = $state<RecorderMessage | null>(null);
   private id: number | null = null;
   private busy = false;
+  private starting = false;
+  private cancelWhileStarting = false;
   private offs: (() => void)[];
   private get api(): Client { return this.getApi(); }
 
@@ -36,22 +43,30 @@ export class HotkeyRecorder {
 
   async start(): Promise<void> {
     if (this.recording || this.busy) return;
-    this.error = '';
-    this.busy = true;
+    this.error = null;
+    this.busy = this.starting = true;
+    this.cancelWhileStarting = false;
     this.recording = true;
     try {
       const { capture_id } = await this.api.call('settings.capture.start', { field: this.field() });
-      this.id = capture_id;
+      if (this.cancelWhileStarting) {
+        // cancelled (blur, Cancel, unmount) while the start was in flight: stop the capture that was just opened
+        await this.api.call('settings.capture.stop', { capture_id }).catch(() => {});
+      } else {
+        this.id = capture_id;
+      }
     } catch {
       this.recording = false;
-      this.error = MSG_BUSY;
+      if (!this.cancelWhileStarting) this.error = MSGS.busy;
     } finally {
-      this.busy = false;
+      this.cancelWhileStarting = false;
+      this.busy = this.starting = false;
     }
   }
 
-  /** Cancel: the value is left unchanged. */
+  /** Cancel: the value is left unchanged. Safe while the start RPC is still pending. */
   async cancel(): Promise<void> {
+    if (this.starting) this.cancelWhileStarting = true;
     const id = this.id;
     this.reset();
     if (id !== null) await this.api.call('settings.capture.stop', { capture_id: id }).catch(() => {});
@@ -65,7 +80,9 @@ export class HotkeyRecorder {
       await this.cancel(); // restores the muted hotkeys before anything is rebound
       if (bareEscape || !e.display) return;
       const res = await this.save(e.display);
-      if (!res.ok) this.error = res.code === 'HOTKEY_REGISTER_FAILED' ? MSG_REGISTER : MSG_INVALID;
+      if (!res.ok) {
+        this.error = res.code === 'HOTKEY_RESTORE_FAILED' ? MSGS.restore : res.code === 'HOTKEY_REGISTER_FAILED' ? MSGS.register : MSGS.invalid;
+      }
     } finally {
       this.busy = false;
     }

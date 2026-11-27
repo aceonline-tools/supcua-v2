@@ -60,7 +60,7 @@ type pollKeyEntry struct {
 	id       int
 	vkCode   uint32
 	callback HotkeyCallback
-	wasDown  bool
+	state    pollState
 }
 
 // Manager handles global hotkey registration and dispatching on Windows.
@@ -77,19 +77,19 @@ type Manager struct {
 
 	listenerTID atomic.Uint32
 
-	suspended atomic.Bool
-	resync    atomic.Bool
+	gate muteGate
 }
 
 // SetSuspended mutes every registered hotkey (WM_HOTKEY and polled bare modifiers) without
-// unregistering anything, so the key being recorded in Settings cannot fire a binding. Resuming
-// re-syncs the polled keys' down state first: a modifier still held from the recording must not
-// fire when it is released after the mute ends.
+// unregistering anything, so the key being recorded in Settings cannot fire a binding. Muting
+// returns only once no callback can start any more; resuming is completed by the listener, which
+// first discards hotkey input that queued while muted and re-arms polled keys that are still held.
 func (m *Manager) SetSuspended(on bool) {
-	if !on {
-		m.resync.Store(true)
+	if on {
+		m.gate.Suspend()
+		return
 	}
-	m.suspended.Store(on)
+	m.gate.Resume()
 }
 
 // registerThreadHook, when set (tests only), receives the OS thread id RegisterHotKey ran on.
@@ -277,40 +277,73 @@ func (m *Manager) ListenForHotkeys() {
 		}
 	doneChannels:
 
+		m.gate.settle(m.drainHotkeyMessages, m.resyncPolled)
+
 		// Check for WM_HOTKEY messages (non-blocking)
 		var msg msgStruct
 		ret, _, _ := procPeekMessage.Call(
 			uintptr(unsafe.Pointer(&msg)), 0, 0, 0, pmRemove,
 		)
-		mute := m.suspended.Load()
-		if ret != 0 && msg.message == wmHotkey && !mute {
+		if ret != 0 && msg.message == wmHotkey {
 			pressedID := int(msg.wParam)
 			m.mu.RLock()
 			cb, ok := m.callbacks[pressedID]
 			m.mu.RUnlock()
 			if ok {
-				log.Printf("hotkey fired: id=%d", pressedID)
-				go cb(pressedID)
+				go m.fire(pressedID, cb)
 			}
 		}
 
 		// Poll bare modifier keys via GetAsyncKeyState, fire on key-up.
-		resync := m.resync.Swap(false)
 		m.pollMu.Lock()
+		muted := m.gate.IsMuted()
 		for i := range m.pollKeys {
 			pk := &m.pollKeys[i]
 			state, _, _ := procGetAsyncKeyState.Call(uintptr(pk.vkCode))
-			isDown := uint16(state)&0x8000 != 0
-			if pk.wasDown && !isDown && !mute && !resync {
-				cb := pk.callback
-				id := pk.id
-				log.Printf("hotkey fired: id=%d", id)
-				go cb(id)
+			if pk.state.step(uint16(state)&0x8000 != 0, muted) {
+				go m.fire(pk.id, pk.callback)
 			}
-			pk.wasDown = isDown
 		}
 		m.pollMu.Unlock()
 
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// fire runs a callback unless the hotkeys were muted after it was queued.
+func (m *Manager) fire(id int, cb HotkeyCallback) {
+	if !m.gate.Allowed() {
+		return
+	}
+	log.Printf("hotkey fired: id=%d", id)
+	cb(id)
+}
+
+// drainHotkeyMessages discards every WM_HOTKEY already queued (listener thread).
+func (m *Manager) drainHotkeyMessages() {
+	var msg struct {
+		hwnd    uintptr
+		message uint32
+		wParam  uintptr
+		lParam  uintptr
+		time    uint32
+		ptX     int32
+		ptY     int32
+	}
+	for {
+		ret, _, _ := procPeekMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, wmHotkey, wmHotkey, pmRemove)
+		if ret == 0 {
+			return
+		}
+	}
+}
+
+// resyncPolled re-arms every polled key against its current physical state (listener thread).
+func (m *Manager) resyncPolled() {
+	m.pollMu.Lock()
+	defer m.pollMu.Unlock()
+	for i := range m.pollKeys {
+		state, _, _ := procGetAsyncKeyState.Call(uintptr(m.pollKeys[i].vkCode))
+		m.pollKeys[i].state.resync(uint16(state)&0x8000 != 0)
 	}
 }

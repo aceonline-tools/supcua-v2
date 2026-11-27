@@ -211,5 +211,6 @@ button.switch:has(>.icon){display:block}
 /* end icons */
 .hk-rec{gap:6px}
 .hk-rec-value{display:flex;align-items:center;overflow:hidden;white-space:nowrap}
+.hk-rec-err{margin:0;overflow:hidden;text-overflow:ellipsis}
 .hk-rec-value.capturing{border-color:var(--accent)}
 .hk-rec-btn{display:inline-flex;align-items:center;gap:4px;width:84px;justify-content:center}

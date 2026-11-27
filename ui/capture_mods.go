@@ -57,12 +57,16 @@ type modTap struct {
 
 func newModTap() *modTap { return &modTap{held: map[uint32]bool{}} }
 
-func (t *modTap) down(vk uint32) {
+// down records a key going down. heldCategories is how many of Ctrl/Shift/Alt/Win the hook-tracked
+// state (seeded from the real keyboard when the recording starts) reports down, this key included:
+// a modifier that was already held before recording began makes it more than one, so a later tap of
+// another modifier is a chord, not a tap.
+func (t *modTap) down(vk uint32, heldCategories int) {
 	if t.held[vk] { // auto-repeat
 		return
 	}
 	_, isMod := sidedModifierNames[vk]
-	if isMod && len(t.held) == 0 {
+	if isMod && len(t.held) == 0 && heldCategories <= 1 {
 		t.pending = vk
 	} else {
 		t.pending = 0
@@ -95,7 +99,7 @@ func settingsHotkeyHandler(sink bridge.CaptureSink, name func(vk uint32) string)
 	return func(ev webview.KeyEvent) bool {
 		if _, isMod := sidedModifierNames[ev.VK]; isMod || ev.VK == 0x10 || ev.VK == 0x11 || ev.VK == 0x12 {
 			if ev.Down {
-				tap.down(ev.VK)
+				tap.down(ev.VK, heldCategories(ev.Held))
 			} else if n, ok := tap.up(ev.VK, !ev.Held.Ctrl && !ev.Held.Shift && !ev.Held.Alt && !ev.Held.Win); ok {
 				sink.Hotkey(model.Hotkey{Modifiers: []string{}, Key: n})
 			}
@@ -105,7 +109,7 @@ func settingsHotkeyHandler(sink bridge.CaptureSink, name func(vk uint32) string)
 			tap.up(ev.VK, false)
 			return true
 		}
-		tap.down(ev.VK)
+		tap.down(ev.VK, heldCategories(ev.Held))
 		key := name(ev.VK)
 		if key == "" {
 			return true
@@ -123,4 +127,14 @@ func settingsHotkeyHandler(sink bridge.CaptureSink, name func(vk uint32) string)
 		sink.Hotkey(model.Hotkey{Modifiers: mods, Key: key})
 		return true
 	}
+}
+
+func heldCategories(h webview.Held) int {
+	n := 0
+	for _, b := range []bool{h.Ctrl, h.Shift, h.Alt, h.Win} {
+		if b {
+			n++
+		}
+	}
+	return n
 }
