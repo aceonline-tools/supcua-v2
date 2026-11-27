@@ -121,9 +121,12 @@ export class AppStore {
       this.api.on('app.closing', (e) => void this.onAppClosing(e.deadline_ms)),
     );
     try {
-      const [boot, state] = await Promise.all([this.api.call('app.getBootState'), this.api.call('state.get')]);
-      this.boot = boot;
-      this.state = state;
+      this.boot = await this.api.call('app.getBootState');
+      if (this.boot.mode !== 'main') {
+        await this.api.call('app.ready');
+        return;
+      }
+      this.state = await this.api.call('state.get');
       this.applyTheme();
       await Promise.all([this.loadScripts(), this.loadSettings()]);
       await this.api.call('app.ready');
