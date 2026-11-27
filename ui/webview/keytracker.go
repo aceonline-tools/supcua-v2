@@ -57,7 +57,23 @@ const (
 	winBits   = 1<<9 | 1<<10
 )
 
-var modVKs = []uint32{0x11, 0xA2, 0xA3, 0x10, 0xA0, 0xA1, 0x12, 0xA4, 0xA5, 0x5B, 0x5C}
+// seedVKs are the sided VKs the hook reports. Generic VKs are never probed: on Windows
+// GetAsyncKeyState(VK_SHIFT) is true for either side, and the hook only reports the sided key-up,
+// so a seeded generic bit would never clear.
+var seedVKs = []uint32{0xA2, 0xA3, 0xA0, 0xA1, 0xA4, 0xA5, 0x5B, 0x5C}
+
+// genericBits maps a generic modifier VK to every bit of that modifier.
+func genericBits(vk uint32) (uint16, bool) {
+	switch vk {
+	case 0x11:
+		return ctrlBits, true
+	case 0x10:
+		return shiftBits, true
+	case 0x12:
+		return altBits, true
+	}
+	return 0, false
+}
 
 // ModState tracks held modifiers from the hook's own key events. A swallowed key-down does
 // not update Windows' async key state, so GetAsyncKeyState cannot be trusted mid-capture.
@@ -67,6 +83,10 @@ type ModState struct{ bits uint16 }
 func (m *ModState) Update(vk uint32, down bool) {
 	bit, ok := modBit(vk)
 	if !ok {
+		return
+	}
+	if all, generic := genericBits(vk); generic && !down {
+		m.bits &^= all // a generic key-up clears both sides and the generic bit
 		return
 	}
 	if down {
@@ -79,7 +99,7 @@ func (m *ModState) Update(vk uint32, down bool) {
 // Seed marks the modifiers already held when the session starts.
 func (m *ModState) Seed(held func(vk uint32) bool) {
 	m.bits = 0
-	for _, vk := range modVKs {
+	for _, vk := range seedVKs {
 		if held(vk) {
 			m.Update(vk, true)
 		}

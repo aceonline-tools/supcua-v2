@@ -131,3 +131,40 @@ func TestKeyTracker_InactiveEmitsNothing_AsyncFlagsKeptForHotkeyCapture(t *testi
 		t.Fatalf("legacy async flags unchanged and independent of Held: %+v", r.Event)
 	}
 }
+
+func TestModState_SeedWithRealisticProbeDoesNotStick(t *testing.T) {
+	// Windows reports the generic VK as down whenever either side is.
+	probe := func(vk uint32) bool { return vk == 0x10 || vk == vkLShift }
+	tr := newKeyTracker(probe)
+	if !tr.process(vkA, wmKeyDown, true, probe, none).Event.Held.Shift {
+		t.Fatal("seeded Shift")
+	}
+	tr.process(vkLShift, wmKeyUp, true, probe, none)
+	if tr.process(vkA, wmKeyDown, true, probe, none).Event.Held.Shift {
+		t.Fatal("Shift stuck after the sided key-up")
+	}
+	for _, c := range []struct{ generic, sided uint32 }{{0x11, vkLCtrl}, {0x12, vkLAlt}} {
+		p := func(vk uint32) bool { return vk == c.generic || vk == c.sided }
+		tr := newKeyTracker(p)
+		tr.process(c.sided, wmKeyUp, true, p, none)
+		if tr.mods.Held() != (Held{}) {
+			t.Fatalf("%#x stuck: %+v", c.generic, tr.mods.Held())
+		}
+	}
+}
+
+func TestModState_GenericDownUpPair(t *testing.T) {
+	tr := newKeyTracker(none)
+	r := feed(tr, true, dn(0x10), dn(vkA), up(0x10), dn(vkB))
+	if !r[1].Event.Held.Shift || r[3].Event.Held.Shift {
+		t.Fatalf("generic pair: %+v %+v", r[1].Event.Held, r[3].Event.Held)
+	}
+}
+
+func TestModState_GenericUpClearsSidedDown(t *testing.T) {
+	tr := newKeyTracker(none)
+	r := feed(tr, true, dn(vkLCtrl), dn(vkRCtrl), up(vkCtrl), dn(vkA))
+	if r[3].Event.Held.Ctrl {
+		t.Fatal("a generic key-up clears every Ctrl bit")
+	}
+}
