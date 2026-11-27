@@ -165,4 +165,5 @@ button:has(>.icon){display:inline-flex;align-items:center;justify-content:center
 button.switch:has(>.icon){display:block}
 .switch .icon{position:absolute;z-index:1;top:6px;right:6px;stroke-width:3;pointer-events:none;color:var(--accent)}
 .switch[aria-checked=false] .icon{right:auto;left:6px;color:var(--bg)}
+.segments button:has(>.icon){gap:5px}
 /* end icons */
