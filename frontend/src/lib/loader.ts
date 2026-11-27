@@ -84,25 +84,30 @@ export function createLoader(opts: LoaderOptions = {}): Loader {
   };
 }
 
-export type FirstLoads = { settled(): Promise<string | null> };
+export type FirstLoads = { settled(): Promise<string | null>; notLicensed(): boolean };
 
 // Wraps a client to watch the FIRST call of each named method, so the hand-off can wait until every initial
 // load has actually settled (the store resolves init() as soon as any of them rejects). Reads nothing from the store.
 export function trackFirstCalls<T extends { call: (...a: never[]) => Promise<unknown> }>(client: T, methods: string[]): { client: T; loads: FirstLoads } {
   const first = new Map<string, Promise<unknown>>();
+  let notLicensed = false;
   const call = client.call.bind(client);
   const wrapped = {
     ...client,
     call: (...a: never[]) => {
       const p = call(...a);
       const m = a[0] as unknown as string;
-      if (methods.includes(m) && !first.has(m)) first.set(m, p);
+      if (methods.includes(m) && !first.has(m)) {
+        first.set(m, p);
+        if (m === 'app.getBootState') void p.then((v) => { notLicensed = (v as { mode?: string } | undefined)?.mode === 'notLicensed'; }, () => {});
+      }
       return p;
     },
   } as T;
   return {
     client: wrapped,
     loads: {
+      notLicensed: () => notLicensed,
       async settled() {
         const rs = await Promise.allSettled([...first.values()]);
         const bad = rs.find((r): r is PromiseRejectedResult => r.status === 'rejected');

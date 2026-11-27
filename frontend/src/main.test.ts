@@ -8,12 +8,11 @@ let finishInit!: () => void;
 vi.mock('svelte', () => ({ mount: vi.fn(() => calls.push('mount')), tick: () => Promise.resolve() }));
 vi.mock('./app.css', () => ({}));
 vi.mock('./App.svelte', () => ({ default: {} }));
-vi.mock('./api/bootstrap', () => ({ createAppClient: async () => ({ call: (m: string) => { calls.push(m); return m === 'scripts.list' ? scriptsResult() : Promise.resolve(); }, on: () => () => {} }) }));
+vi.mock('./api/bootstrap', () => ({ createAppClient: async () => ({ call: (m: string) => { calls.push(m); return m === 'scripts.list' ? scriptsResult() : m === 'app.getBootState' ? Promise.resolve({ mode: bootMode }) : Promise.resolve(); }, on: () => () => {} }) }));
 vi.mock('./lib/store.svelte', () => ({
   AppStore: class {
-    boot = { mode: bootMode };
     constructor(private c: { call(m: string): Promise<unknown> }) {}
-    init() { void this.c.call('scripts.list').catch(() => {}); return new Promise<void>((r) => { finishInit = r; }); }
+    init() { void this.c.call('app.getBootState'); void this.c.call('scripts.list').catch(() => {}); return new Promise<void>((r) => { finishInit = r; }); }
   },
 }));
 

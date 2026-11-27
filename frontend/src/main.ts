@@ -22,8 +22,8 @@ reportRendered(client);
 loader.stage('scripts');
 void initial.then(() => loads.settled()).then(async (error) => {
   await tick();
-  // An unlicensed install is expected to fail the scripts/settings loads: the app shows its licence screen then.
-  const failed = !!error && store.boot?.mode !== 'notLicensed';
+  // A not-licensed host only serves app.getBootState/app.ready, so the other initial loads fail by design there.
+  const failed = !!error && !loads.notLicensed();
   if (failed) loader.fail(`Couldn't load your scripts: ${error}`);
   else loader.done();
   reportLoader(client, failed ? 'error' : 'done');
