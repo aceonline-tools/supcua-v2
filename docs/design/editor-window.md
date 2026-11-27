@@ -1,6 +1,8 @@
 # Editor window — design contract (v1.6.0)
 
 Status: **contract rev 3 (E1a.1)**, revised after reviews of ff96774 and ccb9008. Frozen once the Lead accepts it; later changes need a REOPEN.
+> **Changelog — rev 3.1 (E1b repair, Lead-authorized amendments A–H).** §6.2/§6.5 recovery persistence is a store compare-and-swap (A) with a bounded enqueue deadline (B) and an asynchronous recovery file (C); saves publish their payload as a draft at entry (D); teardown detaches the session before the native state changes (E); cleanups own unique tokens (F); cleanup steps are bounded or asynchronous (G); §7 documents the explicit, logged shutdown escape (H). "Nothing writes after D2" is withdrawn: nothing is **enqueued** after D2.
+
 Base: `origin/main` a507e2f. Spike evidence: `origin/spike/editor-window-cost` (throwaway).
 
 ## 1. Scope
@@ -240,7 +242,7 @@ A single monotonically increasing **`revision`** (JS-safe integer `1..2^53−1`;
 - Accept only `revision > max(checkpoint.revision, lastSavedRev)`; otherwise **no-op success** `{applied:false}`.
 - A successful `editor.save` sets `lastSavedRev = snapshotRev` (inside the commit critical section, `bridge/editor.go:152-165`) and clears the checkpoint and draft with `revision ≤ lastSavedRev`.
 - `scriptID` must equal the session's; invalid scripts are stored with `valid=false`.
-- `RecoverDraft` returns the newest (by revision) of {checkpoint, draft} with `revision > lastSavedRev`.
+- `RecoverDraft` returns the newest (by revision) of {checkpoint, entry-draft, failed-save draft} with `revision > lastSavedRev` (**amendment D**: every save publishes its payload as the session's newest draft at save **entry**, before any check that can reject it — including a save refused with `SESSION_CLOSING` by the closing fence — so a save rejected late is never lost).
 
 ### 6.3 Recovery and persistence
 
@@ -262,6 +264,14 @@ State on `editorSession`: `closing` (bool, set atomically under `sessMu`; plus a
 4. **Recovery snapshot:** after step 2 (or its 500 ms bound), recovery takes under `b.mu` the newest of checkpoint/draft (§6.2) and `lastSavedRev`, and **always writes the recovery FILE** (no lock needed).
 5. **Recovery also persists to the script only if** `saving == 0` **and** the snapshot's `revision > lastSavedRev` **and** the draft is valid and non-conflicting; it then runs `saveScript` through a dedicated entry that skips the session `closing` rejection (it carries a one-shot recovery token) and sets `lastSavedRev`. Otherwise **recovery-file-only**. A recovery persistence can **never overwrite a newer revision**: the `revision > lastSavedRev` test and the commit are under the same `b.mu` critical section (`bridge/editor.go:152-165`).
 6. If the 500 ms wait expires with `saving > 0`, recovery is **file-only**; the late save completes normally under rule 3.
+
+**Amendments (rev 3.1) — these replace rules 4–5 where they differ:**
+- **A. Compare-and-swap persistence.** The session captures the store's revision (etag) of its script at `editor.open` and updates it on each of its own enqueues. Recovery persists into the script only if, checked atomically at enqueue under the **store's own queue lock** (`RevStore.QueueSaveIf`), the store's current revision still equals the etag (nobody else saved or deleted it — Delete leaves a tombstone revision) **and** no newer editor generation has that script open (lock-free `activeScript`, or a live session for it). Otherwise **file-only**. This replaces "`lastSavedRev` only". A store without `RevStore` is file-only.
+- **B. Deadline semantics.** Recovery must **enqueue** before its deadline (D2 at shutdown, else teardown + 2 s). A three-state CAS (pending → enqueued by the admit check under the store lock, pending → abandoned at the deadline) guarantees exactly one outcome, so a recovery not enqueued by the deadline can never enqueue later. Anything enqueued is flushed by the existing store machinery / `quiesce` (bounded by `quiesceGrace`). Recovery never waits for the flush.
+- **C. Recovery file** is written on its own goroutine. Cleanup waits for it at most until the deadline; the gate release never waits on it. A late write is acceptable and is logged.
+- **E. Detach before state change.** Teardown (UI thread) sets `closingFlag` and an atomic `detached` flag and clears the lock-free mirror **before** the native state returns to None; every lookup under `b.mu` drops a detached session, so B's `editor.open` never sees A (no `EDITOR_BUSY`). The lease wait runs on the detached object; saves to it get `SESSION_CLOSING`.
+- **F. Per-cleanup ownership.** Each teardown with a session registers a unique token; the gate (`SetEditDialogOpen(false)`) is released only when the token set is empty **and** no generation is active. Teardowns without a session register none and release only under the same condition. `editor.close` and `ResetSession` release through the same check.
+- **G. Bounded cleanup.** Cleanup takes no `sessMu`/`b.mu`; `capture.EndSession` runs asynchronously; persistence and the file run on goroutines bounded by the deadline. `EnableMain` and the gate never wait on them.
 7. `ResetSession` (`bridge/bridge.go:430-442`) is changed to use the same `closing`/detach protocol; it keeps its blocking `sessMu.Lock()` only on its own goroutine (never on the UI thread, never in destroy).
 
 ### 6.4 Idempotence
@@ -275,7 +285,7 @@ State on `editorSession`: `closing` (bool, set atomically under `sessMu`; plus a
 | Deadline | Time | Requirement |
 |---|---|---|
 | **D1 cooperative ack** | `S+1.5 s` (existing `main.go:419`) | editor present ⇒ the **editor's readiness** (below) is required; main's ack alone does **not** release |
-| **D2 recovery complete** | `S+2.5 s` | recovery (§6.3/§6.5) finished or abandoned (file-only) |
+| **D2 recovery complete** | `S+2.5 s` | recovery (§6.3/§6.5) enqueued or abandoned (file-only); an enqueued write may still land during `quiesce` (amendment B) |
 | **D3 hard destroy** | `S+3.0 s` | editor HWND destroyed, main re-enabled (UI thread, independent of everything else) |
 
 **Editor readiness** = (a) host cleanup of the editor completed successfully (`closeSession` finished after a `closeDecision`), **or** (b) force-close/destroy done. A closed editor never sends `app.closingReady`; the readiness flag is set by cleanup itself. Main's readiness = its `app.closingReady` (`bridge/bridge.go:416`).
@@ -289,6 +299,7 @@ State on `editorSession`: `closing` (bool, set atomically under `sessMu`; plus a
 - Shutdown in Creating/Loading/Measuring: `failEditor` (no toast); no ack awaited. During save: the lease (§6.5) bounded 500 ms. During capture: `capture.End`, stop handled off the UI thread.
 - `shutdownAllowed` (`bridge/bridge.go:494`) becomes `editor.save`, `editor.closeDecision`, `editor.checkpoint`, `app.closingReady`; `editor.close` is no longer a page method.
 - `Dispatcher.Close()` only after the editor is destroyed.
+- **Amendment H — bounded escape.** The process must be able to exit: if the editor's destruction is not confirmed by `D3 + 0.5 s` (a wedged UI thread), shutdown logs `editor destroy not confirmed; proceeding` and continues past the barrier. This is the only exception to the AND barrier.
 
 ## 8. Capture, hotkeys, tray, minimise
 
