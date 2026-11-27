@@ -62,7 +62,8 @@ export const MOCK_CATALOG: ActionSpec[] = [
   spec('mouse_move', 'mouse', [P('x', 'int', 0, 10000, 0), P('y', 'int', 0, 10000, 0)]),
   ...['mouse_left_click', 'mouse_right_click', 'mouse_left_double', 'mouse_right_double', 'mouse_left_down', 'mouse_left_up',
     'mouse_right_down', 'mouse_right_up', 'mouse_store_pos', 'mouse_move_stored'].map((t) => spec(t, 'mouse')),
-  ...['key_press', 'key_down', 'key_up'].map((t) => spec(t, 'keyboard', [P('key', 'string')])),
+  spec('key_press', 'keyboard', [P('key', 'string'), P('keys', 'keys'), P('key_delay_ms', 'int', 0, 5000, 50)]),
+  ...['key_down', 'key_up'].map((t) => spec(t, 'keyboard', [P('key', 'string')])),
   spec('delay', 'wait', [P('ms', 'int', 1, 600000, 100)]),
   spec('loop', 'loop', [P('count', 'int', 0, 100000, 1)]),
   spec('loop_end', 'loop'),
@@ -79,10 +80,12 @@ const LABELS: Record<string, string> = {
   loop_end: 'End Loop',
 };
 
+import { describeKeyPress } from '../lib/keySequence';
+
 function describe(a: Action): string {
   switch (a.type) {
     case 'mouse_move': return `Mouse Move → (${a.x ?? 0}, ${a.y ?? 0})`;
-    case 'key_press': return `Key Press: ${a.key ?? ''}`;
+    case 'key_press': return describeKeyPress(a);
     case 'key_down': return `Key Down: ${a.key ?? ''}`;
     case 'key_up': return `Key Up: ${a.key ?? ''}`;
     case 'delay': return `Delay: ${a.ms ?? 0}ms`;

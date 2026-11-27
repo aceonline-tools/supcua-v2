@@ -17,12 +17,10 @@ const keyAt = (i: number) => store.editor.script!.actions[i] as KeyPressAction;
 const cid = () => (mock as unknown as { activeCap: { id: number } }).activeCap.id;
 
 async function openDialog(action: KeyPressAction | null) {
-  console.log('DBG', JSON.stringify(store.editor.script!.actions.map((a) => a.type)), store.editor.catalog.length);
-  if (action) store.editor.script!.actions[1] = action as never;
-  store.editor.selected = 1;
+  if (action) store.editor.script!.actions[3] = action as never;
+  store.editor.selected = 3;
   store.editor.editSelected();
   await settle();
-  console.log('DBG2', !!store.editor.actionDialog, host.innerHTML.length);
 }
 const ok = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dialog-footer button')).find((b) => b.textContent!.includes('OK'))!;
 const type = async (text: string) => {
@@ -48,7 +46,7 @@ describe('key sequence dialog', () => {
     await openDialog(null);
     expect(chips()).toEqual(['1']);
     await click(ok());
-    expect(keyAt(1)).toEqual({ type: 'key_press', key: '1' });
+    expect(keyAt(3)).toEqual({ type: 'key_press', key: '1' });
   });
 
   it('loads a multi-key action as chips and saves the exact contract payload', async () => {
@@ -57,7 +55,7 @@ describe('key sequence dialog', () => {
     expect(q('.seq-preview').textContent).toContain('Ctrl+Shift+A → B');
     expect(q<HTMLInputElement>('#ap-key-delay').value).toBe('80');
     await click(ok());
-    expect(keyAt(1)).toEqual({ type: 'key_press', keys: [{ key: 'a', mods: ['ctrl', 'shift'] }, { key: 'b' }], key_delay_ms: 80 });
+    expect(keyAt(3)).toEqual({ type: 'key_press', keys: [{ key: 'a', mods: ['ctrl', 'shift'] }, { key: 'b' }], key_delay_ms: 80 });
   });
 
   it('adds by typing, removes and reorders', async () => {
@@ -70,7 +68,7 @@ describe('key sequence dialog', () => {
     await click(q('button[aria-label="Remove 1"]'));
     expect(chips()).toEqual(['Enter', 'Alt+F4']);
     await click(ok());
-    expect(keyAt(1)).toEqual({ type: 'key_press', keys: [{ key: 'enter' }, { key: 'f4', mods: ['alt'] }], key_delay_ms: 50 });
+    expect(keyAt(3)).toEqual({ type: 'key_press', keys: [{ key: 'enter' }, { key: 'f4', mods: ['alt'] }], key_delay_ms: 50 });
   });
 
   it('flags an unknown typed key and adds nothing', async () => {
@@ -115,12 +113,12 @@ describe('key sequence dialog', () => {
     expect(store.editor.capturing).toBe('keys');
     expect(mock.calls.filter((c) => c.method === 'capture.key.start')).toHaveLength(1);
     for (const key of ['ctrl', 'x', 'y']) { mock.push('capture.key', { capture_id: cid(), key }); await settle(); }
-    expect(chips()).toEqual(['Ctrl+X', 'Y']);
+    expect(chips()).toEqual(['1', 'Ctrl+X', 'Y']);
     expect(store.editor.capturing).toBe('keys');
     mock.push('capture.key', { capture_id: cid(), key: 'escape' });
     await settle();
     expect(store.editor.capturing).toBeNull();
-    expect(chips()).toEqual(['Ctrl+X', 'Y']);
+    expect(chips()).toEqual(['1', 'Ctrl+X', 'Y']);
     expect(mock.calls.some((c) => c.method === 'capture.stop')).toBe(true);
   });
 

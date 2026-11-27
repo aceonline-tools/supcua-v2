@@ -1,9 +1,8 @@
 // Key-sequence helpers for key_press actions (contract: model/action.go, PR #24).
-// Types live here until api/types.ts may be edited.
-import type { Action } from '../api/types';
+import type { Action, KeyStroke } from '../api/types';
 
-export interface KeyStroke { key: string; mods?: string[] }
-export type KeyPressAction = Action & { keys?: KeyStroke[]; key_delay_ms?: number };
+export type { KeyStroke };
+export type KeyPressAction = Action;
 
 export const MAX_KEYS = 32;
 export const DEFAULT_DELAY_MS = 50;
@@ -16,7 +15,7 @@ export const KEY_NAMES: readonly string[] = ['ctrl', 'lctrl', 'rctrl', 'shift', 
 const KEY_SET = new Set(KEY_NAMES);
 
 export function isKnownKey(name: string): boolean {
-  return KEY_SET.has(name) || (name.length === 1 && name.charCodeAt(0) < 256);
+  return KEY_SET.has(name) || (name.length === 1 && name.charCodeAt(0) < 128);
 }
 
 const canonKey = (k: string) => (k.length > 1 || /^[A-Z]$/.test(k) ? k.toLowerCase() : k);

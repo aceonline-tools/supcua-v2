@@ -110,6 +110,12 @@ export interface Region {
   height: number;
 }
 
+// model/action.go KeyStroke: one key of a key_press sequence, pressed with its modifiers.
+export interface KeyStroke {
+  key: string;
+  mods?: string[];
+}
+
 // model/action.go json tags; zero-valued fields are omitted on the wire.
 export interface Action {
   type: string;
@@ -119,6 +125,8 @@ export interface Action {
   offset_x?: number;
   offset_y?: number;
   key?: string;
+  keys?: KeyStroke[];
+  key_delay_ms?: number;
   ms?: number;
   count?: number;
   actions?: Action[];
@@ -150,7 +158,7 @@ export type ActionGroup = 'mouse' | 'keyboard' | 'wait' | 'loop' | 'lock' | 'ima
 // ASSUMED: param `name` equals the Action JSON tag it edits; kind is int|string|bool.
 export interface ParamSpec {
   name: string;
-  kind: 'int' | 'string' | 'bool';
+  kind: 'int' | 'string' | 'bool' | 'keys';
   min?: number;
   max?: number;
   default?: number | string | boolean;
