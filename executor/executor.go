@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -413,6 +414,14 @@ func (scriptExecutor *Executor) pressStroke(ctx context.Context, stroke model.Ke
 	return sleepCtx(ctx, time.Duration(scriptExecutor.keyPressDurationMs)*time.Millisecond)
 }
 
+func truncateStack(stack []byte) []byte {
+	const limit = 2048
+	if len(stack) > limit {
+		return stack[:limit]
+	}
+	return stack
+}
+
 func (scriptExecutor *Executor) releaseAll(held []string) error {
 	var errs []error
 	for j := len(held) - 1; j >= 0; j-- {
@@ -420,7 +429,7 @@ func (scriptExecutor *Executor) releaseAll(held []string) error {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					errs = append(errs, fmt.Errorf("release %q panicked: %v", name, r))
+					errs = append(errs, fmt.Errorf("release %q panicked: %v\n%s", name, r, truncateStack(debug.Stack())))
 				}
 			}()
 			if err := scriptExecutor.inputSimulator.KeyUp(name); err != nil {

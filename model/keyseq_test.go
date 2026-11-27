@@ -89,6 +89,9 @@ func TestNormalizeKeys(t *testing.T) {
 		"empty key":   {Action{Type: ActionKeyPress, Keys: []KeyStroke{{Key: ""}}}, false},
 		"unknown key": {Action{Type: ActionKeyPress, Key: "nosuchkey"}, false},
 		"single char": {Action{Type: ActionKeyPress, Key: ";"}, true},
+		"non-ascii":   {Action{Type: ActionKeyPress, Key: "é"}, false},
+		"upper char":  {Action{Type: ActionKeyPress, Key: "A"}, true},
+		"lower char":  {Action{Type: ActionKeyPress, Key: "a"}, true},
 		"upper name":  {Action{Type: ActionKeyPress, Key: "Enter"}, true},
 		"key too big": {Action{Type: ActionKeyPress, Key: strings.Repeat("k", 33)}, false},
 	} {

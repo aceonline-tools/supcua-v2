@@ -1,7 +1,5 @@
 package model
 
-import "unicode/utf8"
-
 // keyNames mirrors executor's virtualKeyCodeMap (Windows-only) so key names can be
 // validated on every platform; executor/keynames_windows_test.go guards drift.
 var keyNames = func() map[string]bool {
@@ -88,9 +86,10 @@ var keyNames = func() map[string]bool {
 	return m
 }()
 
-// IsKnownKey reports whether name resolves to a key: a table name or any single character.
+// IsKnownKey reports whether name resolves to a key: a table name or a single-byte
+// character (the executor resolves single characters byte-wise).
 func IsKnownKey(name string) bool {
-	return keyNames[name] || utf8.RuneCountInString(name) == 1
+	return keyNames[name] || len(name) == 1
 }
 
 // KeyNames returns a copy of the named-key table.

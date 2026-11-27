@@ -392,6 +392,9 @@ func TestOldReaderDropsUnknownFieldsKeepsUnknownType(t *testing.T) {
 			t.Fatalf("old reader must load it: %v", err)
 		}
 		out, _ := json.Marshal(a)
+		if !strings.Contains(string(out), `"type":"`+a.Type+`"`) || a.Type == "" {
+			t.Fatalf("unknown type must survive the old reader, got %s", out)
+		}
 		if strings.Contains(string(out), "keys") || strings.Contains(string(out), "key_delay_ms") {
 			t.Fatalf("expected old reader to drop new fields, got %s", out)
 		}
