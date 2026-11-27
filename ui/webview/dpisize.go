@@ -74,3 +74,11 @@ func fitRect(dpi int, work rect, x, y, minW, minH int) (int, int, int, int) {
 	}
 	return x, y, w, h
 }
+
+// capDim caps v at limit when limit > 0.
+func capDim(v, limit int) int {
+	if limit > 0 && v > limit {
+		return limit
+	}
+	return v
+}

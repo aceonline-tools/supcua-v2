@@ -313,13 +313,27 @@ func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
 		_ = os.Remove(final)
 		return "", err
 	}
-	if err := os.Rename(tmpName, final); err != nil { // replaces only our own reservation
+	if err := renameRetry(tmpName, final); err != nil { // replaces only our own reservation
 		_ = os.Remove(tmpName)
 		_ = os.Remove(final)
 		return "", err
 	}
 	pruneRecovery(dir, safeName(env.ScriptID))
 	return final, nil
+}
+
+// renameRetry renames, retrying briefly: on Windows a reader or an antivirus scanner holding the
+// reserved file open makes MoveFileEx fail with a sharing violation for a moment. Bounded (~1 s);
+// it runs on the recovery-file goroutine only.
+func renameRetry(from, to string) error {
+	var err error
+	for i := 0; i < 50; i++ {
+		if err = os.Rename(from, to); err == nil {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return err
 }
 
 // reserveRecoveryName creates base.json (or base-n.json) exclusively and returns its path.

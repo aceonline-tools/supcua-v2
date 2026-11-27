@@ -79,6 +79,20 @@ func hasQueued(e *edRig, idName string) bool {
 	return false
 }
 
+// readSettled reads a file, retrying while Windows reports it in use (the writer's rename onto
+// its reservation); it gives up after ~1 s with the last error.
+func readSettled(p string) ([]byte, error) {
+	var raw []byte
+	var err error
+	for i := 0; i < 50; i++ {
+		if raw, err = os.ReadFile(p); err == nil || os.IsNotExist(err) {
+			return raw, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return raw, err
+}
+
 func recoveryFiles(t *testing.T, dir string) []RecoveryEnvelope {
 	t.Helper()
 	ents, _ := os.ReadDir(dir)
@@ -87,7 +101,7 @@ func recoveryFiles(t *testing.T, dir string) []RecoveryEnvelope {
 		if strings.HasPrefix(en.Name(), ".") || !strings.HasSuffix(en.Name(), ".json") {
 			continue // a temp file still being written (temp + rename)
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, en.Name()))
+		raw, err := readSettled(filepath.Join(dir, en.Name()))
 		if os.IsNotExist(err) {
 			continue // pruned meanwhile
 		}

@@ -480,7 +480,10 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 				if wk, ok := workArea(hwnd); ok {
 					aw, ah = wk.R-wk.L, wk.B-wk.T
 				}
-				mw, mh := scaledMin(windowDPI(hwnd), editorMinCssW, editorMinCssH, aw, ah)
+				// The floor is the CLIENT area (720×480 CSS px): add this window's frame, then cap at the work area.
+				fw, fh := frameSize(hwnd)
+				mw, mh := scaledMin(windowDPI(hwnd), editorMinCssW, editorMinCssH, 0, 0)
+				mw, mh = capDim(mw+fw, aw), capDim(mh+fh, ah)
 				mm.PtMinTrackSize.X, mm.PtMinTrackSize.Y = int32(mw), int32(mh)
 				return 0
 			}
@@ -620,3 +623,12 @@ func onSomeMonitor(r *win.RECT) bool {
 }
 
 var procGetDpiForWindow = user32.NewProc("GetDpiForWindow")
+
+// frameSize is the non-client size of hwnd (outer minus client), in physical pixels.
+func frameSize(hwnd win.HWND) (int, int) {
+	var wr, cr win.RECT
+	if !win.GetWindowRect(hwnd, &wr) || !win.GetClientRect(hwnd, &cr) {
+		return 0, 0
+	}
+	return int((wr.Right - wr.Left) - (cr.Right - cr.Left)), int((wr.Bottom - wr.Top) - (cr.Bottom - cr.Top))
+}

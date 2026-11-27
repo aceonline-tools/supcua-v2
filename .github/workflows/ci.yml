@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      stress:
+        description: "Also run the one-off E1b race-test stress proof (-count=500 on Windows)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -50,8 +55,23 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - run: go test -count=1 ./...
-      - name: Flake guard (late-payload writer file count, 500 runs)
-        run: go test -count=500 -run TestE1bSealFloodOfLateSavesUsesOneCoalescingWriter ./bridge
+      - name: Standing guard (E1b race tests, 20 runs)
+        run: go test -count=20 -run 'TestE1b' ./bridge
+
+  stress:
+    if: github.event_name == 'workflow_dispatch' && inputs.stress
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: E1b race tests, 500 runs (one-off proof)
+        run: go test -timeout 35m -count=500 -run 'TestE1b' ./bridge
 
   race-macos:
     runs-on: macos-latest

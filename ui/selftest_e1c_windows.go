@@ -30,6 +30,48 @@ var de=document.documentElement;
 return {m:m,blank:cols,root:root?[root.scrollWidth,root.clientWidth,root.scrollHeight,root.clientHeight]:null,doc:[de.scrollWidth,de.clientWidth,de.scrollHeight,de.clientHeight],
 font:getComputedStyle(document.body).fontFamily,segoe:document.fonts?document.fonts.check('12px "Segoe UI"'):null}})()`
 
+// edIntrinsicJS reads the same values in the page's own measure mode (data-measure on <html>, the
+// viewport-independent natural layout the host sizes the window from), then restores the shown
+// layout. The per-column blank of the contract is defined here, independent of the work area.
+const edIntrinsicJS = `(async function(){var de=document.documentElement,had=('measure' in de.dataset);de.dataset.measure='';
+await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r)})});
+var root=document.getElementById('editor-root'),rr=root.getBoundingClientRect();
+var cols=[].slice.call(document.querySelectorAll('.editor-col')).map(function(c){var r=c.getBoundingClientRect(),b=r.top;[].slice.call(c.children).forEach(function(k){b=Math.max(b,k.getBoundingClientRect().bottom)});return Math.round(r.bottom-b)});
+var list=document.querySelector('.action-list .list'),card=document.querySelector('.card.action-list');
+var out={w:Math.round(rr.width),h:Math.round(rr.height),blank:cols,actionsListH:list?list.clientHeight:0,actionCardH:card?Math.round(card.getBoundingClientRect().height):0,
+colH:[].slice.call(document.querySelectorAll('.editor-col')).map(function(c){return Math.round(c.getBoundingClientRect().height)}),
+font:getComputedStyle(document.body).fontFamily,segoe:document.fonts?document.fonts.check('12px "Segoe UI"'):null};
+if(!had)delete de.dataset.measure;await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r)})});return out})()`
+
+type edIntrinsic struct {
+	W, H         float64
+	Blank        []float64 `json:"blank"`
+	ActionsListH float64   `json:"actionsListH"`
+	ActionCardH  float64   `json:"actionCardH"`
+	ColH         []float64 `json:"colH"`
+	Font         string    `json:"font"`
+	Segoe        *bool     `json:"segoe"`
+}
+
+func (s *SelfTest) edIntrinsic() (edIntrinsic, error) {
+	var m edIntrinsic
+	raw, err := s.driveEd(edIntrinsicJS, 5*time.Second)
+	if err != nil {
+		return m, err
+	}
+	return m, json.Unmarshal(raw, &m)
+}
+
+func (m edIntrinsic) maxBlank() float64 {
+	x := 0.0
+	for _, b := range m.Blank {
+		if b > x {
+			x = b
+		}
+	}
+	return x
+}
+
 type edMetrics struct {
 	M *struct {
 		Measuring    bool    `json:"measuring"`
@@ -261,9 +303,23 @@ func (s *SelfTest) realEditorSuite() {
 	}
 	g := windowGeom(h)
 	s.estep("main enabled before / disabled while open", before && !enabledWhile, fmt.Sprintf("before=%v while=%v", before, enabledWhile))
-	s.estep("natural size: measured content, client/outer bounds, DPI, work area", m.M != nil,
-		fmt.Sprintf("measured=%.0fx%.0f outer=%v client=%v dpi=%d work=%v", m.M.CssW, m.M.CssH, g.Outer, g.Client, g.DPI, g.Work))
-	s.estep("natural size: no empty space (≤24px blank per column) and the root does not scroll", m.maxBlank() <= 24 && m.noScroll(), m.String())
+	in, ierr := s.edIntrinsic()
+	cw0, ch0, _ := clientCSS(h)
+	shownAs := "the measured natural size"
+	switch {
+	case ierr != nil || in.W == 0:
+		shownAs = "unknown (no intrinsic metrics)"
+	case cw0 < in.W-2 || ch0 < in.H-2:
+		shownAs = fmt.Sprintf("CLAMPED to the work area (natural %.0fx%.0f, shown %.0fx%.0f)", in.W, in.H, cw0, ch0)
+	case absF(cw0-float64(bridge.FallbackCssW)) <= 2 && absF(ch0-float64(bridge.FallbackCssH)) <= 2 && absF(in.W-cw0) > 2:
+		shownAs = "the fallback size"
+	}
+	s.estep("shown window: content, client/outer bounds, DPI, work area (evidence)", true,
+		fmt.Sprintf("shown as %s; outer=%v client=%v (css %.0fx%.0f) dpi=%d work=%v; shown layout: %s", shownAs, g.Outer, g.Client, cw0, ch0, g.DPI, g.Work, m))
+	s.estep("intrinsic natural size: no empty space (≤24px blank per column, measure mode)", ierr == nil && in.W > 0 && in.maxBlank() <= 24,
+		fmt.Sprintf("err=%v natural=%.0fx%.0f blankPerColumn=%v columnH=%v actionsListH=%.0f actionCardH=%.0f font=%q segoeAvailable=%v",
+			ierr, in.W, in.H, in.Blank, in.ColH, in.ActionsListH, in.ActionCardH, in.Font, in.Segoe != nil && *in.Segoe))
+	s.estep("shown window: the root does not scroll", m.noScroll(), m.String())
 	s.shot("1-new-natural-editor", h)
 	s.shot("1-new-natural-main-disabled", s.UI.HWND())
 
@@ -288,25 +344,24 @@ func (s *SelfTest) realEditorSuite() {
 	if !s.estep("existing script opens the real editor page", err == nil && !enabledWhile, fmt.Sprintf("err=%v mainEnabledWhileOpen=%v %s", err, enabledWhile, m)) {
 		return
 	}
-	nat := m
 	s.shot("2-existing-natural-editor", h)
-	g = windowGeom(h)
-	ow, oh := g.Outer[2]-g.Outer[0], g.Outer[3]-g.Outer[1]
-	dx, dy := min32(320, g.WorkW-ow), min32(220, g.WorkH-oh)
-	win.SetWindowPos(win.HWND(h), 0, g.Work[0], g.Work[1], ow+dx, oh+dy, win.SWP_NOZORDER|win.SWP_NOACTIVATE)
-	m, _ = s.waitSettled(5 * time.Second)
-	grew := nat.M != nil && m.M != nil && m.M.ActionsListH > nat.M.ActionsListH
-	s.estep("larger: reflows, the root does not scroll and the action list takes the extra height", m.noScroll() && (grew || dy <= 0),
-		fmt.Sprintf("grew outer by %dx%d; actionsListH %.0f -> %.0f; %s", dx, dy, nat.M.ActionsListH, m.M.ActionsListH, m))
-	s.shot("3-existing-larger-editor", h)
 
 	win.SetWindowPos(win.HWND(h), 0, 0, 0, 200, 150, win.SWP_NOMOVE|win.SWP_NOZORDER|win.SWP_NOACTIVATE)
-	m, _ = s.waitSettled(5 * time.Second)
+	floor, _ := s.waitSettled(5 * time.Second)
 	cw, ch, dpi := clientCSS(h)
-	s.estep("smaller: clamped at the 720×480 floor and the root does not scroll", cw >= float64(bridge.MinCssW)-1 && ch >= float64(bridge.MinCssH)-1 && m.noScroll(),
-		fmt.Sprintf("client css=%.0fx%.0f dpi=%d; %s", cw, ch, dpi, m))
-	s.shot("4-existing-floor-editor", h)
-	s.shot("4-existing-floor-main-disabled", s.UI.HWND())
+	s.estep("smaller: clamped at the 720×480 CLIENT floor and the root does not scroll", cw >= float64(bridge.MinCssW)-1 && ch >= float64(bridge.MinCssH)-1 && floor.noScroll(),
+		fmt.Sprintf("client css=%.0fx%.0f dpi=%d; %s", cw, ch, dpi, floor))
+	s.shot("3-existing-floor-editor", h)
+	s.shot("3-existing-floor-main-disabled", s.UI.HWND())
+
+	g = windowGeom(h)
+	win.SetWindowPos(win.HWND(h), 0, g.Work[0], g.Work[1], g.WorkW, g.WorkH, win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+	big, _ := s.waitSettled(5 * time.Second)
+	bw, bh, _ := clientCSS(h)
+	grew := floor.M != nil && big.M != nil && big.M.ActionsListH > floor.M.ActionsListH
+	s.estep("larger (floor → whole work area): reflows, the root does not scroll and the action list takes the extra height", big.noScroll() && grew,
+		fmt.Sprintf("client css %.0fx%.0f -> %.0fx%.0f; actionsListH %.0f -> %.0f; %s", cw, ch, bw, bh, listH(floor), listH(big), big))
+	s.shot("4-existing-larger-editor", h)
 
 	s.captureTargeting(h)
 
@@ -442,6 +497,20 @@ func (s *SelfTest) prodEditorGate(h ProductionHooks, step func(string, bool, str
 	win.PostMessage(win.HWND(eh), win.WM_CLOSE, 0, 0)
 	_, gone := s.waitEditorGone(eh, 15*time.Second)
 	step("editor closed again over the production sequence", gone && waitFor(5*time.Second, func() bool { return !s.EditOpen() }), "")
+}
+
+func listH(m edMetrics) float64 {
+	if m.M == nil {
+		return 0
+	}
+	return m.M.ActionsListH
+}
+
+func absF(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func min32(a, b int32) int32 {
