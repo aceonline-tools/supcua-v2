@@ -1,4 +1,4 @@
-// Package serve answers the WebView2 resource requests for https://app.local/ out of an
+// Package serve answers the WebView2 resource requests for https://app.invalid/ out of an
 // fs.FS. It is platform-neutral: no COM, no Windows calls.
 package serve
 
@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	Host   = "app.local"
+	Host   = "app.invalid"
 	Origin = "https://" + Host
 	// Filter is the WebView2 WebResourceRequested filter covering the whole origin.
 	Filter = Origin + "/*"
@@ -63,7 +63,7 @@ func AllowNavigation(uri string) bool {
 }
 
 // CleanPath maps a request URL to an fs.FS name. It rejects anything that is not
-// https://app.local/<relative path>: other schemes/hosts/ports/userinfo, "..", backslashes,
+// https://app.invalid/<relative path>: other schemes/hosts/ports/userinfo, "..", backslashes,
 // NUL, drive letters and encoded variants of those. "/" maps to index.html.
 func CleanPath(rawURL string) (string, bool) {
 	u, err := url.Parse(rawURL)

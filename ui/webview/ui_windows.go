@@ -37,7 +37,7 @@ type Bounds struct{ X, Y, W, H int }
 type Config struct {
 	Title          string
 	Methods        map[string]rpc.Handler
-	Assets         fs.FS // frontend root served at https://app.local/
+	Assets         fs.FS // frontend root served at https://app.invalid/
 	DataDir        string
 	Debug          bool // DevTools, context menu and browser accelerators on
 	DarkTitleBar   bool
@@ -86,7 +86,7 @@ type UI struct {
 var current atomic.Pointer[UI]
 
 // New builds the hidden walk pump owner, the host window and the WebView2 controller, and
-// navigates to https://app.local/index.html. Call on the main goroutine before Run.
+// navigates to https://app.invalid/index.html. Call on the main goroutine before Run.
 func New(cfg Config) (*UI, error) {
 	if cfg.Assets == nil || cfg.Methods == nil {
 		return nil, errors.New("webview: Assets and Methods are required")
@@ -212,7 +212,7 @@ func New(cfg Config) (*UI, error) {
 	return u, nil
 }
 
-// serveRequest answers https://app.local/* from the embedded assets (UI thread, COM event).
+// serveRequest answers https://app.invalid/* from the embedded assets (UI thread, COM event).
 func (u *UI) serveRequest(req *edge.ICoreWebView2WebResourceRequest, args *edge.ICoreWebView2WebResourceRequestedEventArgs) {
 	uri, method, err := req.RequestInfo()
 	if err != nil {
