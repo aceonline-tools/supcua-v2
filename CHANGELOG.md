@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.5.0...v1.5.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* bold only for titles, aligned icon columns and no layout jumps ([dc40da1](https://github.com/aceonline-tools/supcua-v2/commit/dc40da1f92f06afca827ff1d216e5c10dfca73c1))
+* load the UI about 2s faster by not using an mDNS host name ([d0a7413](https://github.com/aceonline-tools/supcua-v2/commit/d0a741352f8ff94dce7497c80c70a86568a354df))
+
 ## [1.5.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.4.1...v1.5.0) (2026-11-27)
 
 
