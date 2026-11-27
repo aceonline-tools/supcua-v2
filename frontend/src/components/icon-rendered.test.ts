@@ -97,15 +97,18 @@ describe('rendered buttons all contain an svg icon', () => {
     expectIcons('conflict dialog', 25);
   });
 
-  it('toggle switch carries a check when on and an x when off', async () => {
-    host = document.createElement('div');
-    document.body.replaceChildren(host);
-    const t = mount(Toggle, { target: host, props: { checked: true, label: 'L', onchange: () => {} } });
-    flushSync();
-    expect(host.querySelector('button')!.getAttribute('role')).toBe('switch');
-    expect(host.querySelectorAll('svg path').length).toBe(1);
-    expectIcons('toggle on', 1);
-    await unmount(t);
+  it('toggle switch shows a check when on and an x when off', async () => {
+    for (const [on, icon] of [[true, 'check'], [false, 'x']] as const) {
+      host = document.createElement('div');
+      document.body.replaceChildren(host);
+      const t = mount(Toggle, { target: host, props: { checked: on, label: 'L', onchange: () => {} } });
+      flushSync();
+      const btn = host.querySelector('button')!;
+      expect(btn.getAttribute('role')).toBe('switch');
+      expect(btn.getAttribute('aria-checked')).toBe(String(on));
+      expect(Array.from(btn.querySelectorAll('svg')).map((s) => s.getAttribute('data-icon'))).toEqual([icon]);
+      expectIcons(`toggle ${on ? 'on' : 'off'}`, 1);
+      await unmount(t);
+    }
   });
-
 });

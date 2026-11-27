@@ -1,4 +1,8 @@
 // Test-support scanner: finds every button-like element in a Svelte source and reports those without an <Icon>.
+// Known limits (no current code uses these; icon-rendered.test.ts covers the real screens):
+//  - an <Icon> inside an {#each} counts even if the list renders empty;
+//  - an <Icon> inside an unused {#snippet} counts;
+//  - the text "<Icon" inside an attribute value is not distinguished from a real element.
 const VOID = new Set(['input', 'br', 'hr', 'img', 'meta', 'link', 'area', 'base', 'col', 'embed', 'source', 'track', 'wbr']);
 const ROLE_BUTTON = /(?:^|\s)role\s*=\s*(?:"\s*button\s*"|'\s*button\s*'|button(?=[\s/>]|$)|\{[^}]*["'`]\s*button\s*["'`][^}]*\})/;
 
