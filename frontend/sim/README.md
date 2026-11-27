@@ -35,3 +35,7 @@ On first run, for each tag: `git archive <tag> frontend` into `sim/.cache/<tag>/
 ## Static build (Vercel)
 
 `npm run sim:build` writes a single-version simulator of the current `frontend/src` to `sim/dist-static/` (git-ignored): the shell at `/` and the app at `/app/`, no version switcher, v1.3.0+ window rules. The MockBackend is enabled by a build-time `define` of `import.meta.env.DEV` and the 18-script seed is applied by a transform plugin on `src/api/mock.ts` (`sim/build-static.mjs`); `frontend/src` and the shipped build are untouched. `vercel.json` at the repo root drives the deploy.
+
+## Editor window (version `current`)
+
+The branch head's editor is a second host window. In the `current` version (and the static build) the shell owns ONE `MockHub` (`src/api/mockHub.ts`) wrapping the shared `MockBackend`; each iframe gets its own role/gen-bound Transport over `postMessage` (`src/api/simTransport.ts`, enabled by `?sim=1`). `editor.openWindow` makes the shell create a second simulated window, run the measure handshake (`editorBounds` in `src/sizing.ts`, a port of `bridge/bounds.go`), dim and block main until `editor.windowClosed`, and remember the editor's bounds per scaling for the session. The X button sends the close request so the page's guard runs. Tags v1.2.1/v1.2.3/v1.3.0 keep their in-main editor and a single window. `SIM_TAGS=none npm run sim` serves only `current` (no git/npm ci); `sim/e2e/check.mjs` is the Playwright check (see its header).

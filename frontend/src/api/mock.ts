@@ -133,6 +133,17 @@ export class MockBackend implements Transport {
     b.actions = Array.from({ length: n }, (_, i) => structuredClone(SAMPLE_ACTIONS[i % SAMPLE_ACTIONS.length]));
   }
 
+  get currentGen(): number {
+    return this.gen;
+  }
+
+  /** Host-side rollback of an editor window that never reached editor.open (create/embed failure). */
+  abortOpen(): void {
+    this.pendingId = undefined;
+    this.session = null;
+    this.seed.state.editor_open = false;
+  }
+
   get currentCaptureId(): number {
     return this.activeCap?.id ?? 0;
   }

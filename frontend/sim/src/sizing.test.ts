@@ -135,3 +135,49 @@ describe('resizeRect', () => {
     expect(Number.isInteger(physicalDelta(37, 0.913))).toBe(true);
   });
 });
+
+import { EDITOR_MIN_CSS, editorBounds, editorFrame, editorMinSize, hasEditorWindow, scalePx } from './sizing';
+
+describe('editor window bounds (bridge/bounds.go computeEditorBounds)', () => {
+  const owner = { cx: 560, cy: 540 };
+  it('measure → outer: ceil(css*dpi/96) + frame, centred on the owner (100%)', () => {
+    const f = editorFrame(96);
+    expect(f).toEqual({ w: 16, h: 39 });
+    const b = editorBounds(980, 760, 96, workArea(100), owner, null);
+    expect(b.place).toMatchObject({ w: 980 + 16, h: 760 + 39 });
+    expect(b.place.x).toBe(560 - (980 + 16) / 2);
+    expect(b.place.y).toBe(540 - Math.trunc((760 + 39) / 2));
+    expect(b.clamped).toBe(false);
+  });
+  it.each([[100, 96], [125, 120], [150, 144]] as const)('DPI scaling at %i%%', (s, dpi) => {
+    const f = editorFrame(dpi);
+    const b = editorBounds(1000, 601, dpi, workArea(s), owner, null);
+    expect(b.place.w).toBe(scalePx(1000, dpi) + f.w);
+    expect(b.place.h).toBe(scalePx(601, dpi) + f.h);
+  });
+  it('rounds css*dpi/96 up (ceil)', () => {
+    expect(scalePx(801, 144)).toBe(1202);
+    expect(scalePx(800, 120)).toBe(1000);
+  });
+  it('clamps to the work area, asks for a width remeasure, never below the minimum', () => {
+    const work = workArea(150);
+    const f = editorFrame(144);
+    const b = editorBounds(5000, 5000, 144, work, owner, null);
+    expect(b.place).toMatchObject({ w: 1920, h: 1008, x: 0, y: 0 });
+    expect(b.widthClamped && b.clamped).toBe(true);
+    expect(b.remeasureCssW).toBe(Math.floor(((1920 - f.w) * 96) / 144));
+    const small = editorBounds(10, 10, 96, workArea(100), owner, null);
+    const [mw, mh] = editorMinSize(96, workArea(100));
+    expect([small.place.w, small.place.h]).toEqual([mw, mh]);
+    expect(mw).toBe(EDITOR_MIN_CSS.w + 16);
+  });
+  it('uses remembered bounds (clamped into the work area) and ignores the measured size', () => {
+    const b = editorBounds(980, 760, 96, workArea(100), owner, { x: 1900, y: 1000, w: 800, h: 600 });
+    expect(b.fromMemory).toBe(true);
+    expect(b.place).toEqual({ x: 1120, y: 432, w: 800, h: 600 });
+  });
+  it('only the editor-window version gets the second window', () => {
+    expect(['v1.2.1', 'v1.2.3', 'v1.3.0'].some((v) => hasEditorWindow(v as never))).toBe(false);
+    expect(hasEditorWindow('current')).toBe(true);
+  });
+});

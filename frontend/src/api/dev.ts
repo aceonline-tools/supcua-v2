@@ -2,7 +2,9 @@ import { createClient, type Client } from './client';
 import { MockBackend, seedFromQuery } from './mock';
 import { StrictNotLicensedBackend } from './strictMock';
 
-export function createDevClient(): Client {
+export async function createDevClient(): Promise<Client> {
+  const params = new URLSearchParams(location.search);
+  if (params.get('sim') === '1' && window.parent !== window) return createClient((await import('./simTransport')).createSimTransport());
   const seed = seedFromQuery(location.search);
   if (new URLSearchParams(location.search).get('mock') === 'license-strict') return createClient(new StrictNotLicensedBackend(seed));
   const mock = new MockBackend(seed);
