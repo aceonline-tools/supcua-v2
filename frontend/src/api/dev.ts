@@ -4,7 +4,11 @@ import { StrictNotLicensedBackend } from './strictMock';
 
 export async function createDevClient(): Promise<Client> {
   const params = new URLSearchParams(location.search);
-  if (params.get('sim') === '1' && window.parent !== window) return createClient((await import('./simTransport')).createSimTransport());
+  if (params.get('sim') === '1' && window.parent !== window) {
+    const t = await import('./simTransport');
+    const shell = t.resolveShellOrigin(params.get('shell'), location.origin);
+    if (shell) return createClient(t.createSimTransport(shell));
+  }
   const seed = seedFromQuery(location.search);
   if (new URLSearchParams(location.search).get('mock') === 'license-strict') return createClient(new StrictNotLicensedBackend(seed));
   const mock = new MockBackend(seed);

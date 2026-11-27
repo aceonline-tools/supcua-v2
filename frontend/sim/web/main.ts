@@ -3,6 +3,7 @@ import {
   hasEditorWindow, physicalDelta, resizeRect, taskbarHeight, workArea,
   type Edge, type Placement, type Scaling, type VersionId,
 } from '../src/sizing';
+import { decideMeasure, trustedMessage } from '../src/host';
 import { MockHub } from '../../src/api/mockHub';
 import { seedFromQuery } from '../../src/api/mock';
 import type { Transport } from '../../src/api/client';
@@ -94,6 +95,7 @@ class SimWindow {
     this.iframe.title = role === 'main' ? 'supcua UI' : 'supcua editor';
     this.iframe.dataset.role = role;
     this.blocker.className = 'blocker';
+    this.blocker.addEventListener('mousedown', (e) => { e.preventDefault(); editor?.focus(); });
     this.clientEl.append(this.iframe);
     this.el.append(this.titleEl, this.clientEl, this.blocker);
     for (const edge of EDGES) {
@@ -127,11 +129,22 @@ class SimWindow {
   setBlocked(on: boolean) {
     this.el.dataset.blocked = String(on);
     this.el.classList.toggle('inactive', on);
+    for (const part of [this.titleEl, this.clientEl]) {
+      part.inert = on;
+      part.toggleAttribute('aria-hidden', on);
+      if (on) part.setAttribute('aria-hidden', 'true');
+    }
+    if (on) this.iframe.blur();
   }
 
   show() {
     this.el.style.visibility = 'visible';
     this.el.dataset.state = 'open';
+  }
+
+  focus() {
+    this.iframe.focus();
+    this.iframe.contentWindow?.focus();
   }
 
   hide() {
@@ -215,6 +228,7 @@ const remembered = new Map<Scaling, Placement>(); // the editor's bounds, kept f
 let measure = { token: 1, retries: 0, cssW: 0, cssH: 0, timer: 0 };
 
 const appUrl = (extra: string) => (__SIM_STATIC__ ? `./app/index.html?${extra}` : `http://127.0.0.1:${__SIM_PORTS__[version]}/?${extra}`);
+const simUrl = (extra: string) => appUrl(`${extra}&sim=1&shell=${encodeURIComponent(location.origin)}`);
 const mainCenter = () => ({ cx: main.place.x + Math.trunc(main.place.w / 2), cy: main.place.y + Math.trunc(main.place.h / 2) });
 
 function renderReadout() {
@@ -254,6 +268,7 @@ function showEditor(win: SimWindow, cssW: number, cssH: number, prior: Placement
   win.place = b.place;
   win.render();
   win.show();
+  win.focus();
   window.clearTimeout(measure.timer);
   renderReadout();
 }
@@ -262,7 +277,7 @@ function createEditorWindow(gen: number, id: string | null) {
   editor?.destroy();
   measure = { token: 1, retries: 0, cssW: 0, cssH: 0, timer: 0 };
   const caption = () => `${id ? 'Edit Script' : 'New Script'} — supcua-v2 ${label()}`;
-  const win = new SimWindow('editor', caption, appUrl(`window=editor&gen=${gen}&sim=1`), () => editorMinSize(dpi(), workArea(scaling)), rememberEditor);
+  const win = new SimWindow('editor', caption, simUrl(`window=editor&gen=${gen}`), () => editorMinSize(dpi(), workArea(scaling)), rememberEditor);
   editor = win;
   win.hide();
   const own = remembered.get(scaling) ?? null;
@@ -286,29 +301,32 @@ function destroyEditorWindow() {
   editor?.destroy();
   editor = null;
   main.setBlocked(false);
+  main.focus();
   renderReadout();
 }
 
 /** The host's answer to editor.measured (contract §5): convert with the sim's DPI, clamp, resize, then show. */
 function onMeasured(win: SimWindow, p: { token: number; cssW: number; cssH: number }): unknown {
-  const ok = (n: unknown) => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 8192;
   const own = remembered.get(scaling) ?? null;
-  if (!ok(p.token) || !ok(p.cssW) || !ok(p.cssH)) {
-    showEditor(win, EDITOR_FALLBACK_CSS.w, EDITOR_FALLBACK_CSS.h, own);
-    return { next: 'show' };
+  const bounds = () => editorBounds(p.cssW, p.cssH, dpi(), workArea(scaling), mainCenter(), own);
+  const d = decideMeasure(measure, p, bounds);
+  switch (d.kind) {
+    case 'stale': return { next: 'remeasure', token: d.token, cssW: d.cssW };
+    case 'fallback':
+      showEditor(win, EDITOR_FALLBACK_CSS.w, EDITOR_FALLBACK_CSS.h, own);
+      return { next: 'show' };
+    case 'remeasure':
+      measure.retries++;
+      measure.token = d.token;
+      win.place = bounds().place;
+      win.render();
+      return { next: 'remeasure', token: d.token, cssW: d.cssW };
+    default:
+      measure.cssW = p.cssW;
+      measure.cssH = p.cssH;
+      showEditor(win, p.cssW, p.cssH, own);
+      return { next: 'show' };
   }
-  const b = editorBounds(p.cssW, p.cssH, dpi(), workArea(scaling), mainCenter(), own);
-  if (b.widthClamped && measure.retries < 2 && p.token === measure.token) {
-    measure.retries++;
-    measure.token = p.token + 1;
-    win.place = b.place;
-    win.render();
-    return { next: 'remeasure', token: measure.token, cssW: b.remeasureCssW };
-  }
-  measure.cssW = p.cssW;
-  measure.cssH = p.cssH;
-  showEditor(win, p.cssW, p.cssH, own);
-  return { next: 'show' };
 }
 
 window.addEventListener('message', (e: MessageEvent) => {
@@ -316,7 +334,7 @@ window.addEventListener('message', (e: MessageEvent) => {
   if (m?.supcua !== 'call' || typeof m.method !== 'string' || !e.source) return;
   const src = e.source as Window;
   const win = src === main.iframe.contentWindow ? main : editor && src === editor.iframe.contentWindow ? editor : null;
-  if (!win || !hub) return;
+  if (!win || !hub || !trustedMessage(e, { source: win.iframe.contentWindow, origin: win.origin })) return;
   let ch = channels.get(src);
   if (!ch) {
     const gen = win.role === 'editor' ? hub.editorGen : 0;
@@ -345,7 +363,7 @@ function newHub() {
 function loadMain() {
   main?.destroy();
   const legacy = !hasEditorWindow(version);
-  main = new SimWindow('main', () => `supcua-v2 ${label()}`, legacy ? appUrl('') : appUrl('sim=1'), () => RULES[version].minSize(dpi(), workArea(scaling)));
+  main = new SimWindow('main', () => `supcua-v2 ${label()}`, legacy ? appUrl('') : simUrl('window=main'), () => RULES[version].minSize(dpi(), workArea(scaling)));
   newHub();
   fresh();
 }

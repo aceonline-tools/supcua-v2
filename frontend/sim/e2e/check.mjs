@@ -61,6 +61,22 @@ for (const scaling of [100, 150]) {
     await shot(page, `blocked-${scaling}`, `main blocked behind the editor, ${tag}`);
     await shot(page, `editor-${scaling}`, `main + editor, ${tag}`);
 
+    // keyboard modality: focus is in the editor; Tab/Enter/Space never reach main
+    const activeRole = () => page.evaluate(() => document.activeElement?.dataset?.role ?? document.activeElement?.tagName);
+    ok(`${tag} focus moved into the editor window`, (await activeRole()) === 'editor', await activeRole());
+    await page.evaluate(() => document.querySelector('iframe[data-role="main"]').focus());
+    ok(`${tag} main iframe cannot take focus (inert)`, (await activeRole()) !== 'main', await activeRole());
+    const mainInert = await page.evaluate(() => [...document.querySelectorAll('.win[data-role="main"] .title, .win[data-role="main"] .client')].every((n) => n.inert && n.getAttribute('aria-hidden') === 'true'));
+    ok(`${tag} main is inert + aria-hidden`, mainInert);
+    for (let i = 0; i < 12; i++) await page.keyboard.press('Tab');
+    await page.keyboard.press('Shift+Tab');
+    ok(`${tag} Tab never lands in main`, (await activeRole()) !== 'main', await activeRole());
+    await page.evaluate(() => document.querySelector('iframe[data-role="main"]').contentDocument?.querySelector('button')?.focus());
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(300);
+    ok(`${tag} Enter/Space on main changed nothing`, (await page.locator('.win').count()) === 2 && (await page.locator('.win[data-role="editor"]').count()) === 1);
+
     // resize the editor from its east edge and move it
     const before = await box(win(page, 'editor'));
     const east = await box(win(page, 'editor').locator('[data-edge="e"]'));
@@ -85,6 +101,8 @@ for (const scaling of [100, 150]) {
     await page.waitForSelector('.win[data-role="editor"]', { state: 'detached', timeout: 15000 });
     ok(`${tag} editor closed after guard`, (await page.locator('.win').count()) === 1);
     ok(`${tag} main re-enabled`, (await win(page, 'main').getAttribute('data-blocked')) === 'false');
+    ok(`${tag} focus returned to main`, (await page.evaluate(() => document.activeElement?.dataset?.role)) === 'main');
+    ok(`${tag} main no longer inert`, await page.evaluate(() => [...document.querySelectorAll('.win[data-role="main"] .title, .win[data-role="main"] .client')].every((n) => !n.inert && !n.hasAttribute('aria-hidden'))));
     await main.getByText(newName, { exact: true }).waitFor({ timeout: 8000 }).then(() => ok(`${tag} main list shows the saved name`, true, `${originalName} -> ${newName}`), () => ok(`${tag} main list shows the saved name`, false));
 
     // reopen: remembered bounds (the window opens where the user left it)
