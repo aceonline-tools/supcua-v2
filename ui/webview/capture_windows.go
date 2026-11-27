@@ -12,14 +12,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// KeyEvent is one low-level keyboard event seen while a capture is active.
-type KeyEvent struct {
-	VK               uint32
-	Down             bool
-	Ctrl, Shift, Alt bool
-	Win              bool // either Windows key
-}
-
 // ErrCaptureActive: only one keyboard capture can run at a time.
 var ErrCaptureActive = errors.New("a keyboard capture is already active")
 
@@ -45,6 +37,7 @@ type keySession struct {
 	isActive func() bool
 	onKey    func(KeyEvent) bool
 	hook     atomic.Uintptr
+	tracker  *keyTracker
 }
 
 var (
@@ -59,23 +52,18 @@ func keyHookProc(nCode int, wParam, lParam uintptr) uintptr {
 		r, _, _ := procCallNextHookEx.Call(0, uintptr(nCode), wParam, lParam)
 		return r
 	}
-	if nCode >= 0 && s.isActive() {
+	if nCode >= 0 {
 		k := (*kbdllhookstruct)(ptrFrom(lParam))
-		isAlt := k.vkCode == 0x12 || k.vkCode == 0xA4 || k.vkCode == 0xA5
-		if isAlt {
-			return 1 // keep Windows out of menu mode while capturing (parity: script_edit_dialog.go)
-		}
-		down := wParam == 0x0100 || wParam == 0x0104
-		if down || wParam == 0x0101 || wParam == 0x0105 {
-			ev := KeyEvent{VK: k.vkCode, Down: down, Ctrl: asyncDown(0x11), Shift: asyncDown(0x10), Alt: asyncDown(0x12), Win: asyncDown(0x5B) || asyncDown(0x5C)}
-			if s.onKey(ev) {
-				return 1
-			}
+		res := s.tracker.process(k.vkCode, wParam, s.isActive(), asyncDownVK, asyncDownVK)
+		if res.SwallowAlt || (res.Emit && s.onKey(res.Event)) {
+			return 1
 		}
 	}
 	r, _, _ := procCallNextHookEx.Call(s.hook.Load(), uintptr(nCode), wParam, lParam)
 	return r
 }
+
+func asyncDownVK(vk uint32) bool { return asyncDown(uintptr(vk)) }
 
 func asyncDown(vk uintptr) bool {
 	s, _, _ := procGetAsyncKeyState.Call(vk)
@@ -89,7 +77,7 @@ func asyncDown(vk uintptr) bool {
 // while active. stop unhooks and waits for the thread (2 s bound); it is idempotent.
 func StartKeyCapture(isActive func() bool, onKey func(KeyEvent) bool) (stop func(), err error) {
 	keyHookOnce.Do(func() { keyHookCallback = newCallback(keyHookProc) })
-	s := &keySession{isActive: isActive, onKey: onKey}
+	s := &keySession{isActive: isActive, onKey: onKey, tracker: newKeyTracker(asyncDownVK)}
 	if !activeKeySession.CompareAndSwap(nil, s) {
 		return nil, ErrCaptureActive
 	}
