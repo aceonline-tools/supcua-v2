@@ -4,7 +4,7 @@ import App from './App.svelte';
 import { createAppClient } from './api/bootstrap';
 import { AppStore } from './lib/store.svelte';
 import { reportMounted, reportRendered } from './lib/diag';
-import { createLoader, delayCalls, failCall, trackFirstCalls } from './lib/loader';
+import { createLoader, delayCalls, failCall, reportLoader, trackFirstCalls } from './lib/loader';
 
 const loader = createLoader();
 loader.stage('interface');
@@ -24,4 +24,5 @@ void initial.then(() => loads.settled()).then(async (error) => {
   await tick();
   if (error) loader.fail(`Couldn't load your scripts: ${error}`);
   else loader.done();
+  reportLoader(client, error ? 'error' : 'done');
 });

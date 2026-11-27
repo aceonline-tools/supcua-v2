@@ -118,3 +118,13 @@ export function failCall<T extends { call: (...a: never[]) => Promise<unknown> }
   const call = client.call.bind(client);
   return { ...client, call: (...a: never[]) => ((a[0] as unknown as string) === method ? Promise.reject(new Error(`${method} failed (simulated)`)) : call(...a)) } as T;
 }
+
+// Tells the host (startup log) when the loading screen was left, so the startup log and CI can wait on it. Diagnostics only.
+export function reportLoader(client: { call: (...a: never[]) => Promise<unknown> }, outcome: 'done' | 'error'): void {
+  try {
+    const call = client.call as unknown as (m: string, p: unknown) => Promise<unknown>;
+    void call.call(client, 'app.log', { level: 'info', message: `loader ${outcome} at ${Math.round(performance.now())}ms` }).catch(() => {});
+  } catch {
+    // diagnostics must never break the app
+  }
+}
