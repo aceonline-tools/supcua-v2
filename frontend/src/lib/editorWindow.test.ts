@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { createClient, type Client } from '../api/client';
 import { MockBackend } from '../api/mock';
 import { AppStore } from './store.svelte';
-import { MeasureController } from './measure';
+import { applyScrollbarMetrics, MeasureController, scrollbarWidth } from './measure';
 import { CheckpointSender, draftBytes, MAX_DRAFT_BYTES } from './checkpoint';
 import { pageGen, pageRole } from './role';
 import { decisions, editorStore } from './test-editor';
@@ -246,6 +246,18 @@ describe('measure handshake', () => {
     const m = make();
     await m.request(1);
     expect(calls(mock, 'editor.measured')[0].params).toMatchObject({ cssW: 8192, cssH: 1 });
+  });
+});
+
+describe('scrollbar metrics', () => {
+  it('publishes the scrollbar width and the matching column weights (0 for overlay scrollbars)', () => {
+    expect(scrollbarWidth()).toBe(0);
+    applyScrollbarMetrics();
+    const st = document.documentElement.style;
+    expect(st.getPropertyValue('--sbw')).toBe('0px');
+    expect(st.getPropertyValue('--f1')).toBe('300fr');
+    expect(st.getPropertyValue('--f2')).toBe('340fr');
+    expect(st.getPropertyValue('--f3')).toBe('260fr');
   });
 });
 

@@ -29,7 +29,7 @@ kbd{font:12px/16px var(--font);border:1px solid var(--line);border-radius:4px;pa
 .sidebar footer{font-size:12px;color:var(--muted);padding:8px 10px;line-height:20px}
 main{padding:10px 18px calc(10px + var(--notice-h,0px));min-width:0;overflow-y:auto}
 /* layout stability: reserve scrollbar space, keep transient messages out of the flow */
-main,.editor-main,.action-list .list,.combo-list,.dialog-body,textarea{scrollbar-gutter:stable}
+main,.editor-col,.action-list .list,.combo-list,.dialog-body,textarea{scrollbar-gutter:stable}
 .msg-slot{height:18px;display:flow-root;overflow:auto}
 .msg-slot.one{height:24px}
 .msg-slot.two{height:48px}
@@ -117,7 +117,8 @@ strong{font-weight:400}
 .raw{height:320px;font:12px ui-monospace,Consolas,monospace;resize:none}
 .progress{height:6px;border-radius:6px;background:var(--line);margin-top:10px;overflow:hidden}
 .progress span{display:block;height:100%;background:var(--accent)}
-.editor-main{height:100%;display:flex;flex-direction:column;overflow:auto;padding:10px 14px 8px}
+.editor-main{height:100%;display:flex;flex-direction:column;overflow:hidden;padding:10px 14px 8px}
+.editor-main{scrollbar-gutter:auto}
 .editor-main>*{flex:none}
 .editor-main>.editor-grid{flex:1 1 0;min-height:0;grid-template-rows:minmax(0,1fr)}
 .editor-loading{padding:14px}
@@ -125,7 +126,7 @@ strong{font-weight:400}
 .editor-main .page-head{margin-bottom:8px}
 .indicator{white-space:nowrap;font-size:12px;line-height:16px;color:var(--danger)}
 .indicator.ok{color:var(--green)}
-.editor-grid{display:grid;grid-template-columns:minmax(232px,30fr) minmax(270px,34fr) minmax(170px,26fr);gap:8px}
+.editor-grid{display:grid;grid-template-columns:minmax(216px,var(--f1,30fr)) minmax(250px,var(--f2,34fr)) minmax(160px,var(--f3,26fr));gap:8px}
 .editor-grid>*{min-width:0;min-height:0}
 .editor-col{display:flex;flex-direction:column;gap:8px;overflow-y:auto}
 .editor-col>.card{flex:none}
@@ -133,10 +134,9 @@ strong{font-weight:400}
 html[data-measure],html[data-measure] body,html[data-measure] #app{height:auto}
 html[data-measure] body{overflow:visible}
 html[data-measure] .editor-main{height:auto;width:max-content}
-html[data-measure]:not([data-measure-fit]) .editor-grid{grid-template-columns:300px 340px 260px}
+html[data-measure]:not([data-measure-fit]) .editor-grid{grid-template-columns:calc(300px + var(--sbw,0px)) calc(340px + var(--sbw,0px)) 260px}
 html[data-measure][data-measure-fit] .editor-main{width:var(--measure-w)}
 html[data-measure] .editor-main>.editor-grid{flex:none;grid-template-rows:auto}
-html[data-measure] .editor-col{overflow:visible}
 html[data-measure] .action-list{min-height:var(--actions-pref-h)}
 /* end intrinsic measurement */
 .editor-card{padding:8px 10px}
@@ -155,7 +155,10 @@ html[data-measure] .action-list{min-height:var(--actions-pref-h)}
 .builder .side{margin:0;width:44px;font-size:14px;line-height:20px}
 .builder button{padding:1px 5px;font-size:12px;line-height:18px}
 .builder .input{padding:1px 8px;width:auto}
+.builder .inline{flex-wrap:wrap}
 .builder .inline .input{flex:1;min-width:36px}
+.button-grid>button{min-width:0}
+.button-grid>button>.btn-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .button-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
 .button-grid>button:has(>.icon){justify-content:flex-start;padding-left:10px}
 .action-list{padding:0;overflow:hidden;display:flex;flex-direction:column;align-self:stretch}

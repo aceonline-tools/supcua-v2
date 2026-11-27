@@ -1,7 +1,7 @@
 import { tick } from 'svelte';
 import type { Client } from '../api/client';
 import type { AppStore } from './store.svelte';
-import { MeasureController, type MeasureMetrics } from './measure';
+import { applyScrollbarMetrics, MeasureController, type MeasureMetrics } from './measure';
 
 export interface EditorMetrics extends Partial<MeasureMetrics> {
   measuring: boolean;
@@ -20,6 +20,7 @@ declare global {
 // Boots the editor-only page: attach to the host-chosen session, then answer the host's measurement
 // handshake. Subscriptions are made before any call so no host event is missed.
 export function startEditorWindow(api: Client, store: AppStore, init: Promise<unknown>): { measure: MeasureController; opened: Promise<boolean> } {
+  applyScrollbarMetrics();
   const opened = init
     .then(() => api.call('editor.windowReady').catch(() => ({})))
     .then(() => store.editor.open())

@@ -3,6 +3,29 @@ import type { Client } from '../api/client';
 const MAX_ROUNDS = 4;
 const clampPx = (v: number) => Math.min(8192, Math.max(1, Math.ceil(v)));
 
+// The platform's classic scrollbar width (0 for overlay scrollbars). Reserved gutters on the editor columns
+// take this much of a column, so the natural column tracks add it back (--sbw) and the reflow weights follow
+// the same numbers (--f1..--f3), keeping the content width, and so the wrapping and height, identical in
+// measure mode and when shown.
+export function scrollbarWidth(doc: Document = document): number {
+  const probe = doc.createElement('div');
+  probe.style.cssText = 'position:absolute;visibility:hidden;overflow:scroll;width:100px;height:100px;top:-200px';
+  doc.body.append(probe);
+  const w = probe.offsetWidth - probe.clientWidth;
+  probe.remove();
+  return Math.max(0, w);
+}
+
+export function applyScrollbarMetrics(doc: Document = document): number {
+  const w = scrollbarWidth(doc);
+  const st = doc.documentElement.style;
+  st.setProperty('--sbw', `${w}px`);
+  st.setProperty('--f1', `${300 + w}fr`);
+  st.setProperty('--f2', `${340 + w}fr`);
+  st.setProperty('--f3', '260fr');
+  return w;
+}
+
 export interface MeasureEnv {
   root: () => HTMLElement | null;
   ready: () => Promise<void>;

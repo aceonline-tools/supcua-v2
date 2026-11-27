@@ -184,7 +184,7 @@
           <h3>Mouse</h3>
           <div class="inline" style:margin-bottom="8px"><span>X: {ed.mouse.x}</span><span>Y: {ed.mouse.y}</span><span class="spacer"></span>
             <button onclick={() => ed.addMouseMove()}><Icon name="move" size={12} />Move</button></div>
-          <div class="button-grid">{#each mouseButtons as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
+          <div class="button-grid">{#each mouseButtons as [label, type, icon] (type)}<button title={label} onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} /><span class="btn-label">{label}</span></button>{/each}</div>
           <div class="muted small tight">Press {store.settings?.capture_hotkey ?? 'P'} to capture cursor position</div>
         </section>
         </div>
@@ -196,13 +196,13 @@
               onclick={() => ed.startKeyCapture()}><Icon name="keyboard" />{#if ed.capturing === 'key'}<span class="accent">Press a key…</span>{:else if ed.builder.key}{ed.builder.key}{:else}<span class="muted">Click &amp; press key</span>{/if}</button>
             <button onclick={() => ed.addKey('key_press')}><Icon name="corner-down-left" size={12} />Press</button>
           </div>
-          <div class="button-grid"><button onclick={() => ed.addKey('key_down')}><Icon name="arrow-down-to-line" size={12} />Key Down</button><button onclick={() => ed.addKey('key_up')}><Icon name="arrow-up-from-line" size={12} />Key Up</button></div>
+          <div class="button-grid"><button title="Key Down" onclick={() => ed.addKey('key_down')}><Icon name="arrow-down-to-line" size={12} /><span class="btn-label">Key Down</span></button><button title="Key Up" onclick={() => ed.addKey('key_up')}><Icon name="arrow-up-from-line" size={12} /><span class="btn-label">Key Up</span></button></div>
         </section>
         </div>
         <div class="card editor-card builder">
         <section>
           <h3>Lock</h3>
-          <div class="button-grid">{#each locks as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
+          <div class="button-grid">{#each locks as [label, type, icon] (type)}<button title={label} onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} /><span class="btn-label">{label}</span></button>{/each}</div>
         </section>
         </div>
       </div>
