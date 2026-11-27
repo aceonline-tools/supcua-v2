@@ -59,6 +59,7 @@
           </label>
           <span>
             <button class="chev" aria-expanded={!row.collapsed} aria-label={`${row.collapsed ? 'Expand' : 'Collapse'} ${row.group.name}`}
+              title={`${row.collapsed ? 'Expand' : 'Collapse'} ${row.group.name}`}
               onclick={() => store.toggleCollapsed(row.group.name)}><Icon name={row.collapsed ? 'chevron-right' : 'chevron-down'} size={12} /></button>{row.group.name}<small>{row.group.count} {row.group.count === 1 ? 'script' : 'scripts'}</small>
           </span>
           <span></span><span></span>

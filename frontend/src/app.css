@@ -162,4 +162,7 @@ button:has(>.icon){display:inline-flex;align-items:center;justify-content:center
 .link:has(>.icon){gap:3px}
 .hk-field:has(>.icon){justify-content:flex-start;gap:6px}
 .action-row .grip .icon{letter-spacing:normal}
+button.switch:has(>.icon){display:block}
+.switch .icon{position:absolute;z-index:1;top:6px;right:6px;stroke-width:3;pointer-events:none;color:var(--accent)}
+.switch[aria-checked=false] .icon{right:auto;left:6px;color:var(--bg)}
 /* end icons */
