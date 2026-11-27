@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_KEYS, describeKeyPress, formatSequence, isKnownKey, moveStroke, parseStroke, recordEvent, sequenceOf, toKeyPressPayload, validateSequence,
+  MAX_KEYS, describeKeyPress, formatStroke, formatSequence, isKnownKey, moveStroke, parseStroke, recordEvent, sequenceOf, toKeyPressPayload, validateSequence,
   type RecordState,
 } from './keySequence';
 
@@ -34,6 +34,22 @@ describe('recording', () => {
     const r = fold(Array.from({ length: MAX_KEYS + 5 }, () => 'a'));
     expect(r.keys).toHaveLength(MAX_KEYS);
     expect(r.stopped).toBe(true);
+  });
+});
+
+describe('recording with host-reported modifier flags', () => {
+  const run = (events: [string, string[] | null][]) => {
+    let s: RecordState = { keys: [], mods: [] };
+    for (const [k, f] of events) { const r = recordEvent(s, k, f); s = { keys: r.keys, mods: r.mods }; }
+    return s.keys.map((k) => formatStroke(k));
+  };
+  it('a modifier held across keys applies to each; released between keys applies to none', () => {
+    expect(run([['ctrl', ['ctrl']], ['a', ['ctrl']], ['b', ['ctrl']], ['c', []]])).toEqual(['Ctrl+A', 'Ctrl+B', 'C']);
+    expect(run([['shift', ['shift']], ['a', ['shift']], ['shift', ['shift']], ['b', ['shift', 'ctrl']]])).toEqual(['Shift+A', 'Ctrl+Shift+B']);
+  });
+  it('reported flags beat the fallback state; no flags keeps the pressed-since-last-key fallback', () => {
+    expect(run([['a', []], ['ctrl', null], ['b', null], ['c', null]])).toEqual(['A', 'Ctrl+B', 'C']);
+    expect(run([['ctrl', null], ['x', []]])).toEqual(['X']);
   });
 });
 

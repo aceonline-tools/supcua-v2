@@ -130,6 +130,11 @@ export class MockBackend implements Transport {
     this.emit = handler;
   }
 
+  /** Emits a host key-down for the active capture; mods null mimics a host that reports no modifier state. */
+  pushKey(key: string, mods: string[] | null = []): void {
+    this.push('capture.key', { capture_id: this.currentCaptureId, key, mods });
+  }
+
   push(name: string, payload: unknown): void {
     if (name === 'capture.ended' && (payload as { capture_id?: number }).capture_id === this.activeCap?.id) this.activeCap = null; // host semantics
     this.emit(name, payload);

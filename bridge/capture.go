@@ -31,6 +31,8 @@ const defaultCaptureIdle = 60 * time.Second
 type CaptureSink interface {
 	Hotkey(hk model.Hotkey)
 	Key(key string)
+	// KeyWithMods is Key plus the modifiers held at the key-down (non-nil, possibly empty).
+	KeyWithMods(key string, mods []string)
 	Mouse(x, y int)
 }
 
@@ -85,6 +87,8 @@ type hotkeyEvent struct {
 type keyEvent struct {
 	CaptureID uint64 `json:"capture_id"`
 	Key       string `json:"key"`
+	// Mods is the modifier state at the key-down; null when the backend does not report it.
+	Mods []string `json:"mods"`
 }
 
 type mouseEvent struct {
@@ -205,9 +209,11 @@ func (s *sink) Hotkey(hk model.Hotkey) {
 	s.m.emit(EvCaptureHotkey, hotkeyEvent{CaptureID: s.id, Field: field, Hotkey: hk, Display: DisplayHotkey(hk)})
 }
 
-func (s *sink) Key(key string) {
+func (s *sink) Key(key string) { s.KeyWithMods(key, nil) }
+
+func (s *sink) KeyWithMods(key string, mods []string) {
 	if _, ok := s.m.touch(s.gen, CaptureKey); ok {
-		s.m.emit(EvCaptureKey, keyEvent{CaptureID: s.id, Key: key})
+		s.m.emit(EvCaptureKey, keyEvent{CaptureID: s.id, Key: key, Mods: mods})
 	}
 }
 

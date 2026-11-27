@@ -83,16 +83,19 @@ export interface RecordState { keys: KeyStroke[]; mods: string[] }
 export interface RecordResult extends RecordState { stop: boolean; ignored?: boolean }
 
 /**
- * Folds one host key-down event into the recording. The host reports key-downs only, so
- * modifiers pressed since the previous key become the mods of the next key.
+ * Folds one host key-down into the recording. When the host reports the modifier state
+ * (`flags` is an array) it is authoritative for each key and modifier key-downs are skipped.
+ * Without it (older host) the modifiers pressed since the previous key apply to the next key.
  */
-export function recordEvent(state: RecordState, name: string): RecordResult {
+export function recordEvent(state: RecordState, name: string, flags?: readonly string[] | null): RecordResult {
   const n = canonKey(name);
   if (n === 'escape' || n === 'esc') return { ...state, stop: true };
+  const reported = Array.isArray(flags);
+  if (MODS.has(n) && reported) return { ...state, stop: false };
   if (MODS.has(n)) return { keys: state.keys, mods: canonMods([...state.mods, n]), stop: false };
   if (!isKnownKey(n)) return { ...state, stop: false, ignored: true };
   if (state.keys.length >= MAX_KEYS) return { ...state, stop: true, ignored: true };
-  const keys = [...state.keys, { key: n, mods: canonMods(state.mods) }];
+  const keys = [...state.keys, { key: n, mods: canonMods(reported ? flags : state.mods) }];
   return { keys, mods: [], stop: keys.length >= MAX_KEYS };
 }
 

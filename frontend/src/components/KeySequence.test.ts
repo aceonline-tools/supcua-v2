@@ -122,10 +122,40 @@ describe('key sequence dialog', () => {
     expect(mock.calls.some((c) => c.method === 'capture.stop')).toBe(true);
   });
 
+  it('records modifiers from the host flags: held across keys, released between', async () => {
+    await openDialog(null);
+    await click(q('button[aria-label="Record keys"]'));
+    mock.pushKey('ctrl', ['ctrl']); await settle();
+    mock.pushKey('x', ['ctrl']); await settle();
+    mock.pushKey('y', ['ctrl']); await settle();
+    mock.pushKey('z', []); await settle();
+    expect(chips()).toEqual(['1', 'Ctrl+X', 'Ctrl+Y', 'Z']);
+  });
+
   it('the Stop button ends recording', async () => {
     await openDialog(null);
     await click(q('button[aria-label="Record keys"]'));
     await click(q('button[aria-label="Stop recording"]'));
+    expect(store.editor.capturing).toBeNull();
+  });
+});
+
+describe('existing capture behaviour is unchanged', () => {
+  it('single-key capture ignores the new mods field and still ends after one key', async () => {
+    await store.editor.startKeyCapture();
+    await settle();
+    mock.pushKey('q', ['ctrl']);
+    await settle();
+    expect(store.editor.builder.key).toBe('q');
+    expect(store.editor.capturing).toBeNull();
+  });
+
+  it('hotkey capture (HotkeyInput) still sets the hotkey and ends', async () => {
+    await store.editor.startCapture('toggle');
+    await settle();
+    mock.push('capture.hotkey', { capture_id: mock.currentCaptureId, field: 'toggle', hotkey: { modifiers: ['ctrl'], key: 'f9' }, display: 'Ctrl + F9' });
+    await settle();
+    expect(store.editor.script!.toggle_hotkey).toEqual({ modifiers: ['ctrl'], key: 'f9' });
     expect(store.editor.capturing).toBeNull();
   });
 });

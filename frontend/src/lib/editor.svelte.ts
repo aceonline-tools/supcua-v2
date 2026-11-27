@@ -315,7 +315,7 @@ export class EditorStore {
   private apply(name: CaptureEventName, e: any): void {
     switch (name) {
       case 'hotkey': return this.onCaptureHotkey(e.field, e.hotkey);
-      case 'key': return this.onCaptureKey(e.key);
+      case 'key': return this.onCaptureKey(e.key, e.mods);
       case 'mouse': return this.onCaptureMouse(e.x, e.y);
       case 'ended': return this.onCaptureEnded(e.reason);
     }
@@ -355,8 +355,8 @@ export class EditorStore {
     void this.stopAndResume({ id: this.curId ?? undefined });
   }
 
-  private onCaptureKey(key: string): void {
-    if (this.curKind === 'key' && this.capturing === 'keys' && this.capturingOp === this.curOp) { this.onRecordKey(key); return; }
+  private onCaptureKey(key: string, mods?: string[] | null): void {
+    if (this.curKind === 'key' && this.capturing === 'keys' && this.capturingOp === this.curOp) { this.onRecordKey(key, mods); return; }
     if (this.curKind !== 'key' || this.capturing !== 'key' || this.capturingOp !== this.curOp) return;
     if (this.actionDialog) this.actionDialog.action.key = key;
     else this.builder.key = key;
@@ -365,10 +365,10 @@ export class EditorStore {
     void this.stopAndResume({ id: this.curId ?? undefined });
   }
 
-  private onRecordKey(key: string): void {
+  private onRecordKey(key: string, mods?: string[] | null): void {
     const a = this.actionDialog?.action as KeyPressAction | undefined;
     if (!a) return;
-    const r = recordEvent({ keys: sequenceOf(a), mods: this.recordMods }, key);
+    const r = recordEvent({ keys: sequenceOf(a), mods: this.recordMods }, key, mods);
     this.recordNote = r.ignored ? (r.stop ? 'Maximum keys reached.' : `Unsupported key ignored (${key}).`) : '';
     a.keys = r.keys;
     delete a.key;

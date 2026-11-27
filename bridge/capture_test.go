@@ -1,8 +1,10 @@
 package bridge
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -183,5 +185,35 @@ func TestAllDTOFieldsAreExplicitlyTagged(t *testing.T) {
 				t.Errorf("%s.%s has no json tag (garble would rename it)", typ.Name(), f.Name)
 			}
 		}
+	}
+}
+
+func TestCaptureKeyForwardsModifierState(t *testing.T) {
+	em := &recEmitter{}
+	be := &fakeBackend{}
+	m := newCaptureManager(be, em.Emit, time.Hour)
+	if _, err := m.Start("s1", CaptureKey, "", model.Hotkey{Key: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	be.sink.KeyWithMods("a", []string{"ctrl", "shift"})
+	be.sink.KeyWithMods("b", []string{})
+	be.sink.Key("c")
+	got := em.named(EvCaptureKey)
+	if len(got) != 3 {
+		t.Fatalf("events = %v", got)
+	}
+	if mods := got[0].payload.(keyEvent).Mods; !reflect.DeepEqual(mods, []string{"ctrl", "shift"}) {
+		t.Errorf("mods not forwarded: %v", mods)
+	}
+	if mods := got[1].payload.(keyEvent).Mods; mods == nil || len(mods) != 0 {
+		t.Errorf("empty mods must stay a non-nil slice: %#v", mods)
+	}
+	if got[2].payload.(keyEvent).Mods != nil {
+		t.Error("Key() carries no modifier state")
+	}
+	b0, _ := json.Marshal(got[1].payload)
+	b1, _ := json.Marshal(got[2].payload)
+	if !strings.Contains(string(b0), `"mods":[]`) || !strings.Contains(string(b1), `"mods":null`) {
+		t.Errorf("wire form: %s %s", b0, b1)
 	}
 }

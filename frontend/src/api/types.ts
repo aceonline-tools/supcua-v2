@@ -247,7 +247,8 @@ export interface Events {
   'settings.changed': { fields: string[] };
   'save.failed': { scriptId: string; name: string; message: string };
   'capture.hotkey': { capture_id: number; field: HotkeyField; hotkey: Hotkey | null; display: string };
-  'capture.key': { capture_id: number; key: string };
+  // mods: modifier state at the key-down (bridge/capture.go keyEvent); null/absent when the host does not report it.
+  'capture.key': { capture_id: number; key: string; mods?: string[] | null };
   'capture.mouse': { capture_id: number; x: number; y: number };
   'capture.ended': { capture_id: number; reason: CaptureEndReason };
   'editor.reset': { reason: string; session_id: string };
