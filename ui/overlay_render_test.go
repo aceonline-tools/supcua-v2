@@ -77,3 +77,12 @@ func TestComposeHaloOnlyWhenBackgroundFaded(t *testing.T) {
 		t.Fatalf("glyph alpha %d", a)
 	}
 }
+
+func TestSanitizeStatusTextCutsAtNUL(t *testing.T) {
+	if got := sanitizeStatusText("farm\x00evil"); got != "farm" {
+		t.Fatalf("got %q", got)
+	}
+	if got := sanitizeStatusText("plain"); got != "plain" {
+		t.Fatalf("got %q", got)
+	}
+}

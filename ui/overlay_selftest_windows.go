@@ -75,7 +75,35 @@ func (s *SelfTest) overlayVisual(res *webview.Result) {
 	for _, c := range cases {
 		s.overlayCase(res, dir, c)
 	}
+	mons := Monitors()
+	res.Step("monitors enumerated without callbacks", len(mons) > 0, fmt.Sprintf("%v", mons))
+	s.dragClampCheck(res)
 	s.onUI(func() { s.Overlay.ApplyStyle(model.OverlayStyle{}, 10, 10) })
+}
+
+// dragClampCheck simulates a drag that ends far off every monitor and expects the overlay to be
+// moved back onto one (the same path as a real HTCAPTION drag end).
+func (s *SelfTest) dragClampCheck(res *webview.Result) {
+	var rect win.RECT
+	var onMonitor bool
+	var moved int32
+	s.onUI(func() {
+		ow := s.Overlay.Window()
+		if ow == nil {
+			return
+		}
+		hwndU, _ := ow.Handle()
+		hwnd := win.HWND(hwndU)
+		win.SetWindowPos(hwnd, 0, -6000, -6000, 0, 0, win.SWP_NOSIZE|win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+		win.SendMessage(hwnd, wmExitSizeMove, 0, 0)
+		win.GetWindowRect(hwnd, &rect)
+		moved = rect.Left
+		st := ow.Style()
+		x, y := model.ClampOverlayToMonitors(int(rect.Left), int(rect.Top), st.Width, st.Height, Monitors())
+		onMonitor = x == int(rect.Left) && y == int(rect.Top)
+	})
+	res.Step("overlay dragged off every monitor is moved back onto one at drag end", onMonitor && moved > -6000,
+		fmt.Sprintf("rect=(%d,%d)", rect.Left, rect.Top))
 }
 
 func (s *SelfTest) overlayCase(res *webview.Result, dir string, c overlayCase) {
@@ -237,6 +265,7 @@ func captureScreen(x, y, w, h int) ([]byte, error) {
 	if !win.BitBlt(memDC, 0, 0, int32(w), int32(h), screenDC, int32(x), int32(y), win.SRCCOPY|win.CAPTUREBLT) {
 		return nil, fmt.Errorf("BitBlt failed")
 	}
+	procGdiFlush.Call()
 	return append([]byte(nil), unsafe.Slice((*byte)(bits), w*h*4)...), nil
 }
 
@@ -267,6 +296,7 @@ func diffAgainstLegacy(ow *OverlayWindow, pix []byte) int {
 	win.SetTextColor(memDC, win.COLORREF(uint32(rgb[0])|uint32(rgb[1])<<8|uint32(rgb[2])<<16))
 	t, _ := syscall.UTF16FromString(text)
 	win.DrawTextEx(memDC, &t[0], int32(len(t)-1), &rect, win.DT_CENTER|win.DT_VCENTER|win.DT_SINGLELINE, nil)
+	procGdiFlush.Call()
 	legacy := unsafe.Slice((*byte)(bits), w*h*4)
 	diff := 0
 	for i := 0; i < w*h; i++ {

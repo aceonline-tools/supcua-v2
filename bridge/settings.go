@@ -409,7 +409,16 @@ func (b *Bridge) applyOverlayStyle(style model.OverlayStyle, x, y int) (any, err
 	style = style.Normalize()
 	old := b.d.Config.Get()
 	var cx, cy int
-	if err := b.callUI(func() error { cx, cy = b.d.Overlay.ApplyStyle(style, x, y); return nil }); err != nil {
+	err := b.callUI(func() error {
+		var e error
+		cx, cy, e = b.d.Overlay.ApplyStyle(style, x, y)
+		return e
+	})
+	if err != nil {
+		if _, ok := err.(*Error); !ok {
+			log.Printf("bridge: overlay apply style failed: %v", err)
+			err = newErr(CodeInternal)
+		}
 		return nil, err
 	}
 	if err := b.d.Config.Update(func(c *model.AppConfig) {
@@ -418,8 +427,8 @@ func (b *Bridge) applyOverlayStyle(style model.OverlayStyle, x, y int) (any, err
 	}); err != nil {
 		log.Printf("bridge: persist overlay style failed: %v", err)
 		if rerr := b.callUI(func() error {
-			b.d.Overlay.ApplyStyle(old.OverlayStyle, old.OverlayPosition.X, old.OverlayPosition.Y)
-			return nil
+			_, _, e := b.d.Overlay.ApplyStyle(old.OverlayStyle, old.OverlayPosition.X, old.OverlayPosition.Y)
+			return e
 		}); rerr != nil {
 			log.Printf("bridge: overlay style rollback failed: %v", rerr)
 		}

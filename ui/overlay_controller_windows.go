@@ -62,7 +62,7 @@ func (o *OverlayController) SetEnabled(enabled bool) error {
 	}
 	x, y := o.position()
 	st := o.resolvedStyle()
-	x, y = ClampToVirtualScreen(x, y, st.Width, st.Height)
+	x, y = ClampToMonitors(x, y, st.Width, st.Height)
 	w, err := NewOverlayWindow(o.Controller, x, y, true, st)
 	if err != nil {
 		return err
@@ -80,17 +80,20 @@ func (o *OverlayController) resolvedStyle() model.ResolvedOverlayStyle {
 }
 
 // ApplyStyle implements bridge.Overlay: applies the style live (or remembers it while the overlay
-// is disabled) and returns the effective, screen-clamped position.
-func (o *OverlayController) ApplyStyle(style model.OverlayStyle, x, y int) (int, int) {
+// is disabled) and returns the effective, on-monitor position.
+func (o *OverlayController) ApplyStyle(style model.OverlayStyle, x, y int) (int, int, error) {
 	st := style.Resolve()
-	o.style = &st
 	if o.w != nil {
-		x, y = o.w.ApplyStyle(st, x, y)
-		return x, y
+		x, y, err := o.w.ApplyStyle(st, x, y)
+		if err == nil {
+			o.style = &st
+		}
+		return x, y, err
 	}
-	x, y = ClampToVirtualScreen(x, y, st.Width, st.Height)
+	o.style = &st
+	x, y = ClampToMonitors(x, y, st.Width, st.Height)
 	o.lastX, o.lastY, o.havePos = x, y, true
-	return x, y
+	return x, y, nil
 }
 
 // SetVisible implements bridge.Overlay.

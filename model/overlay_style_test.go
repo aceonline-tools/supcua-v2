@@ -90,20 +90,36 @@ func TestOverlayStyleJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestClampOverlayPosition(t *testing.T) {
-	x, y := ClampOverlayPosition(5000, 5000, 136, 32, 0, 0, 1920, 1080)
-	if x != 1880 || y != 1064 {
+func TestClampOverlayToMonitors(t *testing.T) {
+	single := []Rect{{0, 0, 1920, 1080}}
+	if x, y := ClampOverlayToMonitors(5000, 5000, 136, 32, single); x != 1880 || y != 1064 {
 		t.Fatalf("far bottom-right: %d,%d", x, y)
 	}
-	x, y = ClampOverlayPosition(-9999, -9999, 136, 32, 0, 0, 1920, 1080)
-	if x != -96 || y != -16 {
+	if x, y := ClampOverlayToMonitors(-9999, -9999, 136, 32, single); x != -96 || y != -16 {
 		t.Fatalf("far top-left: %d,%d", x, y)
 	}
-	x, y = ClampOverlayPosition(-1500, 10, 136, 32, -1920, 0, 3840, 1080)
-	if x != -1500 || y != 10 {
-		t.Fatalf("negative-origin virtual screen must keep a visible position: %d,%d", x, y)
+	if x, y := ClampOverlayToMonitors(100, 50, 136, 32, single); x != 100 || y != 50 {
+		t.Fatalf("a visible position must not move: %d,%d", x, y)
 	}
-	if x, y = ClampOverlayPosition(7, 8, 136, 32, 0, 0, 0, 0); x != 7 || y != 8 {
-		t.Fatal("unknown screen must not move the overlay")
+	if x, y := ClampOverlayToMonitors(7, 8, 136, 32, nil); x != 7 || y != 8 {
+		t.Fatal("unknown monitors must not move the overlay")
 	}
+	// staggered monitors: inside the bounding box (0,0)-(3840,1680) but over the empty gap above the lower-right monitor
+	staggered := []Rect{{0, 0, 1920, 1080}, {1920, 600, 3840, 1680}}
+	x, y := ClampOverlayToMonitors(2500, 100, 136, 32, staggered)
+	if !visibleOn(x, y, 136, 32, staggered) || x != 2500 || y != 584 {
+		t.Fatalf("staggered monitors: overlay left in the gap / moved to the wrong monitor: %d,%d", x, y)
+	}
+	if x, y = ClampOverlayToMonitors(2500, 700, 136, 32, staggered); x != 2500 || y != 700 {
+		t.Fatalf("a position on the second monitor must not move: %d,%d", x, y)
+	}
+}
+
+func visibleOn(x, y, w, h int, ms []Rect) bool {
+	for _, m := range ms {
+		if overlapLen(x, x+w, m.Left, m.Right) >= min(w, 40) && overlapLen(y, y+h, m.Top, m.Bottom) >= min(h, 16) {
+			return true
+		}
+	}
+	return false
 }

@@ -126,12 +126,32 @@ func (s OverlayStyle) Normalize() OverlayStyle {
 	return out
 }
 
-// ClampOverlayPosition keeps at least 40x16 px of a w x h overlay inside the virtual screen
-// (vx, vy, vw, vh). A zero-size screen (unknown) leaves the position unchanged.
-func ClampOverlayPosition(x, y, w, h, vx, vy, vw, vh int) (int, int) {
-	if vw <= 0 || vh <= 0 {
-		return x, y
-	}
+// Rect is a monitor rectangle in virtual-screen coordinates (Right/Bottom exclusive).
+type Rect struct{ Left, Top, Right, Bottom int }
+
+func overlapLen(a0, a1, b0, b1 int) int { return max(0, min(a1, b1)-max(a0, b0)) }
+
+// ClampOverlayToMonitors keeps virtual coordinates but guarantees the w x h overlay shows at least
+// 40x16 px (or its whole size when smaller) on one real monitor, so it can never sit in a gap between
+// staggered monitors or off every screen. A position that already qualifies is returned unchanged;
+// otherwise it moves to the closest position on the monitor that needs the smallest move. An empty
+// monitor list (unknown) leaves the position unchanged.
+func ClampOverlayToMonitors(x, y, w, h int, monitors []Rect) (int, int) {
 	visX, visY := min(w, overlayMinVisibleX), min(h, overlayMinVisibleY)
-	return clampInt(x, vx+visX-w, vx+vw-visX), clampInt(y, vy+visY-h, vy+vh-visY)
+	bestX, bestY, bestCost := x, y, -1
+	for _, m := range monitors {
+		if m.Right-m.Left <= 0 || m.Bottom-m.Top <= 0 {
+			continue
+		}
+		if overlapLen(x, x+w, m.Left, m.Right) >= visX && overlapLen(y, y+h, m.Top, m.Bottom) >= visY {
+			return x, y
+		}
+		cx := clampInt(x, m.Left+visX-w, m.Right-visX)
+		cy := clampInt(y, m.Top+visY-h, m.Bottom-visY)
+		cost := (cx-x)*(cx-x) + (cy-y)*(cy-y)
+		if bestCost < 0 || cost < bestCost {
+			bestX, bestY, bestCost = cx, cy, cost
+		}
+	}
+	return bestX, bestY
 }

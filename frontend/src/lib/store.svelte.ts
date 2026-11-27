@@ -1,5 +1,6 @@
 import { ApiError, type Client } from '../api/client';
 import { EditorStore } from './editor.svelte';
+import { OVERLAY_DEFAULTS } from './overlayStyle';
 import type {
   BootState, GroupDTO, OverlayStyleDTO, ScriptSummary, SettingsDTO, SettingsPatch, StateDTO, ThemeSetting,
 } from '../api/types';
@@ -153,9 +154,10 @@ export class AppStore {
 
   async loadSettings(): Promise<void> {
     const seq = this.sidebarSeq;
+    const ovGen = this.ovSeq;
     const next = await this.api.call('settings.get');
     if (this.sidebarSeq !== seq || this.sidebarPending > 0) next.sidebar_collapsed = this.settings?.sidebar_collapsed ?? next.sidebar_collapsed;
-    if (this.ovTimer !== null || this.ovPending > 0) next.overlay_style = this.settings?.overlay_style ?? next.overlay_style;
+    if (this.ovSeq !== ovGen || this.ovTimer !== null || this.ovPending > 0) next.overlay_style = this.settings?.overlay_style ?? next.overlay_style;
     this.settings = next;
   }
 
@@ -297,47 +299,39 @@ export class AppStore {
   // unless a newer edit is waiting. The backend's clamped answer replaces the local value.
   setOverlayStyle(patch: Partial<OverlayStyleDTO>): Promise<void> {
     if (!this.settings) return Promise.resolve();
-    if (this.ovPending === 0 && this.ovTimer === null) this.ovConfirmed = { ...this.settings.overlay_style };
+    this.beginOverlayEdit();
     this.settings.overlay_style = { ...this.settings.overlay_style, ...patch };
-    if (this.ovTimer !== null) clearTimeout(this.ovTimer);
-    this.ovTimer = setTimeout(() => { this.ovTimer = null; void this.flushOverlayStyle(); }, 120);
+    this.ovTimer = setTimeout(() => { this.ovTimer = null; void this.sendOverlayStyle('overlay.setStyle'); }, 120);
     return this.ovChain;
   }
 
   resetOverlayStyle(): Promise<void> {
     if (!this.settings) return Promise.resolve();
-    if (this.ovTimer !== null) { clearTimeout(this.ovTimer); this.ovTimer = null; }
-    if (this.ovPending === 0) this.ovConfirmed = { ...this.settings.overlay_style };
-    const seq = ++this.ovSeq;
-    this.ovPending++;
-    const run = async () => {
-      try {
-        const eff = await this.api.call('overlay.resetStyle');
-        this.ovConfirmed = eff;
-        if (seq === this.ovSeq && this.settings) this.settings.overlay_style = eff;
-      } catch (e) {
-        if (seq === this.ovSeq && this.settings && this.ovConfirmed) this.settings.overlay_style = this.ovConfirmed;
-        this.error = errorText(e);
-      } finally {
-        this.ovPending--;
-      }
-    };
-    this.ovChain = this.ovChain.then(run);
-    return this.ovChain;
+    this.beginOverlayEdit();
+    this.settings.overlay_style = { ...OVERLAY_DEFAULTS };
+    return this.sendOverlayStyle('overlay.resetStyle');
   }
 
-  private flushOverlayStyle(): Promise<void> {
+  // Every edit advances the generation at once: a response or failure only touches the visible
+  // state when no newer edit exists, and a rollback goes to the last backend-confirmed style.
+  private beginOverlayEdit(): void {
+    if (this.ovPending === 0 && this.ovTimer === null && this.settings) this.ovConfirmed = { ...this.settings.overlay_style };
+    if (this.ovTimer !== null) { clearTimeout(this.ovTimer); this.ovTimer = null; }
+    this.ovSeq++;
+  }
+
+  private sendOverlayStyle(method: 'overlay.setStyle' | 'overlay.resetStyle'): Promise<void> {
     if (!this.settings) return this.ovChain;
     const style = { ...this.settings.overlay_style };
-    const seq = ++this.ovSeq;
+    const gen = this.ovSeq;
     this.ovPending++;
     const run = async () => {
       try {
-        const eff = await this.api.call('overlay.setStyle', style);
+        const eff = method === 'overlay.resetStyle' ? await this.api.call(method) : await this.api.call(method, style);
         this.ovConfirmed = eff;
-        if (seq === this.ovSeq && this.settings) this.settings.overlay_style = eff;
+        if (gen === this.ovSeq && this.settings) this.settings.overlay_style = eff;
       } catch (e) {
-        if (seq === this.ovSeq && this.settings && this.ovConfirmed) this.settings.overlay_style = this.ovConfirmed;
+        if (gen === this.ovSeq && this.settings && this.ovConfirmed) this.settings.overlay_style = this.ovConfirmed;
         this.error = errorText(e);
       } finally {
         this.ovPending--;

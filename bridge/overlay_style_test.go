@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -122,5 +123,18 @@ func TestOverlayStyleMethodsAreFenced(t *testing.T) {
 		if !found {
 			t.Errorf("%s missing from the mutating list", n)
 		}
+	}
+}
+
+func TestOverlaySetStyleRenderErrorRollsBackAndDoesNotPersist(t *testing.T) {
+	r := newRig(t)
+	r.ov.styleErr = errors.New("UpdateLayeredWindow failed")
+	_, err := r.call(t, "overlay.setStyle", validStyle)
+	wantCode(t, err, CodeInternal)
+	if r.cfg.Get().OverlayStyle != (model.OverlayStyle{}) || r.cfg.Get().OverlayPosition.X != 10 {
+		t.Fatalf("a render failure must not be persisted: %+v", r.cfg.Get().OverlayStyle)
+	}
+	if len(r.em.named(EvSettingsChanged)) != 0 {
+		t.Fatal("no settings.changed after a failed apply")
 	}
 }

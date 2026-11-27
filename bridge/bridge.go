@@ -77,7 +77,7 @@ type Overlay interface {
 	SetVisible(visible bool)
 	SetDraggable(draggable bool)
 	// ApplyStyle applies the style live and returns the effective (screen-clamped) position.
-	ApplyStyle(style model.OverlayStyle, x, y int) (int, int)
+	ApplyStyle(style model.OverlayStyle, x, y int) (int, int, error)
 }
 
 // Hotkey kinds accepted by Host.RebindHotkey.

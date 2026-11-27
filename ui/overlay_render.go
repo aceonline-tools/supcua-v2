@@ -2,6 +2,7 @@ package ui
 
 import (
 	"math"
+	"strings"
 
 	"github.com/yanmad27/supcua-v2/model"
 )
@@ -111,4 +112,13 @@ func haloCoverage(mask []uint8, w, h, x, y int) float64 {
 		}
 	}
 	return float64(best) / 255
+}
+
+// sanitizeStatusText cuts at the first NUL (a Windows string cannot carry one) so the text always
+// converts to UTF-16.
+func sanitizeStatusText(s string) string {
+	if i := strings.IndexByte(s, 0); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
