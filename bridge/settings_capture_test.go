@@ -190,11 +190,11 @@ func TestSettingsCaptureSuspendGatesControllerAndPolledKeys(t *testing.T) {
 	mute := &fakeMute{}
 	b := New(Deps{Controller: ctl, HotkeyMute: mute}, &recEmitter{})
 	b.capture.suspend(true)
-	if ctl.RunHotkeyAction(func() {}) {
+	if ctl.RunHotkeyAction(ctl.HotkeyEpoch(), func() {}) {
 		t.Fatal("controller hotkey actions not gated while recording")
 	}
 	b.capture.suspend(false)
-	if !ctl.RunHotkeyAction(func() {}) {
+	if !ctl.RunHotkeyAction(ctl.HotkeyEpoch(), func() {}) {
 		t.Fatal("controller gate not released after recording")
 	}
 	mute.mu.Lock()

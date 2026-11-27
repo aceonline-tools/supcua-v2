@@ -61,8 +61,8 @@ func eq(a, b []string) bool {
 func TestRebindBeforeStartupWinsOverTheStartupConfig(t *testing.T) {
 	reg := newFakeRegistry()
 	f := newFixedHotkeys(reg, true)
-	f.add(bridge.HotkeyGlobal, model.Hotkey{Key: "f1"}, func(int) {})
-	f.add(bridge.HotkeyOverlay, model.Hotkey{Key: "f2"}, func(int) {})
+	f.add(bridge.HotkeyGlobal, model.Hotkey{Key: "f1"}, func(int, uint64) {})
+	f.add(bridge.HotkeyOverlay, model.Hotkey{Key: "f2"}, func(int, uint64) {})
 	if err := f.rebind(bridge.HotkeyGlobal, model.Hotkey{Key: "f9"}); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestRebindBeforeStartupWinsOverTheStartupConfig(t *testing.T) {
 func TestFixedHotkeysStopForbidsLateRegistration(t *testing.T) {
 	reg := newFakeRegistry()
 	f := newFixedHotkeys(reg, true)
-	f.add(bridge.HotkeyGlobal, model.Hotkey{Key: "f1"}, func(int) {})
+	f.add(bridge.HotkeyGlobal, model.Hotkey{Key: "f1"}, func(int, uint64) {})
 	f.stop()
 	f.start()
 	if len(reg.keys()) != 0 {
@@ -187,8 +187,8 @@ func TestRebindFailureKeepsTheOldOSRegistrationForGlobalAndOverlay(t *testing.T)
 	for _, kind := range []string{bridge.HotkeyGlobal, bridge.HotkeyOverlay} {
 		reg := &failingRegistry{fakeRegistry: newFakeRegistry(), failKey: "f9"}
 		f := newFixedHotkeys(reg, true)
-		f.add(bridge.HotkeyGlobal, model.Hotkey{Key: "f1"}, func(int) {})
-		f.add(bridge.HotkeyOverlay, model.Hotkey{Key: "f2"}, func(int) {})
+		f.add(bridge.HotkeyGlobal, model.Hotkey{Key: "f1"}, func(int, uint64) {})
+		f.add(bridge.HotkeyOverlay, model.Hotkey{Key: "f2"}, func(int, uint64) {})
 		f.start()
 		before := reg.keys()
 		if err := f.rebind(kind, model.Hotkey{Key: "f9"}); err == nil {

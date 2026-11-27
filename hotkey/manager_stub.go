@@ -8,7 +8,7 @@ import (
 	"github.com/yanmad27/supcua-v2/model"
 )
 
-type HotkeyCallback func(hotkeyID int)
+type HotkeyCallback func(hotkeyID int, epoch uint64)
 
 type Registration struct {
 	HotkeyID int
@@ -31,3 +31,5 @@ func (hotkeyManager *Manager) Unregister(hotkeyID int) error {
 func (hotkeyManager *Manager) ListenForHotkeys() {}
 
 func (hotkeyManager *Manager) SetSuspended(bool) {}
+
+func (hotkeyManager *Manager) SetEpochSource(func() uint64) {}

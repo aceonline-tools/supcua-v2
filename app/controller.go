@@ -23,7 +23,8 @@ type Controller struct {
 	stateMutex          sync.RWMutex
 	globalActive        bool
 	editDialogOpen      bool
-	hotkeyRecording     int // active Settings hotkey recordings; > 0 blocks every hotkey action
+	hotkeyRecording     int    // active Settings hotkey recordings; > 0 blocks every hotkey action
+	hotkeyEpoch         uint64 // bumped by every SetHotkeyRecording(true)
 	hotkeyActionMu      sync.Mutex
 	runningScriptID     string
 	runningScriptName   string
@@ -157,23 +158,38 @@ func (appController *Controller) SetHotkeyRecording(on bool) {
 	appController.stateMutex.Lock()
 	if on {
 		appController.hotkeyRecording++
+		appController.hotkeyEpoch++
 	} else if appController.hotkeyRecording > 0 {
 		appController.hotkeyRecording--
 	}
 	appController.stateMutex.Unlock()
 }
 
-func (appController *Controller) hotkeyRecordingActive() bool {
+// HotkeyEpoch is stamped on each hotkey event when it is detected (listener thread). An action
+// carrying a stamp runs only if no recording is active and none started since the stamp, so input
+// detected before or during a recording can never run after it ended.
+func (appController *Controller) HotkeyEpoch() uint64 {
 	appController.stateMutex.RLock()
 	defer appController.stateMutex.RUnlock()
-	return appController.hotkeyRecording > 0
+	return appController.hotkeyEpoch
+}
+
+// hotkeyAllowedLocked must be called with stateMutex held.
+func (appController *Controller) hotkeyAllowedLocked(epoch uint64) bool {
+	return appController.hotkeyRecording == 0 && epoch == appController.hotkeyEpoch
+}
+
+func (appController *Controller) hotkeyAllowed(epoch uint64) bool {
+	appController.stateMutex.RLock()
+	defer appController.stateMutex.RUnlock()
+	return appController.hotkeyAllowedLocked(epoch)
 }
 
 // ToggleGlobalFromHotkey is the global hotkey's action: ToggleGlobalStatus unless a Settings
 // recording is active (checked in the same critical section as the flip).
-func (appController *Controller) ToggleGlobalFromHotkey() {
+func (appController *Controller) ToggleGlobalFromHotkey(epoch uint64) {
 	appController.stateMutex.Lock()
-	if appController.hotkeyRecording > 0 {
+	if !appController.hotkeyAllowedLocked(epoch) {
 		appController.stateMutex.Unlock()
 		return
 	}
@@ -188,10 +204,10 @@ func (appController *Controller) ToggleGlobalFromHotkey() {
 
 // RunHotkeyAction runs action unless a Settings recording is active, and reports whether it ran.
 // action must be short and must not start a recording (SetHotkeyRecording(true) waits for it).
-func (appController *Controller) RunHotkeyAction(action func()) bool {
+func (appController *Controller) RunHotkeyAction(epoch uint64, action func()) bool {
 	appController.hotkeyActionMu.Lock()
 	defer appController.hotkeyActionMu.Unlock()
-	if appController.hotkeyRecordingActive() {
+	if !appController.hotkeyAllowed(epoch) {
 		return false
 	}
 	action()
@@ -306,13 +322,39 @@ func (appController *Controller) popQueueLocked() (model.Script, bool) {
 	return next, true
 }
 
+// StartScriptFromHotkey is StartScript for a hotkey event stamped with epoch (see HotkeyEpoch).
+func (appController *Controller) StartScriptFromHotkey(script model.Script, epoch uint64) {
+	appController.startScript(script, func() bool { return appController.hotkeyAllowedLocked(epoch) })
+}
+
+// StopRunningScriptFromHotkey is StopRunningScript for a hotkey event stamped with epoch; the
+// emergency stop and the tray keep using the ungated StopRunningScript.
+func (appController *Controller) StopRunningScriptFromHotkey(epoch uint64) {
+	appController.stateMutex.Lock()
+	if !appController.hotkeyAllowedLocked(epoch) {
+		appController.stateMutex.Unlock()
+		return
+	}
+	appController.scriptQueue = nil
+	if appController.cancelRunningScript != nil {
+		appController.cancelRunningScript()
+	}
+	appController.stateMutex.Unlock()
+	appController.publish()
+}
+
 // StartScript launches a script or queues it if one is already running.
 func (appController *Controller) StartScript(script model.Script) {
+	appController.startScript(script, func() bool { return true })
+}
+
+// startScript launches or queues script; allowed is evaluated with stateMutex held.
+func (appController *Controller) startScript(script model.Script, allowed func() bool) {
 	log.Printf("StartScript called: id=%s name=%s globalActive=%v enabled=%v runningID=%q",
 		script.ID, script.Name, appController.globalActive, script.Enabled, appController.runningScriptID)
 
 	appController.stateMutex.Lock()
-	if !appController.globalActive || appController.editDialogOpen || appController.hotkeyRecording > 0 || !script.Enabled {
+	if !appController.globalActive || appController.editDialogOpen || appController.hotkeyRecording > 0 || !script.Enabled || !allowed() {
 		appController.stateMutex.Unlock()
 		return
 	}

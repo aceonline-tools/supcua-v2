@@ -57,3 +57,25 @@ func TestPollMuteOldRecordingEndDoesNotClearANewerOne(t *testing.T) {
 		t.Fatal("a new recording after an extra end must mute")
 	}
 }
+
+func TestPollMuteWithNoSampleInsideStillSuppressesHeldAndReleasedKeys(t *testing.T) {
+	var m pollMute
+	var seen uint64
+	var held, released pollState
+	held.step(true, m.sample(&seen))
+	released.step(true, false)
+	m.set(true)
+	m.set(false) // recording started and ended between two samples
+	muted := m.sample(&seen)
+	held.step(true, muted)
+	if released.step(false, muted) {
+		t.Fatal("a key released during an unsampled recording fired")
+	}
+	if held.step(false, m.sample(&seen)) {
+		t.Fatal("a key held through an unsampled recording fired on release")
+	}
+	held.step(true, m.sample(&seen))
+	if !held.step(false, m.sample(&seen)) {
+		t.Fatal("the key must re-arm after its release")
+	}
+}

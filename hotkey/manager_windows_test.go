@@ -23,7 +23,7 @@ func TestRegisterRunsOnTheListenerThread(t *testing.T) {
 
 	m := NewManager()
 	go m.ListenForHotkeys()
-	id, err := m.Register(model.Hotkey{Modifiers: []string{"ctrl", "alt", "shift"}, Key: "f12"}, func(int) {})
+	id, err := m.Register(model.Hotkey{Modifiers: []string{"ctrl", "alt", "shift"}, Key: "f12"}, func(int, uint64) {})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
