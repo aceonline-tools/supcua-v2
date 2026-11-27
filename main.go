@@ -47,14 +47,18 @@ func (l *lateUI) Post(f func()) {
 	}
 }
 
-// tryPost reports whether f was handed to the UI thread (false: the window is not ready yet).
-func (l *lateUI) tryPost(f func()) bool {
+// tryPost reports whether f was handed to the UI thread; otherwise it returns why not (the
+// window is not ready yet, or the UI was closed by Quit).
+func (l *lateUI) tryPost(f func()) (bool, string) {
 	u := l.p.Load()
 	if u == nil {
-		return false
+		return false, "UI window not ready"
+	}
+	if u.Closed() {
+		return false, "UI closing"
 	}
 	u.Post(f)
-	return true
+	return true, ""
 }
 
 func (l *lateUI) Emit(event string, payload any) {
@@ -382,7 +386,7 @@ func main() {
 	}
 	if appConfig.OverlayEnabled {
 		if err := overlayCtl.SetEnabled(true); err != nil {
-			log.Printf("warning: failed to create overlay: %v", err)
+			ui.LogOverlayStartup(err)
 		}
 	}
 
@@ -651,15 +655,16 @@ func main() {
 		return nil
 	})
 	tray.AddAutoActiveProcessItem(func() { br.NavGoto("settings") })
-	appController.Subscribe(func(status.Snapshot) {
+	appController.Subscribe(func(snap status.Snapshot) {
+		ui.LogOverlayState(snap.GlobalActive, snap.RunningScriptName)
 		if scriptHotkeys != nil {
 			scriptHotkeys.Reconcile()
 		}
-		if !late.tryPost(func() {
+		if ok, why := late.tryPost(func() {
 			overlayCtl.Refresh()
 			tray.UpdateTooltip()
-		}) {
-			ui.LogOverlayDropped("UI window not ready")
+		}); !ok {
+			ui.LogOverlayDropped(why)
 		}
 	})
 	tray.UpdateTooltip()

@@ -299,6 +299,9 @@ func (u *UI) ThreadID() uint32 { return u.threadID }
 // Loaded is closed after the first completed navigation.
 func (u *UI) Loaded() <-chan struct{} { return u.loaded }
 
+// Closed reports whether Quit ran; Post drops everything after that.
+func (u *UI) Closed() bool { return u.closed.Load() }
+
 // Post runs f on the UI thread. Safe from any goroutine; dropped after Quit.
 func (u *UI) Post(f func()) {
 	if u.closed.Load() {

@@ -398,8 +398,8 @@ func (s *SelfTest) overlayStatusE2E(res *webview.Result, h ProductionHooks, name
 	off := s.waitOverlay(func(o overlayObs) bool { return o.text == "DISABLE" })
 	check("disabled", "DISABLE", want(colorRedInactive), off)
 	logs := s.statusLogLines()
-	res.Step(fmt.Sprintf("overlay e2e [%s] status log lines (RUN, IDLE, DISABLE)", name),
-		containsAll(logs, "→ RUN: fixture_probe", "→ IDLE", "→ DISABLE"), strings.Join(logs, " | "))
+	res.Step(fmt.Sprintf("overlay e2e [%s] status log lines (state and shown: RUN, IDLE, DISABLE)", name),
+		containsAll(logs, `overlay: state "IDLE" → "RUN: fixture_probe"`, `overlay: shown `, `→ "RUN: fixture_probe" colour`, `→ "IDLE" colour`, `→ "DISABLE" colour`, `overlay: state "RUN: fixture_probe" → "IDLE"`, `→ "DISABLE" (script=`), strings.Join(logs, " | "))
 	fire(h.GlobalHotkey, "overlay e2e ["+name+"] global on via hotkey", h.GlobalActive)
 	waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() > 0 })
 }
@@ -410,11 +410,11 @@ var (
 	tapOnce  sync.Once
 )
 
-// statusLogLines returns the "overlay: status" lines logged since the previous call.
+// statusLogLines returns the "overlay: state/shown" lines logged since the previous call.
 func (s *SelfTest) statusLogLines() []string {
 	tapOnce.Do(func() {
 		overlayLog.Tap(func(l string) {
-			if strings.HasPrefix(l, "overlay: status ") {
+			if strings.HasPrefix(l, "overlay: state ") || strings.HasPrefix(l, "overlay: shown ") {
 				tapMu.Lock()
 				tapLines = append(tapLines, l)
 				tapMu.Unlock()
