@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -158,7 +160,7 @@ func TestSaveRenameRemovesOldFile(t *testing.T) {
 func TestSaveRemovesLegacyUUIDFile(t *testing.T) {
 	dir := t.TempDir()
 	legacy := filepath.Join(dir, "123e4567-e89b-12d3-a456-426614174000.json")
-	os.WriteFile(legacy, []byte(`{"id":"legacy-1","name":"Legacy"}`), 0644)
+	os.WriteFile(legacy, []byte(`{"id":"legacy-1","name":"legacy"}`), 0644)
 	store := NewScriptStore(dir)
 	if err := store.Save(model.Script{ID: "legacy-1", Name: "Legacy", Enabled: true}); err != nil {
 		t.Fatal(err)
@@ -318,5 +320,42 @@ func TestSaveSupersedesPendingQueuedSave(t *testing.T) {
 	got, err := getByID(store, "b")
 	if err != nil || got.Name != "Newer" || got.Enabled || fileExists(dir, "old.json") {
 		t.Errorf("stale pending snapshot won: %+v %v", got, err)
+	}
+}
+
+func TestLegacyKeyPressFileSurvivesSaveReload(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"id":"leg","name":"legacy","enabled":true,"run_mode":"once","hotkey_mode":"toggle","actions":[{"type":"loop","count":2,"actions":[{"type":"key_press","key":"2"}]},{"type":"key_press","key":"f5"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "legacy.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := NewScriptStore(dir)
+	list, err := st.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("load: %v %d", err, len(list))
+	}
+	if seq := list[0].Actions[1].Sequence(); len(seq) != 1 || seq[0].Key != "f5" {
+		t.Fatalf("legacy not a sequence of one: %+v", seq)
+	}
+	if err := st.Save(list[0]); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "legacy.json"))
+	if strings.Contains(string(raw), `"keys"`) || !strings.Contains(string(raw), `"key": "2"`) {
+		t.Fatalf("single plain key must stay legacy-form:\n%s", raw)
+	}
+	again, err := NewScriptStore(dir).List()
+	if err != nil || !reflect.DeepEqual(list, again) {
+		t.Fatalf("reload differs: %v", err)
+	}
+
+	multi := list[0]
+	multi.Actions = []model.Action{{Type: model.ActionKeyPress, Keys: []model.KeyStroke{{Key: "a", Mods: []string{"ctrl"}}, {Key: "b"}}}}
+	if err := st.Save(multi); err != nil {
+		t.Fatal(err)
+	}
+	again, _ = NewScriptStore(dir).List()
+	if !reflect.DeepEqual(again[0].Actions, multi.Actions) {
+		t.Fatalf("multi-key lost: %+v", again[0].Actions)
 	}
 }
