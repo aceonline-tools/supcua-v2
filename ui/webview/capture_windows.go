@@ -138,7 +138,7 @@ func CursorPos() (x, y int, ok bool) {
 // StartMousePick polls GetAsyncKeyState(vk) every 50 ms (the "P key" coordinate capture,
 // parity with ui/script_edit_dialog.go registerPickHotkey) and calls onPick with the cursor
 // position on every press. One goroutine per call, ended by stop (idempotent, waits for it).
-func StartMousePick(vk uint32, onPick func(x, y int)) (stop func()) {
+func StartMousePick(vk uint32, active func() bool, onPick func(x, y int)) (stop func()) {
 	quit := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -150,14 +150,10 @@ func StartMousePick(vk uint32, onPick func(x, y int)) (stop func()) {
 			case <-quit:
 				return
 			case <-t.C:
-				if vk == 0 {
-					continue
-				}
-				if r, _, _ := procGetAsyncKeyState.Call(uintptr(vk)); r&1 != 0 { // pressed since last call
-					if x, y, ok := CursorPos(); ok {
-						onPick(x, y)
-					}
-				}
+				mouseTick(vk, func(k uint32) bool {
+					r, _, _ := procGetAsyncKeyState.Call(uintptr(k))
+					return r&1 != 0 // pressed since last call
+				}, active, CursorPos, onPick)
 			}
 		}
 	}()

@@ -12,6 +12,7 @@
   import DiscardDialog from './DiscardDialog.svelte';
   let { store }: { store: AppStore } = $props();
   const ed = $derived(store.editor);
+  const groupNames = $derived(ed.groups);
   const sc = $derived(ed.script);
   const num = (i: number) => String(i + 1).padStart(2, '0');
   const mouseButtons: [string, string, IconName][] = [
@@ -28,7 +29,7 @@
     if (e.key !== 'Escape') return;
     if (drag) { e.preventDefault(); endDrag(false); return; }
     if (ed.capturing || ed.capturePending()) { e.preventDefault(); void ed.cancelCapture(); }
-    else if (ed.conflicts) void ed.resolveConflict(false);
+    else if (ed.conflicts) ed.resolveConflict(false);
     else if (ed.actionDialog) ed.closeActionDialog();
     else if (ed.raw) ed.closeRaw();
   }
@@ -124,58 +125,70 @@
 <svelte:window {onkeydown} />
 
 {#if sc}
-  <main class="editor-main">
+  <main class="editor-main" id="editor-root">
     <div class="page-head">
-      <div>
-        <h1>{store.route.name === 'editor' && store.route.id === null ? 'New Script' : 'Edit Script'}</h1>
-        <p>{sc.name}{#if sc.group}<span class="muted">&nbsp;/ {sc.group}</span>{/if}</p>
+      <div class="head-text">
+        <h1>{ed.isNew ? 'New Script' : 'Edit Script'}</h1>
+        <p class="ellip">{sc.name}{#if sc.group}<span class="muted">&nbsp;/ {sc.group}</span>{/if}</p>
       </div>
       <span class="indicator" class:ok={ed.indicator.saved} role="status">{ed.indicator.saved ? '✓' : '●'} {ed.indicator.text}</span>
     </div>
 
     <div class="editor-grid">
-      <div class="card editor-card">
-        <h3>Script Properties</h3>
-        <div class="field"><label for="ed-name">Name:</label>
-          <input id="ed-name" class="input full" bind:value={sc.name} oninput={() => ed.markDirty()} /></div>
-        <div class="field"><label for="ed-group">Group:</label>
-          <GroupCombobox id="ed-group" bind:value={sc.group} options={store.groups.map((g) => g.name)} onchange={() => ed.markDirty()} /></div>
-        <div class="field"><label for="ed-enabled">Enabled:</label>
-          <label class="hit"><input id="ed-enabled" class="cb" type="checkbox" bind:checked={sc.enabled} onchange={() => ed.markDirty()} /></label></div>
-        <div class="field"><span class="lbl" id="rm">Run Mode:</span>
-          <div class="radio-line" role="radiogroup" aria-labelledby="rm">
-            <label><input type="radio" value="once" bind:group={sc.run_mode} onchange={() => ed.markDirty()} /> Once</label>
-            <label><input type="radio" value="infinite" bind:group={sc.run_mode} onchange={() => ed.markDirty()} /> Infinite</label>
-          </div></div>
-        <div class="field"><span class="lbl" id="hm">Hotkey Mode:</span>
-          <div class="radio-line" role="radiogroup" aria-labelledby="hm">
-            <label><input type="radio" value="toggle" bind:group={sc.hotkey_mode} onchange={() => ed.markDirty()} /> Toggle</label>
-            <label><input type="radio" value="separate" bind:group={sc.hotkey_mode} onchange={() => ed.markDirty()} /> Separate</label>
-          </div></div>
-        {#if sc.hotkey_mode === 'toggle'}
-          <div class="field"><span class="lbl">Toggle Hotkey (click &amp; press keys)</span>
-            <HotkeyInput label="Toggle hotkey" hotkey={hk('toggle')} capturing={ed.capturing === 'toggle'}
-              onstart={() => ed.startCapture('toggle')} oncancel={() => ed.cancelCapture()} onclear={() => ed.clearHotkey('toggle')} /></div>
-        {:else}
-          <div class="field"><span class="lbl">Start / Stop Hotkeys (click &amp; press keys)</span>
-            <div class="inline"><span>Start:</span>
-              <HotkeyInput label="Start hotkey" hotkey={hk('start')} capturing={ed.capturing === 'start'}
-                onstart={() => ed.startCapture('start')} oncancel={() => ed.cancelCapture()} onclear={() => ed.clearHotkey('start')} /></div>
-            <div class="inline" style:margin-top="8px"><span>Stop:</span>
-              <HotkeyInput label="Stop hotkey" hotkey={hk('stop')} capturing={ed.capturing === 'stop'}
-                onstart={() => ed.startCapture('stop')} oncancel={() => ed.cancelCapture()} onclear={() => ed.clearHotkey('stop')} /></div></div>
-        {/if}
-        <div class="muted small">Click the hotkey field, then press your shortcut.</div>
+      <div class="editor-col">
+        <div class="card editor-card">
+          <h3>Script Properties</h3>
+          <div class="field"><label for="ed-name">Name:</label>
+            <input id="ed-name" class="input full" bind:value={sc.name} oninput={() => ed.markDirty()} /></div>
+          <div class="field"><label for="ed-group">Group:</label>
+            <GroupCombobox id="ed-group" bind:value={sc.group} options={groupNames} onchange={() => ed.markDirty()} /></div>
+          <div class="field"><label for="ed-enabled">Enabled:</label>
+            <label class="hit"><input id="ed-enabled" class="cb" type="checkbox" bind:checked={sc.enabled} onchange={() => ed.markDirty()} /></label></div>
+          <div class="field"><span class="lbl" id="rm">Run Mode:</span>
+            <div class="radio-line" role="radiogroup" aria-labelledby="rm">
+              <label><input type="radio" value="once" bind:group={sc.run_mode} onchange={() => ed.markDirty()} /> Once</label>
+              <label><input type="radio" value="infinite" bind:group={sc.run_mode} onchange={() => ed.markDirty()} /> Infinite</label>
+            </div></div>
+          <div class="field"><span class="lbl" id="hm">Hotkey Mode:</span>
+            <div class="radio-line" role="radiogroup" aria-labelledby="hm">
+              <label><input type="radio" value="toggle" bind:group={sc.hotkey_mode} onchange={() => ed.markDirty()} /> Toggle</label>
+              <label><input type="radio" value="separate" bind:group={sc.hotkey_mode} onchange={() => ed.markDirty()} /> Separate</label>
+            </div></div>
+          {#if sc.hotkey_mode === 'toggle'}
+            <div class="field"><span class="lbl">Toggle Hotkey (click &amp; press keys)</span>
+              <HotkeyInput label="Toggle hotkey" hotkey={hk('toggle')} capturing={ed.capturing === 'toggle'}
+                onstart={() => ed.startCapture('toggle')} oncancel={() => ed.cancelCapture()} onclear={() => ed.clearHotkey('toggle')} /></div>
+          {:else}
+            <div class="field"><span class="lbl">Start / Stop Hotkeys (click &amp; press keys)</span>
+              <div class="inline"><span>Start:</span>
+                <HotkeyInput label="Start hotkey" hotkey={hk('start')} capturing={ed.capturing === 'start'}
+                  onstart={() => ed.startCapture('start')} oncancel={() => ed.cancelCapture()} onclear={() => ed.clearHotkey('start')} /></div>
+              <div class="inline" style:margin-top="8px"><span>Stop:</span>
+                <HotkeyInput label="Stop hotkey" hotkey={hk('stop')} capturing={ed.capturing === 'stop'}
+                  onstart={() => ed.startCapture('stop')} oncancel={() => ed.cancelCapture()} onclear={() => ed.clearHotkey('stop')} /></div></div>
+          {/if}
+          <div class="muted small">Click the hotkey field, then press your shortcut.</div>
+        </div>
+        <div class="card editor-card builder">
+          <section class="inline"><span class="side">Wait</span>
+            <input class="input" type="number" min="1" aria-label="Wait ms" bind:value={ed.builder.delay} /><span class="muted">ms</span>
+            <button onclick={() => ed.addDelay()}><Icon name="timer" size={12} />Wait</button></section>
+          <section class="inline"><span class="side">Loop</span>
+            <input class="input" type="number" min="0" title="0 = infinite" aria-label="Loop count" bind:value={ed.builder.loop} />
+            <button onclick={() => ed.addLoop()}><Icon name="repeat" size={12} />Start Loop</button><button onclick={() => ed.addSimple('loop_end')}><Icon name="circle-stop" size={12} />End Loop</button></section>
+          </div>
       </div>
-
-      <div class="card editor-card builder">
+      <div class="editor-col">
+        <div class="card editor-card builder">
         <section>
           <h3>Mouse</h3>
           <div class="inline" style:margin-bottom="8px"><span>X: {ed.mouse.x}</span><span>Y: {ed.mouse.y}</span><span class="spacer"></span>
             <button onclick={() => ed.addMouseMove()}><Icon name="move" size={12} />Move</button></div>
-          <div class="button-grid">{#each mouseButtons as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
+          <div class="button-grid">{#each mouseButtons as [label, type, icon] (type)}<button title={label} onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} /><span class="btn-label">{label}</span></button>{/each}</div>
           <div class="muted small tight">Press {store.settings?.capture_hotkey ?? 'P'} to capture cursor position</div>
         </section>
+        </div>
+        <div class="card editor-card builder">
         <section>
           <h3>Keyboard</h3>
           <div class="inline" style:margin-bottom="6px">
@@ -183,20 +196,16 @@
               onclick={() => ed.startKeyCapture()}><Icon name="keyboard" />{#if ed.capturing === 'key'}<span class="accent">Press a key…</span>{:else if ed.builder.key}{ed.builder.key}{:else}<span class="muted">Click &amp; press key</span>{/if}</button>
             <button onclick={() => ed.addKey('key_press')}><Icon name="corner-down-left" size={12} />Press</button>
           </div>
-          <div class="button-grid"><button onclick={() => ed.addKey('key_down')}><Icon name="arrow-down-to-line" size={12} />Key Down</button><button onclick={() => ed.addKey('key_up')}><Icon name="arrow-up-from-line" size={12} />Key Up</button></div>
+          <div class="button-grid"><button title="Key Down" onclick={() => ed.addKey('key_down')}><Icon name="arrow-down-to-line" size={12} /><span class="btn-label">Key Down</span></button><button title="Key Up" onclick={() => ed.addKey('key_up')}><Icon name="arrow-up-from-line" size={12} /><span class="btn-label">Key Up</span></button></div>
         </section>
-        <section class="inline"><span class="side">Wait</span>
-          <input class="input" type="number" min="1" aria-label="Wait ms" bind:value={ed.builder.delay} /><span class="muted">ms</span>
-          <button onclick={() => ed.addDelay()}><Icon name="timer" size={12} />Wait</button></section>
-        <section class="inline"><span class="side">Loop</span>
-          <input class="input" type="number" min="0" title="0 = infinite" aria-label="Loop count" bind:value={ed.builder.loop} />
-          <button onclick={() => ed.addLoop()}><Icon name="repeat" size={12} />Start Loop</button><button onclick={() => ed.addSimple('loop_end')}><Icon name="circle-stop" size={12} />End Loop</button></section>
+        </div>
+        <div class="card editor-card builder">
         <section>
           <h3>Lock</h3>
-          <div class="button-grid">{#each locks as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
+          <div class="button-grid">{#each locks as [label, type, icon] (type)}<button title={label} onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} /><span class="btn-label">{label}</span></button>{/each}</div>
         </section>
+        </div>
       </div>
-
       <div class="card action-list">
         <h3>Actions</h3>
         <div class="list" class:dragging={drag !== null} class:empty={sc.actions.length === 0} role="listbox" aria-label="Actions" bind:this={listEl}>
@@ -206,7 +215,7 @@
               onkeydown={(e) => { if (e.key === 'Enter') ed.editSelected(); else if (e.key === ' ') { e.preventDefault(); ed.selectAction(i); } }}>
               <span class="grip" role="button" tabindex="-1" aria-label="Drag to reorder" title="Drag to reorder"
                 onpointerdown={(e) => startDrag(e, i)} ondblclick={(e) => e.stopPropagation()}><Icon name="grip-vertical" size={14} /></span>
-              <span class="num">{num(i)}</span>{ed.labels[i] ?? a.type}
+              <span class="num">{num(i)}</span><span class="ellip">{ed.labels[i] ?? a.type}</span>
             </div>
           {/each}
           {#if !drag}<div class="caret-line" data-index={caret} bind:this={caretEl} style="top:{caretTop}px"></div>{/if}
@@ -222,7 +231,7 @@
     </div>
 
     <div class="editor-foot"><button onclick={() => ed.openRaw()}><Icon name="braces" />Raw JSON</button><span class="spacer"></span>
-      <button class="primary" onclick={() => ed.close()}><Icon name="x" />Close</button></div>
+      <button class="primary" onclick={() => ed.requestClose()}><Icon name="x" />Close</button></div>
   </main>
   <ActionDialog {ed} />
   <RawEditorDialog {ed} />

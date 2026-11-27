@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,6 +31,7 @@ import (
 	"github.com/yanmad27/supcua-v2/ui"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 	"github.com/yanmad27/supcua-v2/ui/webview/assets"
+	"github.com/yanmad27/supcua-v2/ui/webview/rpc"
 	"github.com/yanmad27/supcua-v2/updater"
 	"github.com/yanmad27/supcua-v2/version"
 )
@@ -70,8 +72,26 @@ func (l *lateUI) Emit(event string, payload any) {
 	}
 }
 
+// EmitTo implements bridge.TargetEmitter: events are routed to the main window, the editor window
+// or both (editor-window contract §2.4).
+func (l *lateUI) EmitTo(t bridge.Target, event string, payload any) {
+	if st, ok := payload.(bridge.StateDTO); ok && l.onTheme != nil {
+		l.onTheme(st.Theme)
+	}
+	if u := l.p.Load(); u != nil {
+		u.EmitToWindows(t != bridge.TargetEditor, t != bridge.TargetMain, event, payload)
+	}
+}
+
+// hwnd is the ACTIVE MODAL window: the editor while one exists, else main. Capture hooks evaluate
+// it per event from their own thread (editor-window contract §8).
 func (l *lateUI) hwnd() uintptr {
 	if u := l.p.Load(); u != nil {
+		if ed := u.Editor(); ed != nil {
+			if h := ed.HWND(); h != 0 {
+				return h
+			}
+		}
 		return u.HWND()
 	}
 	return 0
@@ -155,7 +175,7 @@ func main() {
 	prodFlag := flag.Bool("selftest-production", false, "run the production startup sequence against a fixture data dir and exit (0 = pass)")
 	fixtureDir := flag.String("fixture", "", "fixture data directory copied into the throw-away data dir (-selftest-production)")
 	label := flag.String("label", "plain", "build label echoed in the self-test result")
-	timeout := flag.Duration("timeout", 90*time.Second, "hard self-test timeout")
+	timeout := flag.Duration("timeout", 210*time.Second, "hard self-test timeout")
 	flag.Parse()
 
 	if *selftestFlag || *noRuntimeFlag || *prodFlag {
@@ -518,7 +538,14 @@ func main() {
 		},
 		Logf: log.Printf,
 	}
-	pageFailed := recovery.Failed
+	pageFailed := func(kind int32) {
+		if kind == 0 && br != nil { // browser process exit: the editor's controller died with it, clean it up first
+			if ev := br.EditorEvents(); ev != nil {
+				ev.SharedBrowserFailed()
+			}
+		}
+		recovery.Failed(kind)
+	}
 	host.OnExit = quitApp
 	host.Rebind = fixed.rebind
 
@@ -533,6 +560,12 @@ func main() {
 		UI:         late,
 		Capture:    &ui.CaptureBackend{HWND: late.hwnd},
 		Host:       host,
+		CallerRole: func(ctx context.Context) string {
+			if c, ok := rpc.CallerFrom(ctx); ok {
+				return c.Role.String()
+			}
+			return ""
+		},
 	}, late)
 
 	initialScripts := br.InitialScripts()
@@ -575,9 +608,20 @@ func main() {
 	pos := appConfig.MainWindowPos
 	var navLogged sync.Once
 	stages.Mark("creating webview")
+	roleLists := bridge.Roles()
+	both := roleLists.Both
+	if selftest != nil {
+		both = append(append([]string(nil), both...), ui.SelfTestMethod) // the editor page's self-test driver reports too
+	}
+	roles := rpc.NewMatrix(both, roleLists.MainOnly, roleLists.EditorOnly, roleLists.SelftestOnly)
+	if selftest != nil {
+		roles = roles.GrantMain(bridge.SelftestMainAllow()) // the selftest-only gen-0 route
+	}
 	webUI, err := webview.New(webview.Config{
 		Title:           title,
 		Methods:         methods,
+		CtxMethods:      br.CtxMethods(),
+		Roles:           roles,
 		Assets:          assets.FS(),
 		DarkTitleBar:    wantDark(appConfig.Theme),
 		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
@@ -608,7 +652,7 @@ func main() {
 			}
 		},
 		OnActivate: func(active bool) {
-			if !active {
+			if !active && !br.EditorOpen() { // while the editor owns capture, main losing focus is not a blur
 				br.NotifyBlur() // ends an active capture (contract §9.5)
 			}
 		},
@@ -623,6 +667,8 @@ func main() {
 		os.Exit(4)
 	}
 	late.p.Store(webUI)
+	edHost := &ui.EditorHost{U: webUI, Events: br.EditorEvents, Blur: br.NotifyBlur}
+	br.AttachEditorHost(edHost, nil, filepath.Join(dataDirectory, "recovered"))
 	host.UI = webUI
 	stages.Mark("webview created and shown")
 	kit.watch.Start()
@@ -731,6 +777,8 @@ func main() {
 
 	if selftest != nil {
 		selftest.UI, selftest.Tray = webUI, tray
+		selftest.Host, selftest.RecoveredDir = edHost, filepath.Join(dataDirectory, "recovered")
+		selftest.EditOpen = func() bool { return appController.Snapshot().EditDialogOpen }
 		if *prodFlag {
 			probe := model.Hotkey{Modifiers: []string{"ctrl", "alt", "shift"}, Key: "f11"}
 			go selftest.RunProduction(ui.ProductionHooks{
@@ -739,6 +787,7 @@ func main() {
 				GlobalActive: appController.IsGlobalActive, RunningScriptID: appController.GetRunningScriptID,
 				GlobalHotkey: appConfig.GlobalHotkey, ProbeHotkey: probe, ProbeID: "fx-probe-1",
 				ExpectFixed: 2, AutoActiveEnabled: appConfig.AutoActiveEnabled, ExpectRow: "Fixture Farm",
+				OverlayHotkey: appConfig.OverlayHotkey,
 			})
 		} else {
 			go selftest.Run()
@@ -756,6 +805,9 @@ func main() {
 	}
 
 	log.Println("supcua-v2 exiting")
+	if selftest != nil {
+		selftest.AfterRun()
+	}
 	if res != nil {
 		os.RemoveAll(dataDirectory)
 		os.Exit(res.Finish(0))

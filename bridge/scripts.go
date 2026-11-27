@@ -78,7 +78,11 @@ func (b *Bridge) scriptsGet(p idParam) (any, error) {
 // queue marks the scripts as saving and hands them to the store in ONE QueueSave call. It is the
 // only path to QueueSave and is atomic with Shutdown closing the queue: it reports false (and
 // queues nothing) once the final flush is due, so no save can follow the flush.
-func (b *Bridge) queue(changed []model.Script) bool {
+func (b *Bridge) queue(changed []model.Script) bool { return b.queueFor(changed, nil) }
+
+// queueFor is queue that also records, for sess, the store revision its own write produced (the
+// etag recovery compares against, editor-window §4.5 amendment A).
+func (b *Bridge) queueFor(changed []model.Script, sess *editorSession) bool {
 	if len(changed) == 0 {
 		return true
 	}
@@ -93,7 +97,14 @@ func (b *Bridge) queue(changed []model.Script) bool {
 		delete(b.failed, s.ID)
 	}
 	b.mu.Unlock()
-	b.d.Store.QueueSave(changed...)
+	if rs, ok := b.d.Store.(RevStore); ok && sess != nil {
+		rev, _ := rs.QueueSaveIf(sess.scriptID, 0, true, nil, changed...)
+		b.mu.Lock()
+		sess.etag = rev
+		b.mu.Unlock()
+	} else {
+		b.d.Store.QueueSave(changed...)
+	}
 	b.qMu.Unlock()
 	b.syncHotkeys()
 	return true

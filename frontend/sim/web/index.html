@@ -21,16 +21,20 @@
   #taskbar { position: absolute; left: 0; right: 0; bottom: 0; background: #1c1c1ce6; border-top: 1px solid #ffffff22; display: flex; align-items: center; justify-content: center; gap: 12px; color: #fff; }
   #taskbar .ico { background: #ffffff26; border-radius: 6px; }
   #taskbar .clock { position: absolute; right: 16px; text-align: right; line-height: 1.25; }
-  #win { position: absolute; background: #2b2b2e; box-shadow: 0 0 0 1px #000a, 0 12px 40px #000a; }
-  #win.inactive { background: #3a3a3d; }
-  #title { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; color: #fff; cursor: default; user-select: none; touch-action: none; }
-  #title .ico { background: #4aa3ff; border-radius: 3px; flex: none; }
-  #title .txt { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #title .g { height: 100%; display: grid; place-items: center; }
-  #title .g:last-child:hover { background: #e81123; }
-  #title .g:not(:last-child):hover { background: #ffffff22; }
-  #client { position: absolute; background: #fff; overflow: hidden; }
-  #client iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: #fff; }
+  .win { position: absolute; background: #2b2b2e; box-shadow: 0 0 0 1px #000a, 0 12px 40px #000a; }
+  .win.inactive { background: #3a3a3d; }
+  .win[data-role="editor"] { z-index: 5; }
+  .win .title { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; color: #fff; cursor: default; user-select: none; touch-action: none; }
+  .win .title .ico { background: #4aa3ff; border-radius: 3px; flex: none; }
+  .win .title .txt { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .win .title .g { height: 100%; display: grid; place-items: center; }
+  .win .title .g:last-child:hover { background: #e81123; }
+  .win .title .g:not(:last-child):hover { background: #ffffff22; }
+  .win .client { position: absolute; background: #fff; overflow: hidden; }
+  .win .client iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: #fff; }
+  .win .blocker { position: absolute; inset: 0; z-index: 4; background: #000a; display: none; cursor: not-allowed; }
+  .win[data-blocked="true"] .blocker { display: block; }
+  .win[data-blocked="true"] iframe { pointer-events: none; }
   .h { position: absolute; touch-action: none; }
   body.dragging iframe { pointer-events: none; }
 </style>
@@ -46,10 +50,6 @@
   </div>
   <div id="area"><div id="frame"><div id="screen">
     <div id="wm">Browser simulation — not WebView2</div>
-    <div id="win">
-      <div id="title"><div class="ico"></div><div class="txt"></div><div class="g">&#x2013;</div><div class="g">&#x25A1;</div><div class="g">&#x2715;</div></div>
-      <div id="client"><iframe id="app-frame" title="supcua UI"></iframe></div>
-    </div>
     <div id="taskbar"></div>
   </div></div></div>
 </div>

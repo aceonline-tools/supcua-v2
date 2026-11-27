@@ -57,6 +57,37 @@ type fakeStore struct {
 	flushHook func()
 	flushOK   bool
 	deleteEr  error
+	revs      map[string]uint64
+	revN      uint64
+	deferred  []model.Script // failing writes queued by QueueSaveIf: reported at the next flush
+}
+
+func (f *fakeStore) bumpLocked(id string) {
+	if f.revs == nil {
+		f.revs = map[string]uint64{}
+	}
+	f.revN++
+	f.revs[id] = f.revN
+}
+func (f *fakeStore) Revision(id string) uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.revs[id]
+}
+func (f *fakeStore) QueueSaveIf(id string, expect uint64, anyRev bool, admit func() bool, scripts ...model.Script) (uint64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if (!anyRev && f.revs[id] != expect) || (admit != nil && !admit()) {
+		return f.revs[id], false
+	}
+	f.queued = append(f.queued, append([]model.Script(nil), scripts...))
+	for _, s := range scripts {
+		f.bumpLocked(s.ID)
+		if f.failIDs[s.ID] {
+			f.deferred = append(f.deferred, s)
+		}
+	}
+	return f.revs[id], true
 }
 
 func newFakeStore(initial ...model.Script) *fakeStore {
@@ -72,6 +103,7 @@ func (f *fakeStore) Delete(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, id)
+	f.bumpLocked(id)
 	return f.deleteEr
 }
 func (f *fakeStore) NameOrFileTaken(name string) bool {
@@ -90,6 +122,7 @@ func (f *fakeStore) QueueSave(scripts ...model.Script) {
 	hook := f.hook
 	var failed []model.Script
 	for _, s := range scripts {
+		f.bumpLocked(s.ID)
 		if f.failIDs[s.ID] {
 			failed = append(failed, s)
 		}
@@ -102,6 +135,15 @@ func (f *fakeStore) QueueSave(scripts ...model.Script) {
 	}
 }
 func (f *fakeStore) FlushSaves(time.Duration) bool {
+	f.mu.Lock()
+	failed, hook := f.deferred, f.hook
+	f.deferred = nil
+	f.mu.Unlock()
+	for _, s := range failed {
+		if hook != nil {
+			hook(s, errors.New("disk full"))
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.flushed++
@@ -352,4 +394,11 @@ func wantCode(t *testing.T, err error, code string) *Error {
 
 func script(id, name, group string, enabled bool) model.Script {
 	return model.Script{ID: id, Name: name, Group: group, Enabled: enabled, RunMode: "once", HotkeyMode: "toggle", Actions: []model.Action{}}
+}
+
+// curSess is the bridge's live session (detached ones excluded), read under Bridge.mu.
+func (b *Bridge) curSess() *editorSession {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.liveLocked()
 }

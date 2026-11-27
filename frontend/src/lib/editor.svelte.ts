@@ -1,12 +1,18 @@
 import { ApiError, type Client } from '../api/client';
 import { recordEvent, sequenceOf, type KeyPressAction } from './keySequence';
-import type { Action, ActionSpec, CaptureEndReason, HotkeyConflict, HotkeyField, Script } from '../api/types';
-import type { AppStore } from './store.svelte';
+import type { Action, ActionSpec, CaptureEndReason, CloseDecision, HotkeyConflict, HotkeyField, Script } from '../api/types';
+import { CheckpointSender, draftBytes, MAX_DRAFT_BYTES } from './checkpoint';
 import { dropIndex, insertIndex } from './reorder';
+import { pageGen } from './role';
 
-export type CloseResult = 'closed' | 'conflict' | 'failed' | 'noop';
+export interface EditorHost {
+  error: string;
+  scripts: { id: string; name: string }[];
+}
+
 type SaveResult = 'ok' | 'stale' | 'conflict' | 'name' | 'failed';
 const MAX_SAVE_PASSES = 5;
+export const GUARD_PING_MS = 1000;
 type CaptureEventName = 'hotkey' | 'key' | 'mouse' | 'ended';
 export type Capturing = HotkeyField | 'key' | 'keys' | null;
 
@@ -34,9 +40,19 @@ export class EditorStore {
   conflicts = $state<HotkeyConflict[] | null>(null);
   actionDialog = $state<ActionDialogState | null>(null);
   raw = $state<{ text: string; error: string } | null>(null);
+  isNew = $state(false);
+  groups = $state<string[]>([]);
   private closing = false;
-  private closePromise: Promise<CloseResult> | null = null;
-  private gen = 0;
+  private guardPromise: Promise<void> | null = null;
+  private rev = 0;
+  private savedRev = 0;
+  private baseRev = 0;
+  private nameError: 'NAME_EMPTY' | 'NAME_TAKEN' | null = null;
+  private conflictWaiter: ((override: boolean) => void) | null = null;
+  private discardWaiter: ((discard: boolean) => void) | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private pingBusy = false;
+  private checkpoint = new CheckpointSender(() => this.sendCheckpoint());
   discardPrompt = $state<string | null>(null);
   // Host-side capture is single-mode (bridge/capture.go). Every start returns a monotonic capture_id and
   // every capture event carries one; only events for the current capture are acted on. Transitions are
@@ -57,12 +73,13 @@ export class EditorStore {
   private lastReqOp = 0;
   private pendingStarts = 0;
 
-  constructor(private api: Client, private app: AppStore) {
+  constructor(private api: Client, private app: EditorHost) {
     api.on('capture.hotkey', (e) => this.onCaptureEvent('hotkey', e));
     api.on('capture.key', (e) => this.onCaptureEvent('key', e));
     api.on('capture.mouse', (e) => this.onCaptureEvent('mouse', e));
     api.on('capture.ended', (e) => this.onCaptureEvent('ended', e));
     api.on('editor.reset', (e) => this.onReset(e.session_id));
+    api.on('editor.closeRequested', (e) => this.onCloseRequested(e));
     if (typeof window !== 'undefined') window.addEventListener('focus', () => this.onActivated());
   }
 
@@ -72,36 +89,52 @@ export class EditorStore {
     const name = sc.name.trim();
     if (!name) return { saved: false, text: 'Not saved: name required' };
     if (this.app.scripts.some((x) => x.id !== sc.id && x.name.toLowerCase() === name.toLowerCase())) return { saved: false, text: 'Not saved: name taken' };
+    if (this.nameError) return { saved: false, text: this.nameError === 'NAME_EMPTY' ? 'Not saved: name required' : 'Not saved: name taken' };
     if (this.saveFailed) return { saved: false, text: 'Not saved: save failed' };
     return this.dirty ? { saved: false, text: 'Not saved' } : { saved: true, text: 'Saved' };
   }
 
-  async open(id: string | null): Promise<void> {
-    if (this.sessionId) {
-      if (id !== null && id === this.script?.id) this.app.route = { name: 'editor', id };
-      else this.app.error = 'Another editor is already open. Close it first.';
-      return;
-    }
+  // The editor window's session: the host decides which script (editor.openWindow) and the page only
+  // attaches to it.
+  async open(): Promise<boolean> {
+    if (this.sessionId) return true;
     try {
-      const r = await this.api.call('editor.open', { id });
+      const r = await this.api.call('editor.open', { id: null }); // the host's pending id decides which script
       this.sessionId = r.sessionId;
       this.script = r.script;
       this.catalog = r.catalog;
-      // A new script has never been saved: closing must persist it (autosave-on-close parity).
-      this.dirty = id === null;
+      this.isNew = r.isNew === true;
+      this.groups = r.groups ?? [];
+      this.rev = this.savedRev = this.baseRev = r.revision ?? 0;
+      this.dirty = false;
     } catch (e) {
-      this.app.error = e instanceof ApiError ? (e.code === 'EDITOR_BUSY' ? 'Another editor is already open.' : e.message) : 'Failed to open editor';
-      return;
+      this.app.error = e instanceof ApiError ? e.message : 'Failed to open editor';
+      return false;
     }
-    this.app.route = { name: 'editor', id };
     await this.refreshLabels();
     await this.enqueue(() => this.doResume());
+    return true;
   }
 
   markDirty(): void {
-    this.gen++;
+    this.rev++;
     this.dirty = true;
     this.saveFailed = false;
+    this.nameError = null;
+    this.checkpoint.touch();
+  }
+
+  private async sendCheckpoint(): Promise<void> {
+    const sid = this.sessionId;
+    if (!sid || !this.script || !this.dirty || this.closing) return;
+    const revision = this.rev;
+    const script = $state.snapshot(this.script);
+    if (draftBytes(script) > MAX_DRAFT_BYTES) return;
+    try {
+      await this.api.call('editor.checkpoint', { sessionId: sid, revision, script });
+    } catch (e) {
+      if (e instanceof ApiError && ['EDITOR_CLOSED', 'STALE_GEN', 'SHUTTING_DOWN', 'SESSION_CLOSING'].includes(e.code)) this.checkpoint.stop();
+    }
   }
 
   private async refreshLabels(): Promise<void> {
@@ -334,9 +367,7 @@ export class EditorStore {
   private onReset(sessionId: string): void {
     if (!this.sessionId || sessionId !== this.sessionId) return;
     this.reset();
-    this.app.route = { name: 'scripts' };
     this.app.error = 'The editor session was reset; unsaved changes were lost.';
-    void this.app.loadScripts().catch(() => {});
   }
 
   clearHotkey(field: HotkeyField): void {
@@ -391,35 +422,39 @@ export class EditorStore {
   private async save(opts: { override?: boolean; ignore?: boolean } = {}): Promise<SaveResult> {
     if (!this.script || !this.sessionId) return 'failed';
     const sid = this.sessionId;
-    const gen = this.gen;
+    if (this.rev === 0) this.rev = 1;
+    const snap = this.rev;
     try {
       const r = await this.api.call('editor.save', {
-        sessionId: sid, script: $state.snapshot(this.script),
+        sessionId: sid, script: $state.snapshot(this.script), snapshotRev: snap,
         ...(opts.override ? { overrideConflicts: true } : {}), ...(opts.ignore ? { ignore_conflicts: true } : {}),
       });
       if (this.sessionId !== sid || !this.script) return 'failed';
       this.saveFailed = false;
-      if (gen !== this.gen) {
+      this.nameError = null;
+      this.savedRev = Math.max(this.savedRev, r.savedRev ?? snap);
+      if (snap !== this.rev) {
         // Edited while the save was in flight: keep the newer draft, adopt only the persisted identity.
         this.script.id = r.script.id;
         return 'stale';
       }
       this.script = r.script;
       this.dirty = false;
+      this.checkpoint.cancel();
       return 'ok';
     } catch (e) {
       if (this.sessionId !== sid) return 'failed';
       if (e instanceof ApiError) {
-        if (gen !== this.gen) return 'stale'; // verdict on an outdated snapshot: re-save the newer draft
+        if (snap !== this.rev) return 'stale'; // verdict on an outdated snapshot: re-save the newer draft
         if (e.code === 'HOTKEY_CONFLICT') { this.conflicts = e.body.conflicts ?? []; return 'conflict'; }
-        if (e.code === 'NAME_EMPTY' || e.code === 'NAME_TAKEN') return 'name';
+        if (e.code === 'NAME_EMPTY' || e.code === 'NAME_TAKEN') { this.nameError = e.code; return 'name'; }
       }
       this.saveFailed = true;
       return 'failed';
     }
   }
 
-  private async saveUntilClean(opts: { override?: boolean } = {}): Promise<SaveResult> {
+  private async saveUntilClean(opts: { override?: boolean; ignore?: boolean } = {}): Promise<SaveResult> {
     for (let i = 0; i < MAX_SAVE_PASSES; i++) {
       const r = await this.save(opts);
       if (r !== 'stale') return r;
@@ -427,96 +462,124 @@ export class EditorStore {
     return 'failed';
   }
 
-  // A failed or invalid save never discards the draft: the user must explicitly choose to discard.
-  // Conflicts wait for the user's override choice.
-  close(): Promise<CloseResult> {
-    if (this.closePromise) return this.closePromise;
-    if (!this.sessionId) return Promise.resolve('noop');
-    const p = this.doClose().then((r) => { if (r === 'conflict' || r === 'failed') this.reconcile(); return r; }).finally(() => { this.closePromise = null; });
-    this.closePromise = p;
+  // The in-page Close button: ask the host to start the one close path (the same as the window's X).
+  requestClose(): Promise<void> {
+    return this.api.call('editor.requestClose').then(() => {}, () => {});
+  }
+
+  private onCloseRequested(e: { gen: number; sessionId?: string; reason: 'user' | 'app-closing' | 'owner-closing' }): void {
+    const mine = pageGen();
+    if (mine !== 0 && e.gen !== mine) return;
+    if (e.sessionId && this.sessionId && e.sessionId !== this.sessionId) return;
+    void this.guard(e.reason === 'app-closing');
+  }
+
+  // The guard of a close request (contract §4.3). One save at most per pass; the page never releases the
+  // session itself: it only reports saved / discard / cancel with closeDecision.
+  guard(shutdown = false): Promise<void> {
+    if (this.guardPromise) return this.guardPromise;
+    if (!this.sessionId) return Promise.resolve();
+    const p = this.runGuard(shutdown).finally(() => { this.guardPromise = null; });
+    this.guardPromise = p;
     return p;
   }
 
-  private async doClose(): Promise<CloseResult> {
+  private async runGuard(shutdown: boolean): Promise<void> {
+    const sid = this.sessionId;
+    if (!sid) return;
     this.closing = true;
+    this.checkpoint.cancel();
+    let decision: CloseDecision = 'discard';
     try {
-      if (this.dirty) {
-        const r = await this.saveUntilClean();
-        const untouched = this.gen === 0 && this.script?.id === '' && !this.script.name.trim();
-        if (!this.sessionId) return 'noop';
-        if (r === 'conflict') return 'conflict';
-        if (r === 'failed' || (r === 'name' && !untouched)) {
-          this.discardPrompt = r === 'name' ? 'Script not saved: ' + this.indicator.text.replace('Not saved: ', '') + '.' : 'Saving the script failed.';
-          return 'failed';
-        }
-      }
-      await this.finish();
-      return 'closed';
+      decision = await this.decide(shutdown);
     } finally {
+      this.stopPing();
+      this.conflicts = null;
+      this.discardPrompt = null;
+    }
+    if (this.sessionId !== sid) return;
+    try {
+      await this.api.call('editor.closeDecision', { sessionId: sid, decision });
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.code === 'BAD_REQUEST') { this.app.error = 'Could not close the editor.'; decision = 'cancel'; }
+    }
+    if (decision === 'cancel' || !this.sessionId) {
       this.closing = false;
+      this.reconcile();
     }
   }
 
-  async resolveConflict(override: boolean): Promise<CloseResult> {
-    this.conflicts = null;
-    if (!override) { this.app.pendingRoute = null; this.reconcile(); }
-    if (!override || !this.sessionId) return 'noop';
-    this.closing = true;
-    try {
-      const r = await this.saveUntilClean({ override: true });
-      if (!this.sessionId) return 'noop';
-      if (r === 'ok') { await this.finish(); return 'closed'; }
-      this.closing = false;
-      if (r !== 'conflict') this.discardPrompt = r === 'name' ? 'Script not saved: ' + this.indicator.text.replace('Not saved: ', '') + '.' : 'Saving the script failed.';
-      this.reconcile();
-      return r === 'conflict' ? 'conflict' : 'failed';
-    } finally {
-      this.closing = false;
+  private async decide(shutdown: boolean): Promise<CloseDecision> {
+    if (!this.dirty) return 'discard';
+    let override = false;
+    for (;;) {
+      const r = await this.saveUntilClean({ override, ignore: shutdown });
+      if (r === 'ok') return 'saved';
+      const untouched = this.rev === this.baseRev && this.isNew && !this.script?.name.trim();
+      if (r === 'name' && untouched) return 'discard';
+      if (shutdown) return 'cancel'; // a draft that cannot be saved is recovered by the host (discard + recovery)
+      if (r === 'conflict') {
+        const yes = await this.waitConflict();
+        if (!yes) return 'cancel';
+        override = true;
+        continue;
+      }
+      const why = r === 'name' ? 'Script not saved: ' + this.indicator.text.replace('Not saved: ', '') + '.' : 'Saving the script failed.';
+      return (await this.waitDiscard(why)) ? 'discard' : 'cancel';
     }
+  }
+
+  private waitConflict(): Promise<boolean> {
+    this.startPing();
+    return new Promise((resolve) => { this.conflictWaiter = resolve; });
+  }
+
+  private waitDiscard(text: string): Promise<boolean> {
+    this.discardPrompt = text;
+    this.startPing();
+    return new Promise((resolve) => { this.discardWaiter = resolve; });
+  }
+
+  resolveConflict(override: boolean): void {
+    this.conflicts = null;
+    const w = this.conflictWaiter;
+    this.conflictWaiter = null;
+    w?.(override);
   }
 
   keepEditing(): void {
     this.discardPrompt = null;
-    this.app.pendingRoute = null;
-    this.reconcile();
+    const w = this.discardWaiter;
+    this.discardWaiter = null;
+    w?.(false);
   }
 
-  async discardAndClose(): Promise<void> {
-    if (!this.sessionId || this.discardPrompt === null) return;
-    this.closing = true;
-    try {
-      await this.finish();
-    } finally {
-      this.closing = false;
-    }
+  discardAndClose(): void {
+    if (this.discardPrompt === null) return;
+    this.discardPrompt = null;
+    const w = this.discardWaiter;
+    this.discardWaiter = null;
+    w?.(true);
   }
 
-  // Native window close: autosave then release the session; conflicts cannot be prompted here.
-  async flushForClose(): Promise<void> {
-    if (this.closePromise) await this.closePromise.catch(() => {});
-    if (!this.sessionId) return;
-    this.closing = true;
-    this.conflicts = null;
-    try {
-      if (this.dirty) await this.save({ ignore: true }); // parity with the old dialog's autosave on close
-    } finally {
-      await this.finish();
-      this.closing = false;
-    }
+  // guardActive keeps the host's close lease alive (§4.5) only while a guard dialog is open and this page runs.
+  private startPing(): void {
+    this.stopPing();
+    const ping = () => {
+      const sid = this.sessionId;
+      if (!sid || this.pingBusy) return;
+      this.pingBusy = true;
+      this.api.call('editor.guardActive', { sessionId: sid }).catch((e) => {
+        if (e instanceof ApiError && ['STALE_GEN', 'EDITOR_CLOSED', 'SHUTTING_DOWN'].includes(e.code)) this.stopPing();
+      }).finally(() => { this.pingBusy = false; });
+    };
+    ping();
+    this.pingTimer = setInterval(ping, GUARD_PING_MS);
   }
 
-  private async finish(): Promise<void> {
-    const sessionId = this.sessionId;
-    try {
-      if (sessionId) await this.api.call('editor.close', { sessionId, autosave: false });
-    } catch {
-      // the host forces edit mode off on its side; nothing more to do here
-    } finally {
-      this.reset();
-      this.app.route = this.app.pendingRoute ?? { name: 'scripts' };
-      this.app.pendingRoute = null;
-      await this.app.loadScripts().catch(() => {});
-    }
+  private stopPing(): void {
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
   }
 
   private reset(): void {
@@ -541,7 +604,13 @@ export class EditorStore {
     this.actionDialog = null;
     this.raw = null;
     this.discardPrompt = null;
-    this.gen = 0;
+    this.conflictWaiter = null;
+    this.discardWaiter = null;
+    this.stopPing();
+    this.checkpoint.cancel();
+    this.rev = this.savedRev = this.baseRev = 0;
+    this.nameError = null;
+    this.closing = false;
   }
 
   async openRaw(): Promise<void> {

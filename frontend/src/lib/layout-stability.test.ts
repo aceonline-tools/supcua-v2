@@ -5,7 +5,7 @@ import keyseq from '../components/KeySequenceInput.svelte?raw';
 
 describe('layout stability rules', () => {
   it('reserves scrollbar space on every scroll container', () => {
-    for (const s of ['main', '.editor-main', '.action-list .list', '.combo-list', '.dialog-body', 'textarea']) {
+    for (const s of ['main', '.editor-col', '.action-list .list', '.combo-list', '.dialog-body', 'textarea']) {
       expect(css).toMatch(new RegExp(`${s.replace('.', '\\.')}[^{]*\\{scrollbar-gutter:stable`));
     }
     expect(keyseq).toContain('scrollbar-gutter: stable');
@@ -28,6 +28,16 @@ describe('layout stability rules', () => {
   it('keeps banners and inline errors out of the flow', () => {
         expect(css).toMatch(/\.msg-float\{position:absolute/);
     expect(css).toMatch(/\.msg-slot\{height/);
+  });
+  it('the editor root never scrolls: the grid shrinks and the form columns and the list scroll themselves', () => {
+    expect(css).toMatch(/\.editor-main>\.editor-grid\{flex:1 1 0;min-height:0;grid-template-rows:minmax\(0,1fr\)\}/);
+    expect(css).toMatch(/\.editor-col\{display:flex;flex-direction:column;gap:8px;overflow-y:auto\}/);
+    expect(css).toMatch(/\.action-list \.list\{[^}]*overflow-y:auto/);
+    expect(css).toMatch(/html\[data-measure\] \.editor-main>\.editor-grid\{flex:none/);
+    expect(css).not.toMatch(/html\[data-measure\] \.editor-col\{overflow:visible\}/); // the gutter must be reserved in measure mode too
+    expect(css).toMatch(/\.editor-main\{[^}]*overflow:hidden/);
+    expect(css).toMatch(/\.editor-main\{scrollbar-gutter:auto\}/); // the root never scrolls: no reserved gutter
+    expect(css).toMatch(/calc\(300px \+ var\(--sbw,0px\)\)/);
   });
   it('never changes box metrics on selection', () => {
     expect(css).not.toMatch(/\.(nav\.active|chosen|selected)\{[^}]*(font-weight|border-width|padding|margin)/);

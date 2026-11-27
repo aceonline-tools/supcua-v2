@@ -146,6 +146,19 @@ func (m *CaptureManager) End(reason string) {
 }
 
 // expire is the idle-timer path: it ends generation gen only if its deadline really passed.
+// EndSession ends the active capture only when it belongs to session: an older editor window's
+// cleanup must never end a capture started by its replacement.
+func (m *CaptureManager) EndSession(session, reason string) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.mu.Lock()
+	mine := m.session == session && session != ""
+	m.mu.Unlock()
+	if mine {
+		m.endLocked(0, reason, true, false)
+	}
+}
+
 func (m *CaptureManager) expire(gen uint64) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()

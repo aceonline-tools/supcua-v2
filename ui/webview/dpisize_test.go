@@ -93,3 +93,9 @@ func TestDefaultHeightFitsScriptsContent(t *testing.T) {
 		}
 	}
 }
+
+func TestCapDim(t *testing.T) {
+	if capDim(736, 0) != 736 || capDim(736, 700) != 700 || capDim(500, 700) != 500 {
+		t.Fatal("capDim")
+	}
+}

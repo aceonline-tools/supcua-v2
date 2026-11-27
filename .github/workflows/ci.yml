@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      stress:
+        description: "Also run the one-off E1b race-test stress proof (-count=500 on Windows)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -50,6 +55,25 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - run: go test -count=1 ./...
+      - name: Standing guard (E1b race tests, 20 runs)
+        run: go test -count=20 -run 'TestE1b' ./bridge
+      - name: Recovery rename evidence (error code with the destination held open)
+        run: go test -v -count=1 -run TestRenameRetryWaitsOutAReaderHoldingTheDestinationWindows ./bridge
+
+  stress:
+    if: github.event_name == 'workflow_dispatch' && inputs.stress
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: E1b race tests, 500 runs (one-off proof)
+        run: go test -timeout 35m -count=500 -run 'TestE1b' ./bridge
 
   race-macos:
     runs-on: macos-latest
@@ -166,11 +190,12 @@ jobs:
               $exe = Join-Path $PWD "out/$v/supcua-v2.exe"
               $o = "out/$v/stdout$mode.txt"; $e = "out/$v/stderr$mode.txt"
               $env:SUPCUA_OVERLAY_SHOTS = Join-Path $PWD "out/overlay-shots/$v-$name"
+              $env:SUPCUA_EDITOR_SHOTS = Join-Path $PWD "out/editor-window-shots/$v-$name"
               $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru `
                    -RedirectStandardOutput $o -RedirectStandardError $e
-              if (-not $p.WaitForExit(120000)) {
+              if (-not $p.WaitForExit(240000)) {
                 $p.Kill($true)
-                Write-Host "$v $mode TIMEOUT after 120s"
+                Write-Host "$v $mode TIMEOUT after 240s"
                 $fail = 1
                 continue
               }
@@ -203,9 +228,10 @@ jobs:
             $log = Join-Path $dir "supcua-v2.log"
             Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
             $o = "$dir/stdout-prod.txt"; $e = "$dir/stderr-prod.txt"
+            $env:SUPCUA_EDITOR_SHOTS = Join-Path $PWD "out/editor-window-shots/$v-production"
             $p = Start-Process -FilePath (Join-Path $dir "supcua-v2.exe") -ArgumentList "-selftest-production","-fixture",$fixture,"-label",$v `
                  -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-            if (-not $p.WaitForExit(120000)) { $p.Kill($true); Write-Host "::error::$v selftest-production TIMEOUT"; $fail = 1 }
+            if (-not $p.WaitForExit(240000)) { $p.Kill($true); Write-Host "::error::$v selftest-production TIMEOUT"; $fail = 1 }
             else { Write-Host "$v selftest-production exit=$($p.ExitCode)"; if ($p.ExitCode -ne 0) { $fail = 1 } }
             Get-Content $o, $e -ErrorAction SilentlyContinue
             Copy-Item $o (Join-Path $results "$v-prod.stdout.txt") -ErrorAction SilentlyContinue
@@ -386,6 +412,13 @@ jobs:
         with:
           name: overlay-shots
           path: out/overlay-shots/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: editor-window-shots
+          path: out/editor-window-shots/
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v7

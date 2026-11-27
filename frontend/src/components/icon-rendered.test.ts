@@ -4,6 +4,8 @@ import { createClient } from '../api/client';
 import { MockBackend, seedFromQuery } from '../api/mock';
 import { AppStore } from '../lib/store.svelte';
 import App from '../App.svelte';
+import EditorApp from './EditorApp.svelte';
+import { editorStore } from '../lib/test-editor';
 import Toggle from './Toggle.svelte';
 
 let host: HTMLElement;
@@ -71,8 +73,10 @@ describe('rendered buttons all contain an svg icon', () => {
   });
 
   it('editor, action dialog, raw JSON, discard and conflict dialogs', async () => {
-    await boot();
-    await store.openEditor('s3');
+    host = document.createElement('div');
+    document.body.replaceChildren(host);
+    store = await editorStore(new MockBackend(), 's3');
+    app = mount(EditorApp, { target: host, props: { store } });
     await settle();
     const ed = store.editor;
     expectIcons('editor', 25);

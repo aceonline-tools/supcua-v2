@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { flushSync, mount } from 'svelte';
 import { createClient } from '../api/client';
 import { MockBackend } from '../api/mock';
-import { AppStore } from '../lib/store.svelte';
+import type { AppStore } from '../lib/store.svelte';
+import { decisions, editorStore } from '../lib/test-editor';
 import EditorScreen from './EditorScreen.svelte';
 
 let mock: MockBackend;
@@ -20,9 +21,7 @@ beforeEach(async () => {
   host = document.createElement('div');
   document.body.replaceChildren(host);
   mock = new MockBackend();
-  store = new AppStore(createClient(mock));
-  await store.init();
-  await store.openEditor('s3');
+  store = await editorStore(mock, 's3');
   mount(EditorScreen, { target: host, props: { store } });
   flushSync();
 });
@@ -137,7 +136,8 @@ describe('group combobox', () => {
   it('saves the new group and the Scripts list shows it', async () => {
     type('Raiders');
     key('Enter');
-    expect(await store.editor.close()).toBe('closed');
+    await store.editor.guard();
+    expect(decisions(mock).at(-1)).toBe('saved');
     const saved = mock.calls.find((c) => c.method === 'editor.save')!.params as { script: { group: string } };
     expect(saved.script.group).toBe('Raiders');
     await store.loadScripts();

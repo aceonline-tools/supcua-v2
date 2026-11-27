@@ -68,6 +68,29 @@ func absDiff(a, b uint32) uint32 {
 	return b - a
 }
 
+func sdiff(a, b uint32) int64 { return int64(b) - int64(a) }
+
+// CheckSlope is the leak check over a baseline b0 and two identical batches (b1, b2): it fails on
+// growth that persists into the second batch (a per-iteration leak grows in both), tolerates a
+// bounded one-time step in the first (runtime/thread-pool growth), and keeps an absolute backstop
+// of twice the tolerance over both batches. Threads are reported to attribute a handle step.
+func (r *Result) CheckSlope(b0, b1, b2 Resources) bool {
+	r.mu.Lock()
+	r.Before, r.After = &b0, &b2
+	r.mu.Unlock()
+	check := func(name string, v0, v1, v2, tol uint32) bool {
+		d1, d2, total := sdiff(v0, v1), sdiff(v1, v2), sdiff(v0, v2)
+		ok := d2 <= int64(tol) && total <= 2*int64(tol)
+		return r.Step(name+" flat (slope over two batches)", ok,
+			fmt.Sprintf("%d -> %d -> %d (batch1 %+d, batch2 %+d, total %+d; tol %d per batch, backstop %d) threads %d -> %d -> %d",
+				v0, v1, v2, d1, d2, total, tol, 2*tol, b0.Threads, b1.Threads, b2.Threads))
+	}
+	a := check("GDI objects", b0.GDI, b1.GDI, b2.GDI, GDITolerance)
+	b := check("USER objects", b0.User, b1.User, b2.User, UserTolerance)
+	c := check("process handles", b0.Handles, b1.Handles, b2.Handles, HandleTolerance)
+	return a && b && c
+}
+
 // CheckFlat records the GDI/USER/handle flatness steps; returns true if all are within tolerance.
 func (r *Result) CheckFlat(before, after Resources) bool {
 	r.mu.Lock()
@@ -141,7 +164,7 @@ func RunNoRuntimeSelftest(r *Result, timeout time.Duration) int {
 	r.Message = msg
 	r.Step("message contains Evergreen installer link", strings.Contains(msg, RuntimeInstallerURL), RuntimeInstallerURL)
 
-	hwnd, err := createHostWindow("noruntime", Bounds{}, false, 0, 0, nil)
+	hwnd, err := createHostWindow("noruntime", Bounds{}, false, 0, 0, nil, 0)
 	if err != nil {
 		r.Step("host window", false, err.Error())
 		return r.Finish(1)

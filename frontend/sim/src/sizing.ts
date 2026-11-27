@@ -7,7 +7,7 @@ export const BASE_DPI = 96;
 export const SCREEN = { w: 1920, h: 1080 } as const;
 export const SCALINGS = [100, 125, 150] as const;
 export type Scaling = (typeof SCALINGS)[number];
-export const VERSIONS = ['v1.2.1', 'v1.2.3', 'v1.3.0'] as const;
+export const VERSIONS = ['v1.2.1', 'v1.2.3', 'v1.3.0', 'current'] as const;
 export type VersionId = (typeof VERSIONS)[number];
 
 export interface Rect { L: number; T: number; R: number; B: number }
@@ -68,7 +68,22 @@ export interface VersionRules {
   note: string;
 }
 
+/** Versions whose editor is a second host window (contract editor-window.md); older tags keep the in-main editor. */
+export const EDITOR_WINDOW_VERSIONS: readonly VersionId[] = ['current'];
+export const hasEditorWindow = (v: VersionId): boolean => EDITOR_WINDOW_VERSIONS.includes(v);
+
+const v130 = (id: VersionId): VersionRules => ({
+  id,
+  minSize: (dpi, work) => scaledMin(dpi, MIN_W, MIN_H, work.R - work.L, work.B - work.T),
+  initial: (dpi, work) => {
+    const [x, y, w, h] = fitRect(dpi, work, CASCADE.x, CASCADE.y, MIN_W, MIN_H, 1000, 960);
+    return { x, y, w, h };
+  },
+  note: 'DPI-scaled 1000x960 default and minimum; fitRect clamps to the work area; scaledMin capped',
+});
+
 export const RULES: Record<VersionId, VersionRules> = {
+  current: { ...v130('current'), note: 'branch head: v1.3.0 main-window rules plus the editor as a second window' },
   'v1.2.1': {
     id: 'v1.2.1',
     minSize: () => [MIN_W, MIN_H],
@@ -84,15 +99,7 @@ export const RULES: Record<VersionId, VersionRules> = {
     },
     note: 'DPI-scaled 1000x700 default and minimum; fitRect clamps to the work area; scaledMin capped',
   },
-  'v1.3.0': {
-    id: 'v1.3.0',
-    minSize: (dpi, work) => scaledMin(dpi, MIN_W, MIN_H, work.R - work.L, work.B - work.T),
-    initial: (dpi, work) => {
-      const [x, y, w, h] = fitRect(dpi, work, CASCADE.x, CASCADE.y, MIN_W, MIN_H, 1000, 960);
-      return { x, y, w, h };
-    },
-    note: 'DPI-scaled 1000x960 default and minimum; fitRect clamps to the work area; scaledMin capped',
-  },
+  'v1.3.0': v130('v1.3.0'),
 };
 
 // Assumed Windows 11 frame metrics (not read from the Go code): 8 px border and 31 px caption at 96 DPI.
@@ -137,4 +144,58 @@ export function resizeRect(start: Placement, edge: Edge, dx: number, dy: number,
     y = start.y + start.h - h;
   }
   return { x, y, w, h };
+}
+
+// Editor window bounds: TypeScript port of bridge/bounds.go computeEditorBounds (no remembered-bounds layout-version branch).
+export const EDITOR_MIN_CSS = { w: 720, h: 480 } as const;
+export const EDITOR_FALLBACK_CSS = { w: 960, h: 720 } as const;
+const MAX_CSS = 8192;
+export const scalePx = (css: number, dpi: number): number => Math.floor((css * dpi + 95) / 96);
+
+export const editorFrame = (dpi: number): { w: number; h: number } => {
+  const { border, caption } = frameMetrics(dpi);
+  return { w: 2 * border, h: caption + border };
+};
+
+export const editorMinSize = (dpi: number, work: Rect): [number, number] => {
+  const f = editorFrame(dpi);
+  return [Math.min(scalePx(EDITOR_MIN_CSS.w, dpi) + f.w, work.R - work.L), Math.min(scalePx(EDITOR_MIN_CSS.h, dpi) + f.h, work.B - work.T)];
+};
+
+export interface EditorBounds { place: Placement; clamped: boolean; widthClamped: boolean; remeasureCssW: number; fromMemory: boolean }
+
+export function editorBounds(
+  cssW: number, cssH: number, dpi: number, work: Rect, owner: { cx: number; cy: number }, remembered: Placement | null,
+): EditorBounds {
+  const ww = work.R - work.L;
+  const wh = work.B - work.T;
+  const f = editorFrame(dpi);
+  const [minW, minH] = editorMinSize(dpi, work);
+  const clampTo = (v: number, lo: number, hi: number) => clampInt(v, lo, Math.max(lo, hi));
+  if (remembered) {
+    const w = clampTo(remembered.w, minW, ww);
+    const h = clampTo(remembered.h, minH, wh);
+    return {
+      place: { w, h, x: clampTo(remembered.x, work.L, work.R - w), y: clampTo(remembered.y, work.T, work.B - h) },
+      clamped: false, widthClamped: false, remeasureCssW: 0, fromMemory: true,
+    };
+  }
+  const cw = clampTo(cssW, EDITOR_MIN_CSS.w, MAX_CSS);
+  const ch = clampTo(cssH, EDITOR_MIN_CSS.h, MAX_CSS);
+  let w = scalePx(cw, dpi) + f.w;
+  let h = scalePx(ch, dpi) + f.h;
+  let clamped = false;
+  let widthClamped = false;
+  let remeasureCssW = 0;
+  if (w > ww) {
+    w = ww; clamped = widthClamped = true;
+    remeasureCssW = Math.max(EDITOR_MIN_CSS.w, Math.floor(((ww - f.w) * 96) / dpi));
+  }
+  if (h > wh) { h = wh; clamped = true; }
+  w = Math.max(w, minW);
+  h = Math.max(h, minH);
+  return {
+    place: { w, h, x: clampTo(owner.cx - Math.trunc(w / 2), work.L, work.R - w), y: clampTo(owner.cy - Math.trunc(h / 2), work.T, work.B - h) },
+    clamped, widthClamped, remeasureCssW, fromMemory: false,
+  };
 }

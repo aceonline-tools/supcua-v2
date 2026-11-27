@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { createClient } from '../api/client';
 import { MockBackend } from '../api/mock';
-import { AppStore } from '../lib/store.svelte';
+import type { AppStore } from '../lib/store.svelte';
+import { decisions, editorStore } from '../lib/test-editor';
 import EditorScreen from './EditorScreen.svelte';
 import css from '../app.css?inline';
 
@@ -21,9 +22,7 @@ beforeEach(async () => {
   host = document.createElement('div');
   document.body.replaceChildren(host);
   mock = new MockBackend();
-  store = new AppStore(createClient(mock));
-  await store.init();
-  await store.openEditor('s3');
+  store = await editorStore(mock, 's3');
   app = mount(EditorScreen, { target: host, props: { store } });
   flushSync();
   const list = host.querySelector<HTMLElement>('.list')!;
@@ -47,7 +46,8 @@ describe('drag reorder', () => {
     const expected = [...before.slice(1, 3), before[0], ...before.slice(3)];
     expect(types()).toEqual(expected);
     expect(store.editor.selected).toBe(2);
-    expect(await store.editor.close()).toBe('closed');
+    await store.editor.guard();
+    expect(decisions(mock).at(-1)).toBe('saved');
     expect(count('editor.save')).toBe(1);
     const saved = mock.calls.find((c) => c.method === 'editor.save')!.params as { script: { actions: { type: string }[] } };
     expect(saved.script.actions.map((a) => a.type)).toEqual(expected);
@@ -64,7 +64,7 @@ describe('drag reorder', () => {
     await settle();
     expect(types()).toEqual(before);
     expect(count('editor.describeActions')).toBe(describes);
-    await store.editor.close();
+    await store.editor.guard();
     expect(count('editor.save')).toBe(0);
   });
 
@@ -77,7 +77,7 @@ describe('drag reorder', () => {
     await settle();
     expect(types()).toEqual(before);
     expect(host.querySelector('.drop-line')).toBeNull();
-    await store.editor.close();
+    await store.editor.guard();
     expect(count('editor.save')).toBe(0);
   });
 
@@ -88,7 +88,7 @@ describe('drag reorder', () => {
     window.dispatchEvent(ev('pointerup', 900, 70));
     await settle();
     expect(types()).toEqual(before);
-    await store.editor.close();
+    await store.editor.guard();
     expect(count('editor.save')).toBe(0);
   });
 
@@ -110,7 +110,7 @@ describe('drag reorder', () => {
     await settle();
     expect(types()).toEqual(before);
     expect(host.querySelector('.drop-line')).toBeNull();
-    await store.editor.close();
+    await store.editor.guard();
     expect(count('editor.save')).toBe(0);
   });
 
@@ -148,7 +148,7 @@ describe('drag reorder', () => {
 
   it('closing the editor during a drag cancels it', async () => {
     host.querySelectorAll<HTMLElement>('.grip')[0].dispatchEvent(ev('pointerdown', 5, 12));
-    await store.editor.close();
+    await store.editor.guard();
     flushSync();
     window.dispatchEvent(ev('pointerup', 50, 24 * 3 + 2));
     await settle();
@@ -218,8 +218,8 @@ describe('drag reorder', () => {
 
   it('caret shows at the top for an empty list', async () => {
     await unmount(app);
-    await store.editor.close();
-    await store.openNew();
+    await store.editor.guard();
+    store = await editorStore(mock, null);
     host.replaceChildren();
     app = mount(EditorScreen, { target: host, props: { store } });
     flushSync();
@@ -230,8 +230,8 @@ describe('drag reorder', () => {
     expect(css).toContain('.drop-line');
     expect(css).toMatch(/\.action-list \.list\.empty\{min-height:var\(--row-h\)\}/);
     await unmount(app);
-    await store.editor.close();
-    await store.openNew();
+    await store.editor.guard();
+    store = await editorStore(mock, null);
     host.replaceChildren();
     app = mount(EditorScreen, { target: host, props: { store } });
     flushSync();

@@ -132,6 +132,9 @@ type EditorSession struct {
 	SessionID string       `json:"sessionId"`
 	Script    model.Script `json:"script"`
 	Catalog   []ActionSpec `json:"catalog"`
+	Revision  uint64       `json:"revision,omitempty"` // the session's revision at open (editor-window contract §6.1)
+	IsNew     bool         `json:"isNew,omitempty"`    // the host created this script for the session (New, not Edit)
+	Groups    []string     `json:"groups"`             // existing group names, ordered like the Scripts list
 }
 
 // Events are emitted through Emitter with these names (contract §9.2).
@@ -174,7 +177,8 @@ type navGotoEvent struct {
 }
 
 type appClosingEvent struct {
-	DeadlineMs int64 `json:"deadline_ms"`
+	DeadlineMs int64    `json:"deadline_ms"`
+	Roles      []string `json:"roles,omitempty"` // who must acknowledge: "main", plus "editor" while an editor window exists
 }
 
 type updateAvailableEvent struct {

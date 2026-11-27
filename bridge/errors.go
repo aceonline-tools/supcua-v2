@@ -23,6 +23,9 @@ const (
 	CodeInvalidSetting     = "INVALID_SETTING"
 	CodeUpdateFailed       = "UPDATE_FAILED"
 	CodeNotLicensed        = "NOT_LICENSED"
+	CodeSessionClosing     = "SESSION_CLOSING"
+	CodeDraftTooLarge      = "DRAFT_TOO_LARGE"
+	CodeShuttingDown       = "SHUTTING_DOWN"
 )
 
 var messages = map[string]string{
@@ -41,6 +44,9 @@ var messages = map[string]string{
 	CodeInvalidSetting:     "invalid setting",
 	CodeUpdateFailed:       "update failed",
 	CodeNotLicensed:        "not licensed",
+	CodeSessionClosing:     "editor session is closing",
+	CodeDraftTooLarge:      "draft is too large",
+	CodeShuttingDown:       "application is closing",
 }
 
 // Error is the only error type handlers return; it marshals to the contract's ApiErrorBody.

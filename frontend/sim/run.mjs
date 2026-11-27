@@ -4,15 +4,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { seedMock } from './seed.mjs';
+import { seedMockPlugin } from './seed-plugin.mjs';
 
 const simDir = path.dirname(fileURLToPath(import.meta.url));
 const frontendDir = path.dirname(simDir);
 const repoRoot = path.dirname(frontendDir);
 const cacheDir = path.join(simDir, '.cache');
-const VERSIONS = ['v1.2.1', 'v1.2.3', 'v1.3.0'];
+// Tags are served from per-tag cached copies (their in-main editor); `current` is the working tree, which has the editor window.
+const TAGS = ['v1.2.1', 'v1.2.3', 'v1.3.0'];
+const VERSIONS = process.env.SIM_TAGS === 'none' ? [] : TAGS; // SIM_TAGS=none serves only the working tree (no git/npm ci)
+const CURRENT = 'current';
 const SHELL_PORT = Number(process.env.SIM_PORT || 5700);
-const ports = Object.fromEntries(VERSIONS.map((v, i) => [v, SHELL_PORT + 1 + i]));
+const ports = Object.fromEntries([...TAGS, CURRENT].map((v, i) => [v, SHELL_PORT + 1 + i]));
+const servers = [];
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const log = (m) => console.log(`[sim] ${m}`);
 const children = [];
@@ -91,6 +97,7 @@ function startVite(tag, app, port) {
 function shutdown() {
   stopping = true;
   for (const c of children) c.kill();
+  for (const v of servers) void v.close();
 }
 process.on('SIGINT', () => { shutdown(); process.exit(130); });
 process.on('SIGTERM', () => { shutdown(); process.exit(143); });
@@ -100,9 +107,19 @@ const t0 = Date.now();
 try {
   const apps = VERSIONS.map(prepare);
   await Promise.all(VERSIONS.map((v, i) => startVite(v, apps[i], ports[v])));
-  process.env.SIM_PORTS = JSON.stringify(ports);
+  const current = await createServer({
+    configFile: false,
+    root: frontendDir,
+    cacheDir: path.join(cacheDir, '.vite-current'),
+    plugins: [seedMockPlugin(frontendDir, CURRENT), svelte()],
+    server: { port: ports[CURRENT], strictPort: true, host: '127.0.0.1' },
+  });
+  servers.push(current);
+  await current.listen();
+  process.env.SIM_PORTS = JSON.stringify(Object.fromEntries(Object.entries(ports).filter(([v]) => v === CURRENT || VERSIONS.includes(v))));
   const shell = await createServer({ configFile: path.join(simDir, 'vite.config.ts'), server: { port: SHELL_PORT, strictPort: true, host: '127.0.0.1', allowedHosts: ['localhost', '127.0.0.1'] } });
   await shell.listen();
+  servers.push(shell);
   log(`ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   log(`open http://127.0.0.1:${SHELL_PORT}/  (Ctrl+C to stop)`);
 } catch (e) {

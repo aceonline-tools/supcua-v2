@@ -112,6 +112,11 @@ export class MockBackend implements Transport {
   private seed: MockSeed;
   private bodies = new Map<string, Script>();
   private session: string | null = null;
+  private pendingId: string | null | undefined;
+  private gen = 0;
+  private sessionRev = 0;
+  private lastSaved = 0;
+  readonly checkpoints: { revision: number; applied: boolean }[] = [];
   private activeCap: { id: number; method: string } | null = null;
   private capId = 0;
   private rev = 1;
@@ -120,6 +125,23 @@ export class MockBackend implements Transport {
 
   constructor(seed: MockSeed = defaultSeed()) {
     this.seed = structuredClone(seed);
+  }
+
+  /** Dev preview/tests: gives script `id` n sample actions. */
+  padActions(id: string, n: number): void {
+    const b = this.body(id);
+    b.actions = Array.from({ length: n }, (_, i) => structuredClone(SAMPLE_ACTIONS[i % SAMPLE_ACTIONS.length]));
+  }
+
+  get currentGen(): number {
+    return this.gen;
+  }
+
+  /** Host-side rollback of an editor window that never reached editor.open (create/embed failure). */
+  abortOpen(): void {
+    this.pendingId = undefined;
+    this.session = null;
+    this.seed.state.editor_open = false;
   }
 
   get currentCaptureId(): number {
@@ -256,15 +278,48 @@ export class MockBackend implements Transport {
         return { rev: ++this.rev };
       }
       case 'scripts.retrySave': { this.find(p.id); this.failSaveFor.delete(p.id); return {}; }
+      case 'editor.openWindow': {
+        if (this.session || this.pendingId !== undefined) return { status: 'focused', gen: this.gen };
+        this.pendingId = (p.id as string | undefined) ?? null;
+        return { status: 'opening', gen: ++this.gen };
+      }
+      case 'editor.windowReady': setTimeout(() => this.emit('editor.measureRequest', { token: 1 }), 0); return {};
       case 'editor.open': {
         if (this.session) throw new ApiError({ code: 'EDITOR_BUSY', message: 'Editor busy' });
-        const script: Script = p.id
-          ? this.body(p.id)
-          : { id: '', name: '', enabled: true, run_mode: 'once', hotkey_mode: 'toggle', toggle_hotkey: null, actions: [] };
+        const id = this.pendingId !== undefined ? this.pendingId : (p.id ?? null);
+        this.pendingId = undefined;
+        const isNew = id === null;
+        const script: Script = id
+          ? this.body(id)
+          : { id: `s${this.nextId++}`, name: 'New Script', enabled: true, run_mode: 'once', hotkey_mode: 'toggle', toggle_hotkey: null, actions: [] };
         this.session = `e${this.nextId++}`;
+        this.sessionRev = this.lastSaved = 0;
         this.activeCap = null;
         st.state.editor_open = true;
-        return { sessionId: this.session, script, catalog: MOCK_CATALOG };
+        const groups = [...new Set(st.scripts.map((x) => x.group).filter(Boolean))].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+        return { sessionId: this.session, script, catalog: MOCK_CATALOG, revision: 0, isNew, groups };
+      }
+      case 'editor.measured': return { next: 'show' };
+      case 'editor.measureAck': return {};
+      case 'editor.checkpoint': {
+        this.requireSession(p.sessionId);
+        const applied = p.revision > Math.max(this.sessionRev, this.lastSaved);
+        if (applied) this.sessionRev = p.revision;
+        this.checkpoints.push({ revision: p.revision, applied });
+        return { applied, revision: p.revision };
+      }
+      case 'editor.guardActive': this.requireSession(p.sessionId); return { leaseMs: 3000 };
+      case 'editor.requestClose': {
+        if (this.session) setTimeout(() => this.emit('editor.closeRequested', { gen: this.gen, sessionId: this.session ?? undefined, reason: 'user' }), 0);
+        return {};
+      }
+      case 'editor.closeDecision': {
+        this.requireSession(p.sessionId);
+        if (p.decision === 'cancel') return {};
+        this.session = null;
+        st.state.editor_open = false;
+        if (this.activeCap) { const id = this.activeCap.id; this.activeCap = null; this.emit('capture.ended', { reason: 'editorClosed', capture_id: id }); }
+        return {};
       }
       case 'editor.save': {
         this.requireSession(p.sessionId);
@@ -286,14 +341,11 @@ export class MockBackend implements Transport {
         const summary: ScriptSummary = { id, name, group: sc.group ?? '', run_mode: sc.run_mode, hotkey_mode: sc.hotkey_mode, hotkey_label: labelOf(sc), enabled: sc.enabled, running: false };
         const at = st.scripts.findIndex((x) => x.id === id);
         if (at >= 0) st.scripts[at] = summary; else st.scripts.push(summary);
-        return { script: saved, rev: ++this.rev };
-      }
-      case 'editor.close': {
-        this.requireSession(p.sessionId);
-        this.session = null;
-        st.state.editor_open = false;
-        if (this.activeCap) { const id = this.activeCap.id; this.activeCap = null; this.emit('capture.ended', { reason: 'editorClosed', capture_id: id }); }
-        return { saved: false, rev: this.rev };
+        const savedRev = (p.snapshotRev as number | undefined) ?? this.sessionRev + 1;
+        this.lastSaved = Math.max(this.lastSaved, savedRev);
+        this.sessionRev = Math.max(this.sessionRev, savedRev);
+        setTimeout(() => this.emit('scripts.changed', { rev: this.rev }), 0);
+        return { script: saved, rev: ++this.rev, savedRev };
       }
       case 'editor.describeActions': return (p.actions as Action[]).map(describe);
       case 'editor.toJSON': return { text: JSON.stringify(p.script, null, 2) };

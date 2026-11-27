@@ -34,7 +34,7 @@ type ScriptStore struct {
 	queueMu    sync.Mutex
 	pending    map[string]queuedSave
 	inflight   map[string]queuedSave // popped by the worker, not yet written
-	gen        map[string]uint64     // latest write token per ID; absent after Delete
+	gen        map[string]uint64     // latest write token per ID (kept as a tombstone on Delete); absent = never written
 	genCounter uint64
 	pendingOrd []string
 	draining   bool
@@ -262,14 +262,7 @@ func (scriptStore *ScriptStore) writeLocked(script model.Script) error {
 // last state wins and writes never overlap.
 func (scriptStore *ScriptStore) QueueSave(scripts ...model.Script) {
 	scriptStore.queueMu.Lock()
-	if scriptStore.pending == nil {
-		scriptStore.pending = map[string]queuedSave{}
-	}
-	for _, script := range scripts {
-		token := scriptStore.supersedeLocked(script.ID)
-		scriptStore.pendingOrd = append(scriptStore.pendingOrd, script.ID)
-		scriptStore.pending[script.ID] = queuedSave{script: script, token: token}
-	}
+	scriptStore.queueLocked(scripts)
 	start := !scriptStore.draining && len(scriptStore.pendingOrd) > 0
 	if start {
 		scriptStore.draining = true
@@ -277,6 +270,49 @@ func (scriptStore *ScriptStore) QueueSave(scripts ...model.Script) {
 	scriptStore.queueMu.Unlock()
 	if start {
 		go scriptStore.drainQueue()
+	}
+}
+
+// Revision is the store's current write revision of id: it changes on every QueueSave, Save and
+// Delete of that script, and is 0 for a script this store never wrote or deleted.
+func (scriptStore *ScriptStore) Revision(id string) uint64 {
+	scriptStore.queueMu.Lock()
+	defer scriptStore.queueMu.Unlock()
+	return scriptStore.gen[id]
+}
+
+// QueueSaveIf is QueueSave made conditional and atomic under the queue lock: the scripts are queued
+// only when id's revision still equals expect (any revision when anyRev) and admit, when not nil,
+// returns true. admit runs under the queue lock and must not block or call back into the store. It
+// returns id's revision after the call and whether the scripts were queued.
+func (scriptStore *ScriptStore) QueueSaveIf(id string, expect uint64, anyRev bool, admit func() bool, scripts ...model.Script) (uint64, bool) {
+	scriptStore.queueMu.Lock()
+	if (!anyRev && scriptStore.gen[id] != expect) || (admit != nil && !admit()) {
+		rev := scriptStore.gen[id]
+		scriptStore.queueMu.Unlock()
+		return rev, false
+	}
+	scriptStore.queueLocked(scripts)
+	rev := scriptStore.gen[id]
+	start := !scriptStore.draining && len(scriptStore.pendingOrd) > 0
+	if start {
+		scriptStore.draining = true
+	}
+	scriptStore.queueMu.Unlock()
+	if start {
+		go scriptStore.drainQueue()
+	}
+	return rev, true
+}
+
+func (scriptStore *ScriptStore) queueLocked(scripts []model.Script) {
+	if scriptStore.pending == nil {
+		scriptStore.pending = map[string]queuedSave{}
+	}
+	for _, script := range scripts {
+		token := scriptStore.supersedeLocked(script.ID)
+		scriptStore.pendingOrd = append(scriptStore.pendingOrd, script.ID)
+		scriptStore.pending[script.ID] = queuedSave{script: script, token: token}
 	}
 }
 
@@ -409,8 +445,7 @@ func (scriptStore *ScriptStore) Delete(scriptID string) error {
 		index = scriptStore.files
 	}
 	scriptStore.queueMu.Lock()
-	scriptStore.supersedeLocked(scriptID)
-	delete(scriptStore.gen, scriptID)
+	scriptStore.supersedeLocked(scriptID) // the new token is kept as a tombstone: Revision changes on Delete
 	scriptStore.queueMu.Unlock()
 	if !ok {
 		return fmt.Errorf("script %s not found", scriptID)

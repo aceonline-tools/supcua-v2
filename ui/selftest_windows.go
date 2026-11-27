@@ -21,9 +21,11 @@ import (
 const SelfTestMethod = "__selftest.report"
 
 const (
-	warmupCycles = 3
-	dialogCycles = 50
-	captureLoops = 30
+	warmupCycles       = 5
+	warmupCaptureLoops = 5
+	leakSettle         = 1500 * time.Millisecond
+	dialogCycles       = 50
+	captureLoops       = 30
 	// UI-layer callbacks: host window proc + shared key hook + overlay window proc.
 	maxUICallbacks = 3
 )
@@ -69,11 +71,28 @@ type SelfTest struct {
 	// Exit runs the ordered application shutdown on the UI thread.
 	Exit func()
 
+	// Editor-window lifecycle test (E1b).
+	Host         *EditorHost
+	RecoveredDir string
+	EditOpen     func() bool // script execution is blocked (the controller's edit-dialog gate)
+	Methods      map[string]func(json.RawMessage) (any, error)
+
+	fixture        string
+	shutdownStart  time.Time
+	shutdownHWND   uintptr
+	shutdownBefore int
+	shutdownName   string // E1c: the real page's draft name ("" = the fixture's)
+	e1cScriptID    string
+	shotsOK        int
+	shotsWant      int
+	shotErrs       []string
+
 	reports chan selfReport
 }
 
 // Install registers the driver channel on methods.
 func (s *SelfTest) Install(methods map[string]func(json.RawMessage) (any, error)) {
+	s.Methods = methods
 	s.reports = make(chan selfReport, 16)
 	methods[SelfTestMethod] = func(p json.RawMessage) (any, error) {
 		var r selfReport
@@ -90,21 +109,7 @@ func (s *SelfTest) Install(methods map[string]func(json.RawMessage) (any, error)
 
 func (s *SelfTest) drive(tag, expr string, timeout time.Duration) (selfReport, error) {
 	s.UI.Eval(fmt.Sprintf("__st.run(%q,async function(){return %s})", tag, expr))
-	deadline := time.After(timeout)
-	for {
-		select {
-		case r := <-s.reports:
-			if r.Tag != tag {
-				continue
-			}
-			if !r.OK {
-				return r, errors.New(r.Err)
-			}
-			return r, nil
-		case <-deadline:
-			return selfReport{}, errors.New("timeout")
-		}
-	}
+	return s.awaitReport(tag, timeout)
 }
 
 // Run executes the checks and always ends by requesting the ordered shutdown.
@@ -150,41 +155,39 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 	_ = json.Unmarshal(r.V, &n)
 	res.Step("Go->JS events (state) received", n >= 2, fmt.Sprintf("%d state events", n))
 
-	if _, err = s.drive("warmup", fmt.Sprintf("await __st.cycles(%d)", warmupCycles), 30*time.Second); err != nil {
-		fail("warm-up dialog cycles", err)
+	// Leak check (handles/GDI/USER): warm up the WHOLE measured sequence (dialog cycles AND the
+	// capture loop), settle, then two identical batches. A per-iteration leak grows in both
+	// batches; a bounded one-time step (runtime/thread-pool growth) appears in one only.
+	batch := func(tag string, cycles, loops int) error {
+		if _, err := s.drive(tag, fmt.Sprintf("await __st.cycles(%d)", cycles), 90*time.Second); err != nil {
+			return err
+		}
+		return captureLoop(loops)
+	}
+	settle := func() webview.Resources {
+		runtime.GC()
+		time.Sleep(leakSettle)
+		return webview.SampleResources()
+	}
+	if err = batch("warmup", warmupCycles, warmupCaptureLoops); err != nil {
+		fail("warm-up (dialog cycles + capture loop)", err)
 		return
 	}
-	runtime.GC()
-	time.Sleep(500 * time.Millisecond)
-	before, cbBefore := webview.SampleResources(), webview.CallbackCount()
-
-	if _, err = s.drive("cycles", fmt.Sprintf("await __st.cycles(%d)", dialogCycles), 60*time.Second); err != nil {
-		fail("50 real dialog cycles (editor.open/capture/editor.close)", err)
+	cbBefore := webview.CallbackCount()
+	b0 := settle()
+	if err = batch("cycles", dialogCycles, captureLoops); err != nil {
+		fail(fmt.Sprintf("%d real dialog cycles (editor.open/capture/editor.close) + capture loop, batch 1", dialogCycles), err)
 		return
 	}
-	res.Step("50 real dialog cycles (editor.open/capture/editor.close)", true, "")
-
-	stopFail := ""
-	for i := 0; i < captureLoops && stopFail == ""; i++ {
-		stop, err := webview.StartKeyCapture(func() bool { return false }, func(webview.KeyEvent) bool { return false })
-		if err != nil {
-			stopFail = err.Error()
-			break
-		}
-		if i == 0 {
-			if _, err2 := webview.StartKeyCapture(func() bool { return false }, func(webview.KeyEvent) bool { return false }); err2 != webview.ErrCaptureActive {
-				stopFail = "second concurrent capture was not rejected"
-			}
-		}
-		stop()
-		stop() // idempotent
+	b1 := settle()
+	if err = batch("cycles2", dialogCycles, captureLoops); err != nil {
+		fail(fmt.Sprintf("%d real dialog cycles + capture loop, batch 2", dialogCycles), err)
+		return
 	}
-	res.Step("repeated capture start/stop", stopFail == "", fmt.Sprintf("%d loops %s", captureLoops, stopFail))
-
-	runtime.GC()
-	time.Sleep(500 * time.Millisecond)
-	after, cbAfter := webview.SampleResources(), webview.CallbackCount()
-	res.CheckFlat(before, after)
+	b2 := settle()
+	res.Step(fmt.Sprintf("2×%d real dialog cycles (editor.open/capture/editor.close) and 2×%d capture start/stop", dialogCycles, captureLoops), true, "")
+	cbAfter := webview.CallbackCount()
+	res.CheckSlope(b0, b1, b2)
 	res.Step("NewCallback count constant", cbBefore == cbAfter && cbAfter <= maxUICallbacks,
 		fmt.Sprintf("ui-layer calls %d -> %d (max %d: host proc, key hook, overlay proc)", cbBefore, cbAfter, maxUICallbacks))
 	res.Callbacks = []int32{cbBefore, cbAfter}
@@ -213,6 +216,11 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 	}
 
 	s.overlayVisual(res)
+	webview.SelftestEditorWindow(s.UI, res)
+	if s.Host != nil {
+		s.editorLifecycle()
+		s.realEditorSuite()
+	}
 
 	trayDone := make(chan bool, 1)
 	post(func() {
@@ -225,6 +233,9 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 		res.Step("tray created and removed", ok, "")
 	case <-time.After(5 * time.Second):
 		res.Step("tray created and removed", false, "UI thread did not respond")
+	}
+	if s.Host != nil && !s.shutdownWithRealEditor() {
+		s.editorShutdownCase()
 	}
 	done()
 }
@@ -245,6 +256,7 @@ type ProductionHooks struct {
 	ExpectFixed       int
 	AutoActiveEnabled bool   // the LOADED config's auto_active_enabled
 	ExpectRow         string // a known script name in the list
+	OverlayHotkey     model.Hotkey
 }
 
 func waitFor(timeout time.Duration, cond func() bool) bool {
@@ -348,8 +360,31 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 		if fire(h.ProbeHotkey, "script toggle hotkey (SendInput) starts the script", func() bool { return h.RunningScriptID() == h.ProbeID }) {
 			fire(h.ProbeHotkey, "script toggle hotkey (SendInput) stops the script", func() bool { return h.RunningScriptID() == "" })
 		}
+		if s.Host != nil {
+			s.prodEditorGate(h, step)
+		}
 		fire(h.GlobalHotkey, "global hotkey (SendInput) turns global active off", func() bool { return !h.GlobalActive() })
 		step("script hotkeys unregistered when inactive", waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() == 0 }), fmt.Sprintf("count=%d", h.ScriptHotkeyCount()))
 	}
 	done()
+}
+
+// captureLoop starts and stops the key-capture hook thread n times (a second concurrent start must
+// be rejected; stop is idempotent).
+func captureLoop(n int) error {
+	for i := 0; i < n; i++ {
+		stop, err := webview.StartKeyCapture(func() bool { return false }, func(webview.KeyEvent) bool { return false })
+		if err != nil {
+			return err
+		}
+		if i == 0 {
+			if _, err2 := webview.StartKeyCapture(func() bool { return false }, func(webview.KeyEvent) bool { return false }); err2 != webview.ErrCaptureActive {
+				stop()
+				return errors.New("second concurrent capture was not rejected")
+			}
+		}
+		stop()
+		stop() // idempotent
+	}
+	return nil
 }
