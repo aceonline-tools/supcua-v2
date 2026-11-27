@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.5.2...v1.6.0) (2026-11-27)
+
+
+### Features
+
+* open the script editor in its own window (v1.6.0) ([d09ef4b](https://github.com/aceonline-tools/supcua-v2/commit/d09ef4bd626bc7bcaff71eefec3eb71f1291a06e))
+
 ## [1.5.2](https://github.com/aceonline-tools/supcua-v2/compare/v1.5.1...v1.5.2) (2026-11-27)
 
 
