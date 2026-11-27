@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/yanmad27/supcua-v2/model"
@@ -16,8 +17,21 @@ const maxJSONText = 1 << 20
 type editorSession struct {
 	id       string
 	scriptID string
+	gen      uint64 // editor window generation (0 for the legacy in-main route)
 	draft    *model.Script
+	draftRev uint64
+
+	// Guarded by Bridge.mu (editor-window contract §6.1, §6.5).
+	closing      bool // cleanup started: new saves get SESSION_CLOSING
+	saving       int  // saves holding the lease
+	lastSavedRev uint64
+	dirtyRev     uint64
+	checkpoint   *checkpoint
+	closingFlag  atomic.Bool // lock-free mirror of closing for the UI-thread force-close path
 }
+
+// isClosing reports whether cleanup began (either the locked or the lock-free mark).
+func (s *editorSession) isClosing() bool { return s.closing || s.closingFlag.Load() }
 
 func (b *Bridge) editorOpen(p struct {
 	ID *string `json:"id"`
@@ -52,11 +66,16 @@ func (b *Bridge) editorOpen(p struct {
 		}
 	}
 	sess := &editorSession{id: uuid.New().String(), scriptID: script.ID}
+	if b.win != nil {
+		sess.gen = b.win.currentGen()
+	}
 	b.session = sess
+	rev := sess.lastSavedRev
 	b.mu.Unlock()
 
+	// An editor window raised the gate at creation start; the legacy route raises it here.
 	b.d.Controller.SetEditDialogOpen(true)
-	return EditorSession{SessionID: sess.id, Script: script, Catalog: buildCatalog()}, nil
+	return EditorSession{SessionID: sess.id, Script: script, Catalog: buildCatalog(), Revision: rev}, nil
 }
 
 func (b *Bridge) requireSession(id string) (*editorSession, error) {
@@ -69,8 +88,9 @@ func (b *Bridge) requireSession(id string) (*editorSession, error) {
 }
 
 type saveResult struct {
-	Script model.Script `json:"script"`
-	Rev    uint64       `json:"rev"`
+	Script   model.Script `json:"script"`
+	Rev      uint64       `json:"rev"`
+	SavedRev uint64       `json:"savedRev"`
 }
 
 func (b *Bridge) editorSave(p struct {
@@ -78,28 +98,74 @@ func (b *Bridge) editorSave(p struct {
 	Script            model.Script `json:"script"`
 	OverrideConflicts bool         `json:"overrideConflicts"`
 	IgnoreConflicts   bool         `json:"ignore_conflicts"`
+	SnapshotRev       *uint64      `json:"snapshotRev"`
 }) (any, error) {
-	sess, err := b.requireSession(p.SessionID)
+	sess, err := b.acquireSaveLease(p.SessionID)
 	if err != nil {
 		return nil, err
 	}
-	res, err := b.saveScript(sess, p.Script, p.OverrideConflicts, p.IgnoreConflicts)
+	defer b.releaseSaveLease(sess)
+	b.mu.Lock()
+	rev := sess.dirtyRev + 1
+	if p.SnapshotRev != nil {
+		rev = *p.SnapshotRev
+	}
+	b.mu.Unlock()
+	if rev == 0 || rev > maxRevision {
+		return nil, newErr(CodeBadRequest)
+	}
+	res, err := b.saveScript(sess, p.Script, saveOpts{override: p.OverrideConflicts, ignore: p.IgnoreConflicts, rev: rev, leased: true})
 	if err != nil {
 		return nil, err
 	}
 	return res, nil
 }
 
+// maxRevision is the largest JS-safe integer (2^53-1).
+const maxRevision = 1<<53 - 1
+
+type saveOpts struct {
+	override, ignore bool
+	rev              uint64
+	recovery         bool // the host's recovery persistence: allowed after the session began closing
+	leased           bool // the caller holds the save lease (acquireSaveLease): it may commit while cleanup waits
+}
+
+// acquireSaveLease returns the session and holds a save lease on it (contract §6.5): from this
+// point until releaseSaveLease the session's cleanup waits (bounded) for the save to finish.
+func (b *Bridge) acquireSaveLease(id string) (*editorSession, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.session == nil || b.session.id != id || id == "" {
+		return nil, newErr(CodeEditorClosed)
+	}
+	if b.session.isClosing() {
+		return nil, newErr(CodeSessionClosing)
+	}
+	b.session.saving++
+	return b.session, nil
+}
+
+func (b *Bridge) releaseSaveLease(s *editorSession) {
+	b.mu.Lock()
+	s.saving--
+	b.mu.Unlock()
+}
+
 // saveScript validates and persists script as the session's script (one QueueSave for everything
 // changed, including hotkeys cleared on other scripts). The draft is remembered only on failure.
-func (b *Bridge) saveScript(sess *editorSession, in model.Script, override, ignore bool) (saveResult, error) {
+func (b *Bridge) saveScript(sess *editorSession, in model.Script, o saveOpts) (saveResult, error) {
+	override, ignore := o.override, o.ignore
 	script := in
 	script.ID = sess.scriptID
 	fail := func(e error) (saveResult, error) {
 		b.mu.Lock()
-		if b.session == sess {
+		if b.session == sess && o.rev >= sess.draftRev {
 			d := script
-			sess.draft = &d
+			sess.draft, sess.draftRev = &d, o.rev
+			if o.rev > sess.dirtyRev {
+				sess.dirtyRev = o.rev
+			}
 		}
 		b.mu.Unlock()
 		return saveResult{}, e
@@ -155,6 +221,14 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override, igno
 		b.mu.Unlock()
 		return saveResult{}, newErr(CodeEditorClosed)
 	}
+	if sess.isClosing() && !o.recovery && !o.leased { // cleanup began and this save holds no lease: not committed
+		b.mu.Unlock()
+		return saveResult{}, newErr(CodeSessionClosing)
+	}
+	if o.recovery && o.rev <= sess.lastSavedRev { // a newer save already committed: never overwrite it
+		b.mu.Unlock()
+		return saveResult{}, newErr(CodeEditorClosed)
+	}
 	for _, s := range changed {
 		if i := b.indexLocked(s.ID); i >= 0 {
 			b.scripts[i] = s
@@ -165,7 +239,18 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override, igno
 	b.rev++
 	rev := b.rev
 	if b.session == sess {
-		sess.draft = nil
+		if o.rev > sess.lastSavedRev {
+			sess.lastSavedRev = o.rev
+		}
+		if o.rev > sess.dirtyRev {
+			sess.dirtyRev = o.rev
+		}
+		if sess.draftRev <= sess.lastSavedRev {
+			sess.draft = nil
+		}
+		if sess.checkpoint != nil && sess.checkpoint.Revision <= sess.lastSavedRev {
+			sess.checkpoint = nil
+		}
 	}
 	b.mu.Unlock()
 
@@ -185,7 +270,7 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, override, igno
 		return fail(newErr(CodeSaveFailed))
 	}
 	b.emit(EvScriptsChanged, revResult{rev})
-	return saveResult{Script: script, Rev: rev}, nil
+	return saveResult{Script: script, Rev: rev, SavedRev: o.rev}, nil
 }
 
 // findConflicts lists every hotkey of script that another script already uses.
@@ -246,7 +331,10 @@ func (b *Bridge) editorClose(p struct {
 			b.mu.Unlock()
 		}
 		if draft != nil {
-			saved, serr := b.saveScript(sess, *draft, false, false)
+			b.mu.Lock()
+			rev := sess.dirtyRev + 1
+			b.mu.Unlock()
+			saved, serr := b.saveScript(sess, *draft, saveOpts{rev: rev})
 			if serr != nil {
 				var e *Error
 				if errAs(serr, &e) {

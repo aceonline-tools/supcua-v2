@@ -8,16 +8,33 @@ type WindowPos struct {
 	Height int `json:"height,omitempty"`
 }
 
+// EditorLayoutVersion is bumped when the editor layout changes materially: a size remembered under
+// an older version is dropped once (the position is kept) and the measured size is used.
+const EditorLayoutVersion = 1
+
+// EditorWindow is the remembered bounds of the editor window, in physical pixels (contract §9).
+// Zero W/H means "nothing remembered".
+type EditorWindow struct {
+	X         int  `json:"x"`
+	Y         int  `json:"y"`
+	W         int  `json:"w"`
+	H         int  `json:"h"`
+	Maximized bool `json:"maximized,omitempty"`
+	Version   int  `json:"version"`
+}
+
 // AppConfig holds global application settings.
 type AppConfig struct {
-	GlobalHotkey       Hotkey       `json:"global_hotkey"`
-	CaptureHotkey      Hotkey       `json:"capture_hotkey"`
-	OverlayHotkey      Hotkey       `json:"overlay_hotkey"`
-	OverlayEnabled     bool         `json:"overlay_enabled"`
-	OverlayPosition    WindowPos    `json:"overlay_position"`
-	OverlayStyle       OverlayStyle `json:"overlay_style"`
-	MainWindowPos      WindowPos    `json:"main_window_pos"`
+	GlobalHotkey    Hotkey       `json:"global_hotkey"`
+	CaptureHotkey   Hotkey       `json:"capture_hotkey"`
+	OverlayHotkey   Hotkey       `json:"overlay_hotkey"`
+	OverlayEnabled  bool         `json:"overlay_enabled"`
+	OverlayPosition WindowPos    `json:"overlay_position"`
+	OverlayStyle    OverlayStyle `json:"overlay_style"`
+	MainWindowPos   WindowPos    `json:"main_window_pos"`
+	// Deprecated: unused legacy field, still parsed and written as before (editor-window contract §9).
 	EditDialogPos      WindowPos    `json:"edit_dialog_pos"`
+	EditorWindow       EditorWindow `json:"editor_window,omitempty"`
 	ScriptsDir         string       `json:"scripts_dir"`
 	KeyPressDurationMs int          `json:"key_press_duration_ms"`
 

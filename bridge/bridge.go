@@ -6,6 +6,7 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -113,6 +114,8 @@ type Deps struct {
 	UI         UIThread
 	Capture    CaptureBackend
 	Host       Host
+	// CallerRole names the window a call came from ("main"|"editor"); set by the host transport.
+	CallerRole func(ctx context.Context) string
 }
 
 var uiCallTimeout = 3 * time.Second
@@ -157,6 +160,9 @@ type Bridge struct {
 	failed  map[string]struct{}
 	session *editorSession
 	closed  bool
+
+	win          *windowCtl // editor window controller; nil until AttachEditorHost
+	recoveredDir string     // where recovered drafts are written ("" disables the file)
 
 	ovMu    sync.Mutex
 	overlay OverlayDTO
@@ -375,28 +381,90 @@ func (b *Bridge) onSaveError(script model.Script, err error) {
 	b.emit(EvSaveFailed, saveFailedEvent{ScriptID: script.ID, Name: script.Name, Message: messages[CodeSaveFailed]})
 }
 
+// Shutdown deadlines, from S = BeginShutdown (editor-window contract §7). deadline is D1 (1.5 s in
+// production); the editor's recovery must be done by D2 = D1 + shutdownRecovery and its window
+// destroyed by D3 = D1 + shutdownDestroy. quiesce starts at recovery completion, so the worst case
+// from S to then() is D1 + shutdownRecovery + quiesceGrace (1.5 + 1.0 + 3.0 = 5.5 s).
+const (
+	shutdownRecovery = time.Second
+	shutdownDestroy  = 1500 * time.Millisecond
+	destroyCap       = 5 * time.Second // last-resort bound on the destroyed barrier
+)
+
 // BeginShutdown starts a cooperative shutdown; call it on the UI thread. It returns at once:
-// new mutating RPCs (except editor.save, editor.close and app.closingReady) are rejected, the page
-// gets app.closing{deadline_ms}, and a one-shot goroutine waits for app.closingReady or the
-// deadline before posting then to the UI thread. Later calls are no-ops.
+// new mutating RPCs (except editor.save, editor.closeDecision, editor.checkpoint and
+// app.closingReady) are rejected, the pages get app.closing{deadline_ms, roles}, and a one-shot
+// goroutine waits for every required acknowledgement or D1, then closes the editor window if it is
+// still there, runs quiesce, and posts then to the UI thread once quiesce is done AND the editor
+// is destroyed. The editor's readiness is set by host cleanup (never by its page); main's ack
+// alone does not release while an editor window exists. Later calls are no-ops.
 func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 	started := false
+	var w *windowCtl
 	b.beginOnce.Do(func() {
 		started = true
 		b.stopping.Store(true)
-		b.emit(EvAppClosing, appClosingEvent{DeadlineMs: deadline.Milliseconds()})
+		roles := []string{"main"}
+		if b.win != nil && b.win.active() {
+			w = b.win
+			roles = append(roles, "editor")
+		}
+		b.emit(EvAppClosing, appClosingEvent{DeadlineMs: deadline.Milliseconds(), Roles: roles})
+		if w != nil {
+			w.beginShutdown()
+		}
 	})
 	if !started {
 		return
 	}
+	d1, stop1 := b.afterChan(deadline)
+	d2, stop2 := b.afterChan(deadline + shutdownRecovery)
+	d3, stop3 := b.afterChan(deadline + shutdownDestroy)
 	go func() {
-		timer := time.NewTimer(deadline)
-		defer timer.Stop()
-		select {
-		case <-b.closingReady:
-		case <-timer.C:
+		defer stop1()
+		defer stop2()
+		defer stop3()
+		var destroyed, done <-chan struct{}
+		if w != nil {
+			destroyed, done = w.waitChans()
 		}
-		b.quiesce(quiesceGrace)
+		mainCh, edCh := (<-chan struct{})(b.closingReady), done
+	wait:
+		for mainCh != nil || edCh != nil {
+			select {
+			case <-mainCh:
+				mainCh = nil
+			case <-edCh:
+				edCh = nil
+			case <-d1:
+				break wait
+			}
+		}
+		if w != nil {
+			select {
+			case <-destroyed:
+			default:
+				b.post(w.forceForShutdown)
+			}
+			select { // recovery/persistence is bounded by D2
+			case <-done:
+			case <-d2:
+			}
+		}
+		qdone := make(chan struct{})
+		go func() { b.quiesce(quiesceGrace); close(qdone) }()
+		if w != nil {
+			select { // D3: the window must be gone; teardown runs on the UI thread, independent of quiesce
+			case <-destroyed:
+			case <-d3:
+				b.post(w.forceForShutdown)
+			}
+			select {
+			case <-destroyed:
+			case <-time.After(destroyCap):
+			}
+		}
+		<-qdone
 		if then != nil {
 			b.post(then)
 		}
@@ -438,6 +506,11 @@ func (b *Bridge) ResetSession(reason string) {
 	}
 	b.sessMu.Lock()
 	b.mu.Lock()
+	if b.session != nil && b.session.gen != 0 { // the editor window's session: owned by its controller (§4.7)
+		b.mu.Unlock()
+		b.sessMu.Unlock()
+		return
+	}
 	sessionID := ""
 	if b.session != nil {
 		sessionID = b.session.id
@@ -500,14 +573,14 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 }
 
 // shutdownAllowed are the mutating methods still accepted while shutdown is in progress.
-var shutdownAllowed = map[string]bool{"editor.save": true, "editor.close": true, "app.closingReady": true}
+var shutdownAllowed = map[string]bool{"editor.save": true, "editor.close": true, "editor.closeDecision": true, "editor.checkpoint": true, "app.closingReady": true}
 
 // mutating lists every method that changes state; they run under the fence and are rejected
 // once shutdown begins (hard-rejected, including editor.save/close, once Shutdown has run).
 var mutating = []string{
 	"app.setGlobalActive", "app.exit", "window.hide", "window.show", "window.reportBounds",
 	"scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed", "settings.setSidebarCollapsed", "scripts.clone",
-	"scripts.delete", "scripts.retrySave", "editor.open", "editor.save", "editor.close",
+	"scripts.delete", "scripts.retrySave", "editor.open", "editor.save", "editor.close", "editor.closeDecision", "editor.checkpoint",
 	"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.stop", "capture.mouse.stop",
 	"settings.update", "overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "app.closingReady",
 }
@@ -601,6 +674,13 @@ func (b *Bridge) Methods() map[string]Handler {
 	reg(m, "scripts.retrySave", b.scriptsRetrySave, "id")
 	reg(m, "editor.open", b.editorOpen, "id?")
 	reg(m, "editor.save", b.editorSave, "sessionId", "script")
+	reg(m, "editor.openWindow", b.editorOpenWindow)
+	regNoParams(m, "editor.windowReady", b.editorWindowReady)
+	reg(m, "editor.measured", b.editorMeasured, "token", "cssW", "cssH")
+	reg(m, "editor.measureAck", b.editorMeasureAck, "token")
+	reg(m, "editor.checkpoint", b.editorCheckpoint, "sessionId", "revision", "script")
+	reg(m, "editor.guardActive", b.editorGuardActive, "sessionId")
+	reg(m, "editor.closeDecision", b.editorCloseDecision, "sessionId", "decision")
 	reg(m, "editor.close", b.editorClose, "sessionId")
 	reg(m, "editor.describeActions", b.editorDescribe, "actions")
 	reg(m, "editor.toJSON", b.editorToJSON, "script")
