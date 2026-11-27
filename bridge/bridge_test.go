@@ -95,7 +95,8 @@ func TestEveryContractMethodHasHandler(t *testing.T) {
 func TestEveryContractEventHasEmitterName(t *testing.T) {
 	have := map[string]bool{}
 	for _, n := range []string{EvState, EvScriptsChanged, EvSettingsChanged, EvSaveFailed, EvCaptureHotkey, EvCaptureKey,
-		EvCaptureMouse, EvCaptureEnded, EvEditorReset, EvUpdateAvailable, EvUpdateProgress, EvUpdateFailed, EvNavGoto, EvAppClosing} {
+		EvCaptureMouse, EvCaptureEnded, EvEditorReset, EvUpdateAvailable, EvUpdateProgress, EvUpdateFailed, EvNavGoto, EvAppClosing,
+		evEditorCloseRequested, evEditorMeasureRequest, evEditorMeasureAbort, evEditorWindowFailed, evEditorWindowClosed} {
 		have[n] = true
 	}
 	for _, name := range typesBlock(t, "Events") {

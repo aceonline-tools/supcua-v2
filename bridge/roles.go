@@ -36,7 +36,7 @@ func Roles() RoleLists {
 			"editor.close",
 		},
 		EditorOnly: append([]string{
-			"editor.windowReady", "editor.measured", "editor.measureAck", "editor.checkpoint", "editor.guardActive", "editor.closeDecision",
+			"editor.windowReady", "editor.measured", "editor.measureAck", "editor.checkpoint", "editor.guardActive", "editor.closeDecision", "editor.requestClose",
 		}, legacyEditor...),
 	}
 }

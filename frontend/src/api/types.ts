@@ -174,7 +174,13 @@ export interface EditorSession {
   sessionId: string;
   script: Script;
   catalog: ActionSpec[];
+  revision?: number;
+  isNew?: boolean;
+  groups?: string[];
 }
+
+export type CloseDecision = 'saved' | 'discard' | 'cancel';
+export type MeasureReply = { next: 'show' | 'remeasure'; token?: number; cssW?: number };
 
 export interface HotkeyConflict {
   scriptId: string;
@@ -192,7 +198,8 @@ export interface CaptureStarted {
 export type ErrorCode =
   | 'BAD_REQUEST' | 'UNKNOWN_METHOD' | 'BUSY' | 'INTERNAL' | 'NOT_FOUND' | 'NAME_EMPTY'
   | 'NAME_TAKEN' | 'HOTKEY_CONFLICT' | 'HOTKEY_REGISTER_FAILED' | 'EDITOR_BUSY' | 'EDITOR_CLOSED'
-  | 'SAVE_FAILED' | 'INVALID_SETTING' | 'UPDATE_FAILED' | 'NOT_LICENSED';
+  | 'SAVE_FAILED' | 'INVALID_SETTING' | 'UPDATE_FAILED' | 'NOT_LICENSED'
+  | 'FORBIDDEN_ROLE' | 'STALE_GEN' | 'SESSION_CLOSING' | 'DRAFT_TOO_LARGE' | 'SHUTTING_DOWN' | 'EDITOR_WINDOW_BUSY';
 
 export interface ApiErrorBody {
   code: ErrorCode;
@@ -216,9 +223,16 @@ export interface Methods {
   'settings.setSidebarCollapsed': { params: { collapsed: boolean }; result: Record<string, never> };
   'scripts.clone': { params: { id: string }; result: ScriptSummary };
   'scripts.delete': { params: { id: string }; result: { rev: number } };
-  'editor.open': { params: { id: string | null }; result: EditorSession };
-  'editor.save': { params: { sessionId: string; script: Script; overrideConflicts?: boolean; ignore_conflicts?: boolean }; result: { script: Script; rev: number } };
-  'editor.close': { params: { sessionId: string; autosave: boolean }; result: { saved: boolean; rev: number } };
+  'editor.openWindow': { params: { id?: string }; result: { status: 'opening' | 'focused'; gen: number } };
+  'editor.windowReady': { params: undefined; result: Record<string, never> };
+  'editor.open': { params: { id?: string | null }; result: EditorSession };
+  'editor.measured': { params: { token: number; cssW: number; cssH: number; dpr: number }; result: MeasureReply };
+  'editor.measureAck': { params: { token: number }; result: Record<string, never> };
+  'editor.checkpoint': { params: { sessionId: string; revision: number; script: Script }; result: { applied: boolean; revision: number } };
+  'editor.guardActive': { params: { sessionId: string }; result: { leaseMs: number } };
+  'editor.closeDecision': { params: { sessionId: string; decision: CloseDecision }; result: Record<string, never> };
+  'editor.requestClose': { params: undefined; result: Record<string, never> };
+  'editor.save': { params: { sessionId: string; script: Script; snapshotRev?: number; overrideConflicts?: boolean; ignore_conflicts?: boolean }; result: { script: Script; rev: number; savedRev?: number } };
   'editor.describeActions': { params: { actions: Action[] }; result: string[] };
   'editor.toJSON': { params: { script: Script }; result: { text: string } };
   'editor.fromJSON': { params: { text: string }; result: { script: Script } };
@@ -252,6 +266,11 @@ export interface Events {
   'capture.mouse': { capture_id: number; x: number; y: number };
   'capture.ended': { capture_id: number; reason: CaptureEndReason };
   'editor.reset': { reason: string; session_id: string };
+  'editor.closeRequested': { gen: number; sessionId?: string; reason: 'user' | 'app-closing' | 'owner-closing' };
+  'editor.measureRequest': { token: number };
+  'editor.measureAbort': { reason: 'fallback' | 'dpi' | 'timeout' };
+  'editor.windowFailed': { gen: number; stage: string; message: string; recoveredPath?: string };
+  'editor.windowClosed': { gen: number; saved: boolean; forced: boolean; recoveredPath?: string; reason?: string };
   'update.available': { tag: string };
   'update.progress': { pct: number };
   'update.failed': { message: string };

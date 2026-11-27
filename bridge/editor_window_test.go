@@ -1183,3 +1183,26 @@ func TestOversizedFailedSaveDraftIsNotKeptAndRecoveryFileIsCompact(t *testing.T)
 }
 
 func mustCompact(v any) []byte { b, _ := json.Marshal(v); return b }
+
+func TestRequestCloseUsesTheSingleClosePath(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.requestClose", ``)
+	if e.h.count(evEditorCloseRequested) != 1 || e.b.win.State() != "closeRequested" {
+		t.Fatalf("requestClose must emit closeRequested once: %d %s", e.h.count(evEditorCloseRequested), e.b.win.State())
+	}
+	e.b.win.mu.Lock()
+	first := e.b.win.deadline
+	e.b.win.mu.Unlock()
+	e.mustCall(t, "editor.requestClose", ``)
+	e.b.win.mu.Lock()
+	second := e.b.win.deadline
+	e.b.win.mu.Unlock()
+	if e.h.count(evEditorCloseRequested) != 1 || !first.Equal(second) {
+		t.Fatal("a duplicate request must not re-emit or re-arm the watchdog")
+	}
+	e.mustCall(t, "editor.closeDecision", `{"sessionId":"`+e.sid+`","decision":"discard"}`)
+	if e.b.win.State() != "none" {
+		t.Fatalf("state %s", e.b.win.State())
+	}
+}

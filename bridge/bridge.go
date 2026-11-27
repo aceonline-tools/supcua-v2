@@ -696,6 +696,7 @@ func (b *Bridge) Methods() map[string]Handler {
 	regNoParams(m, "editor.windowReady", b.editorWindowReady)
 	reg(m, "editor.measured", b.editorMeasured, "token", "cssW", "cssH")
 	reg(m, "editor.measureAck", b.editorMeasureAck, "token")
+	regNoParams(m, "editor.requestClose", b.editorRequestClose)
 	reg(m, "editor.checkpoint", b.editorCheckpoint, "sessionId", "revision", "script")
 	reg(m, "editor.guardActive", b.editorGuardActive, "sessionId")
 	reg(m, "editor.closeDecision", b.editorCloseDecision, "sessionId", "decision")
