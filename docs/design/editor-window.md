@@ -1,6 +1,8 @@
 # Editor window — design contract (v1.6.0)
 
 Status: **contract rev 3 (E1a.1)**, revised after reviews of ff96774 and ccb9008. Frozen once the Lead accepts it; later changes need a REOPEN.
+> **Changelog — rev 3.2 (E1b review of 5c451dd).** §6.5 adds amendment I (sealed final snapshot; a late publish becomes its own file-only recovery file), J (one admission lock for "a newer generation opened this script" and recovery's enqueue), the late-file handshake, and the note that deadlines bound cleanup, not abandoned workers. §6.3 recovery file names gain the revision and a collision suffix.
+>
 > **Changelog — rev 3.1 (E1b repair, Lead-authorized amendments A–H).** §6.2/§6.5 recovery persistence is a store compare-and-swap (A) with a bounded enqueue deadline (B) and an asynchronous recovery file (C); saves publish their payload as a draft at entry (D); teardown detaches the session before the native state changes (E); cleanups own unique tokens (F); cleanup steps are bounded or asynchronous (G); §7 documents the explicit, logged shutdown escape (H). "Nothing writes after D2" is withdrawn: nothing is **enqueued** after D2.
 
 Base: `origin/main` a507e2f. Spike evidence: `origin/spike/editor-window-cost` (throwaway).
@@ -247,7 +249,7 @@ A single monotonically increasing **`revision`** (JS-safe integer `1..2^53−1`;
 ### 6.3 Recovery and persistence
 
 - Valid + non-conflicting: autosaved through `saveScript` (same path as a user save).
-- Invalid or conflicting: **never written into `scripts/`** and never overwrites the stored revision. Written to `<state-dir>/recovered/<scriptID>-<unixms>.json` (atomic temp+rename, 0600, ≤5 per script, oldest pruned) with the envelope:
+- Invalid or conflicting: **never written into `scripts/`** and never overwrites the stored revision. Written to `<state-dir>/recovered/<scriptID>-<unixms>-<revision>[-n].json` (atomic: temp file, then hard-linked under a name that must not exist yet — never replacing another recovery file — 0600, ≤5 per script, oldest pruned) with the envelope:
   ```json
   {"v":1,"scriptId":"…","revision":N,"savedAt":"RFC3339","script":{…}}
   ```
@@ -271,6 +273,10 @@ State on `editorSession`: `closing` (bool, set atomically under `sessMu`; plus a
 - **C. Recovery file** is written on its own goroutine. Cleanup waits for it at most until the deadline; the gate release never waits on it. A late write is acceptable and is logged.
 - **E. Detach before state change.** Teardown (UI thread) sets `closingFlag` and an atomic `detached` flag and clears the lock-free mirror **before** the native state returns to None; every lookup under `b.mu` drops a detached session, so B's `editor.open` never sees A (no `EDITOR_BUSY`). The lease wait runs on the detached object; saves to it get `SESSION_CLOSING`.
 - **F. Per-cleanup ownership.** Each teardown with a session registers a unique token; the gate (`SetEditDialogOpen(false)`) is released only when the token set is empty **and** no generation is active. Teardowns without a session register none and release only under the same condition. `editor.close` and `ResetSession` release through the same check.
+- **I. Sealed snapshot.** Recovery sets the session's atomic `sealed` flag and then loads the final snapshot; every entry publication stores its snapshot and then reads `sealed`. With sequentially consistent atomics a payload is in the final snapshot or its publisher sees `sealed` and writes the payload (same envelope, its own revision) as an additional **file-only** recovery file through the asynchronous file writer, logged. Nothing is dropped; a duplicate file is possible and harmless.
+- **J. Atomic admission.** `openWindow` registers its script under `admitMu`; recovery holds `admitMu` across its "no newer generation has this script" check and the compare-and-swap enqueue. Either recovery enqueues first (B's `editor.open` then sees the recovered script and the store revision it produced as its etag), or B registered first and recovery is file-only. `admitMu` is a leaf lock.
+- **Late file handshake.** The file writer and the deadline race through one CAS; whichever loses knows it: a write completing after cleanup gave up is always logged.
+- **Abandoned workers.** Deadlines bound **cleanup** (gate, `EnableMain`, events, shutdown), not the workers it abandoned: a recovery goroutine blocked on a lock, a stalled filesystem write or a stalled capture stop may outlive cleanup. They can no longer enqueue (B, I), and they only log when they finish.
 - **G. Bounded cleanup.** Cleanup takes no `sessMu`/`b.mu`; `capture.EndSession` runs asynchronously; persistence and the file run on goroutines bounded by the deadline. `EnableMain` and the gate never wait on them.
 7. `ResetSession` (`bridge/bridge.go:430-442`) is changed to use the same `closing`/detach protocol; it keeps its blocking `sessMu.Lock()` only on its own goroutine (never on the UI thread, never in destroy).
 
