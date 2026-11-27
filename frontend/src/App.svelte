@@ -4,7 +4,6 @@
   import Sidebar from './components/Sidebar.svelte';
   import Scripts from './components/Scripts.svelte';
   import Settings from './components/Settings.svelte';
-  import EditorScreen from './components/EditorScreen.svelte';
   import LicenseScreen from './components/LicenseScreen.svelte';
   import UpdateDialog from './components/UpdateDialog.svelte';
   import DeleteDialog from './components/DeleteDialog.svelte';
@@ -36,10 +35,6 @@
 
 {#if store.boot?.mode === 'notLicensed'}
   <LicenseScreen {store} {copy} />
-{:else if store.route.name === 'editor'}
-  <EditorScreen {store} />
-  <DeleteDialog {store} />
-  <UpdateDialog {store} />
 {:else}
 <div class="app">
   <div class="shell" class:collapsed={store.sidebarCollapsed}>

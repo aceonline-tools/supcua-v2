@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte';
   import type { AppStore } from '../lib/store.svelte';
   let { store }: { store: AppStore } = $props();
-  const onScripts = $derived(store.route.name === 'scripts' || store.route.name === 'editor');
+  const onScripts = $derived(store.route.name === 'scripts');
   const collapsed = $derived(store.sidebarCollapsed);
 </script>
 

@@ -43,11 +43,11 @@ export class MeasureController {
     if (!el) return null;
     const r = el.getBoundingClientRect();
     const kids = Array.from(el.children) as HTMLElement[];
-    const bottom = kids.reduce((m, k) => Math.max(m, k.getBoundingClientRect().bottom), 0);
+    const bottom = kids.reduce((m, k) => Math.max(m, k.getBoundingClientRect().bottom), r.top);
     return {
       cssW: clampPx(r.width), cssH: clampPx(r.height), dpr: (this.env.dpr ?? (() => window.devicePixelRatio || 1))(),
       scrollW: el.scrollWidth, clientW: el.clientWidth, scrollH: el.scrollHeight, clientH: el.clientHeight,
-      lastBlockBottom: Math.round(el.getBoundingClientRect().bottom - bottom),
+      lastBlockBottom: Math.round(bottom - r.top),
     };
   }
 

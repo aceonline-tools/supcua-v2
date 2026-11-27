@@ -1,5 +1,5 @@
 *{box-sizing:border-box}
-:root{--w-title:650;--font:'Segoe UI Variable','Segoe UI',system-ui,-apple-system,sans-serif;--lh:20px;--row-h:24px;--th-h:22px;--ctl-h:24px;--ctl-px:10px;--chip-h:20px;--pad-x:12px;--pad-y:6px;--gap:8px;--radius:5px;--radius-card:8px}
+:root{--actions-pref-h:360px;--w-title:650;--font:'Segoe UI Variable','Segoe UI',system-ui,-apple-system,sans-serif;--lh:20px;--row-h:24px;--th-h:22px;--ctl-h:24px;--ctl-px:10px;--chip-h:20px;--pad-x:12px;--pad-y:6px;--gap:8px;--radius:5px;--radius-card:8px}
 :root,:root[data-theme=dark]{color-scheme:dark;--bg:#101318;--surface:#191e26;--raised:#222934;--line:#303946;--text:#eef2f8;--muted:#a6b1c2;--accent:#8bb8ff;--on-accent:#101318;--selected:#233d5e;--green:#79dcb3;--danger:#ff8a8a;--shadow:0 16px 48px #0003}
 :root[data-theme=light]{color-scheme:light;--bg:#f3f6fb;--surface:#fff;--raised:#f2f5fa;--line:#dce3ee;--text:#19283b;--muted:#5c6b7e;--accent:#155db1;--on-accent:#fff;--selected:#e6efff;--green:#177a56;--danger:#b3261e;--shadow:0 16px 48px #22436612}
 html,body,#app{height:100%}
@@ -117,11 +117,24 @@ strong{font-weight:400}
 .raw{height:320px;font:12px ui-monospace,Consolas,monospace;resize:none}
 .progress{height:6px;border-radius:6px;background:var(--line);margin-top:10px;overflow:hidden}
 .progress span{display:block;height:100%;background:var(--accent)}
-.editor-main{height:100vh;overflow-y:auto;padding:10px 14px 8px}
+.editor-main{height:100%;display:flex;flex-direction:column;overflow:auto;padding:10px 14px 8px}
+.editor-main>*{flex:none}
+.editor-main>.editor-grid{flex:1 0 auto}
+.editor-loading{padding:14px}
+.head-text{flex:1;min-width:0;contain:inline-size}
 .editor-main .page-head{margin-bottom:8px}
 .indicator{white-space:nowrap;font-size:12px;line-height:16px;color:var(--danger)}
 .indicator.ok{color:var(--green)}
-.editor-grid{display:grid;grid-template-columns:260px 340px 1fr;gap:8px}
+.editor-grid{display:grid;grid-template-columns:minmax(210px,26fr) minmax(270px,34fr) minmax(190px,30fr);gap:8px}
+.editor-grid>.card{min-width:0}
+/* intrinsic measurement (editor-window contract §5.2): no viewport units, natural column widths, bounded actions height */
+html[data-measure],html[data-measure] body,html[data-measure] #app{height:auto}
+html[data-measure] body{overflow:visible}
+html[data-measure] .editor-main{height:auto;width:max-content}
+html[data-measure]:not([data-measure-fit]) .editor-grid{grid-template-columns:260px 340px 300px}
+html[data-measure][data-measure-fit] .editor-main{width:var(--measure-w)}
+html[data-measure] .action-list{min-height:var(--actions-pref-h)}
+/* end intrinsic measurement */
 .editor-card{padding:8px 10px}
 .editor-card h3,.action-list h3{font-size:14px;line-height:20px;margin:0 0 4px}
 .field{margin:6px 0}

@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { flushSync, mount } from 'svelte';
 import { createClient } from '../api/client';
 import { MockBackend } from '../api/mock';
-import { AppStore } from '../lib/store.svelte';
+import type { AppStore } from '../lib/store.svelte';
+import { decisions, editorStore } from '../lib/test-editor';
 import EditorScreen from './EditorScreen.svelte';
 import type { KeyPressAction } from '../lib/keySequence';
 
@@ -34,9 +35,7 @@ beforeEach(async () => {
   host = document.createElement('div');
   document.body.replaceChildren(host);
   mock = new MockBackend();
-  store = new AppStore(createClient(mock));
-  await store.init();
-  await store.openEditor('s3');
+  store = await editorStore(mock, 's3');
   mount(EditorScreen, { target: host, props: { store } });
   await settle();
 });

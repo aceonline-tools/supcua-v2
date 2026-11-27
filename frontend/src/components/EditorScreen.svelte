@@ -12,6 +12,7 @@
   import DiscardDialog from './DiscardDialog.svelte';
   let { store }: { store: AppStore } = $props();
   const ed = $derived(store.editor);
+  const groupNames = $derived(ed.groups);
   const sc = $derived(ed.script);
   const num = (i: number) => String(i + 1).padStart(2, '0');
   const mouseButtons: [string, string, IconName][] = [
@@ -28,7 +29,7 @@
     if (e.key !== 'Escape') return;
     if (drag) { e.preventDefault(); endDrag(false); return; }
     if (ed.capturing || ed.capturePending()) { e.preventDefault(); void ed.cancelCapture(); }
-    else if (ed.conflicts) void ed.resolveConflict(false);
+    else if (ed.conflicts) ed.resolveConflict(false);
     else if (ed.actionDialog) ed.closeActionDialog();
     else if (ed.raw) ed.closeRaw();
   }
@@ -124,11 +125,11 @@
 <svelte:window {onkeydown} />
 
 {#if sc}
-  <main class="editor-main">
+  <main class="editor-main" id="editor-root">
     <div class="page-head">
-      <div>
-        <h1>{store.route.name === 'editor' && store.route.id === null ? 'New Script' : 'Edit Script'}</h1>
-        <p>{sc.name}{#if sc.group}<span class="muted">&nbsp;/ {sc.group}</span>{/if}</p>
+      <div class="head-text">
+        <h1>{ed.isNew ? 'New Script' : 'Edit Script'}</h1>
+        <p class="ellip">{sc.name}{#if sc.group}<span class="muted">&nbsp;/ {sc.group}</span>{/if}</p>
       </div>
       <span class="indicator" class:ok={ed.indicator.saved} role="status">{ed.indicator.saved ? '✓' : '●'} {ed.indicator.text}</span>
     </div>
@@ -139,7 +140,7 @@
         <div class="field"><label for="ed-name">Name:</label>
           <input id="ed-name" class="input full" bind:value={sc.name} oninput={() => ed.markDirty()} /></div>
         <div class="field"><label for="ed-group">Group:</label>
-          <GroupCombobox id="ed-group" bind:value={sc.group} options={store.groups.map((g) => g.name)} onchange={() => ed.markDirty()} /></div>
+          <GroupCombobox id="ed-group" bind:value={sc.group} options={groupNames} onchange={() => ed.markDirty()} /></div>
         <div class="field"><label for="ed-enabled">Enabled:</label>
           <label class="hit"><input id="ed-enabled" class="cb" type="checkbox" bind:checked={sc.enabled} onchange={() => ed.markDirty()} /></label></div>
         <div class="field"><span class="lbl" id="rm">Run Mode:</span>
@@ -206,7 +207,7 @@
               onkeydown={(e) => { if (e.key === 'Enter') ed.editSelected(); else if (e.key === ' ') { e.preventDefault(); ed.selectAction(i); } }}>
               <span class="grip" role="button" tabindex="-1" aria-label="Drag to reorder" title="Drag to reorder"
                 onpointerdown={(e) => startDrag(e, i)} ondblclick={(e) => e.stopPropagation()}><Icon name="grip-vertical" size={14} /></span>
-              <span class="num">{num(i)}</span>{ed.labels[i] ?? a.type}
+              <span class="num">{num(i)}</span><span class="ellip">{ed.labels[i] ?? a.type}</span>
             </div>
           {/each}
           {#if !drag}<div class="caret-line" data-index={caret} bind:this={caretEl} style="top:{caretTop}px"></div>{/if}
@@ -222,7 +223,7 @@
     </div>
 
     <div class="editor-foot"><button onclick={() => ed.openRaw()}><Icon name="braces" />Raw JSON</button><span class="spacer"></span>
-      <button class="primary" onclick={() => ed.close()}><Icon name="x" />Close</button></div>
+      <button class="primary" onclick={() => ed.requestClose()}><Icon name="x" />Close</button></div>
   </main>
   <ActionDialog {ed} />
   <RawEditorDialog {ed} />
