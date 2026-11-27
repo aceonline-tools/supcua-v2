@@ -279,6 +279,100 @@ jobs:
           }
           if ($distinct -lt 4) { Write-Host "::error::no-flags window client area is blank (white surface): $paint"; $fail = 1 }
           exit $fail
+      - name: Startup loader evidence (production start, garble; themed loader frames, then hand-off)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $PWD "out/garble"
+          $log = Join-Path $dir "supcua-v2.log"
+          $shots = Join-Path $PWD "out/loader-shots"
+          New-Item -ItemType Directory -Force -Path $shots | Out-Null
+          Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -Namespace W -Name L -MemberDefinition '[StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; } [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);'
+          Add-Type -Namespace W -Name P -UsingNamespace System.Collections.Generic -MemberDefinition 'public static int[] Stat(byte[] b, int stride, int w, int h) { var d = new Dictionary<int,int>(); int best = 0, bk = 0; for (int y = 0; y < h; y++) { int r = y * stride; for (int x = 0; x < w; x++) { int i = r + x * 4; int k = (b[i+2] << 16) | (b[i+1] << 8) | b[i]; int c; d.TryGetValue(k, out c); c++; d[k] = c; if (c > best) { best = c; bk = k; } } } return new int[] { d.Count, bk, best, w * h }; }'
+          function Near([int]$c, [int]$t) {
+            foreach ($sh in 16, 8, 0) { if ([math]::Abs((($c -shr $sh) -band 255) - (($t -shr $sh) -band 255)) -gt 8) { return $false } }
+            return $true
+          }
+          $dark = 0x101318; $light = 0xF3F6FB
+          $p = Start-Process -FilePath (Join-Path $dir "supcua-v2.exe") -PassThru
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $rows = @(); $n = 0; $tShown = $null; $tDone = $null; $topped = $false; $final = $false
+          while ($sw.ElapsedMilliseconds -lt 45000 -and -not $p.HasExited) {
+            $text = ""
+            if (Test-Path -LiteralPath $log) {
+              try { $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite'); try { $text = (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() } } catch {}
+            }
+            $shown = $text.Contains("webview created and shown")
+            $done = $text.Contains("loader done") -or $text.Contains("loader error")
+            if ($shown -and $null -eq $tShown) { $tShown = $sw.ElapsedMilliseconds }
+            if ($done -and $null -eq $tDone) { $tDone = $sw.ElapsedMilliseconds }
+            if ($null -ne $tDone -and ($sw.ElapsedMilliseconds - $tDone) -ge 700) { $final = $true }
+            $p.Refresh(); $h = $p.MainWindowHandle
+            if ($shown -and $h -ne [IntPtr]::Zero -and $n -lt 80) {
+              if (-not $topped) { [void][W.L]::SetWindowPos($h, [IntPtr]::new(-1), 0, 0, 0, 0, 0x53); [void][W.L]::SetForegroundWindow($h); $topped = $true }
+              $r = New-Object W.L+RECT; [void][W.L]::GetClientRect($h, [ref]$r)
+              $pt = New-Object W.L+PT; [void][W.L]::ClientToScreen($h, [ref]$pt)
+              $w = $r.R - $r.L; $ht = $r.B - $r.T
+              if ($w -gt 0 -and $ht -gt 0) {
+                $at = $sw.ElapsedMilliseconds - $tShown
+                $bmp = New-Object System.Drawing.Bitmap $w, $ht
+                $g = [System.Drawing.Graphics]::FromImage($bmp)
+                $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
+                $d = $bmp.LockBits((New-Object System.Drawing.Rectangle 0, 0, $w, $ht), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+                $bytes = New-Object byte[] ($d.Stride * $ht)
+                [System.Runtime.InteropServices.Marshal]::Copy($d.Scan0, $bytes, 0, $bytes.Length)
+                $stride = $d.Stride; $bmp.UnlockBits($d)
+                $st = [W.P]::Stat($bytes, $stride, $w, $ht)
+                $phase = if ($final) { "after" } elseif ($null -ne $tDone) { "handoff" } else { "loading" }
+                $name = "{0:D2}-{1}-{2}ms.png" -f $n, $phase, $at
+                $bmp.Save((Join-Path $shots $name)); $g.Dispose(); $bmp.Dispose()
+                $rows += [pscustomobject]@{ N = $n; Phase = $phase; At = $at; Distinct = $st[0]; Dom = $st[1]; Share = [math]::Round($st[2] / $st[3], 3); File = $name }
+                $n++
+              }
+            }
+            if ($final -and ($rows | Where-Object { $_.Phase -eq "after" })) { break }
+            Start-Sleep -Milliseconds 40
+          }
+          $exited = $p.HasExited
+          if (-not $exited) { $p.Kill($true) }
+          $lines = $rows | ForEach-Object { "{0} {1,-8} +{2,5}ms distinct={3,5} dominant=#{4:X6} share={5} {6}" -f $_.N, $_.Phase, $_.At, $_.Distinct, $_.Dom, $_.Share, $_.File }
+          $lines | Set-Content -LiteralPath (Join-Path $shots "summary.txt")
+          Write-Host ("tShown={0}ms tDone={1}ms frames={2}" -f $tShown, $tDone, $rows.Count)
+          $lines | ForEach-Object { Write-Host $_ }
+          if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log (Join-Path $shots "supcua-v2.log") -Force }
+          $fail = 0
+          if ($null -eq $tShown) { Write-Host "::error::never saw 'webview created and shown'"; exit 1 }
+          if ($null -eq $tDone) { Write-Host "::error::loader never handed off (no 'loader done' log line)"; $fail = 1 }
+          $loading = @($rows | Where-Object { $_.Phase -eq "loading" })
+          if ($loading.Count -lt 1) { Write-Host "::error::no frame captured while the loader was up"; $fail = 1 }
+          foreach ($f in $loading) {
+            if (-not ((Near $f.Dom $dark) -or (Near $f.Dom $light)) -or $f.Share -lt 0.7) { Write-Host ("::error::loading frame {0} (+{1}ms) is not the themed background: dominant=#{2:X6} share={3}" -f $f.File, $f.At, $f.Dom, $f.Share); $fail = 1 }
+          }
+          if ($text.Contains("loader error")) { Write-Host "::error::loader ended in its error state on a normal start"; $fail = 1 }
+          $painted = $loading | Where-Object { $_.Distinct -ge 4 } | Select-Object -First 1
+          if ($null -eq $painted) { Write-Host "::warning::no captured frame showed the loader's own pixels (page first paint was between two captures)" }
+          else { Write-Host ("loader painted at +{0}ms: dominant=#{1:X6} distinct={2}" -f $painted.At, $painted.Dom, $painted.Distinct) }
+          $first = $loading | Select-Object -First 1
+          if ($null -ne $first) { Write-Host ("first frame +{0}ms (before the page painted): dominant=#{1:X6} share={2} distinct={3}" -f $first.At, $first.Dom, $first.Share, $first.Distinct) }
+          $after = $rows | Where-Object { $_.Phase -eq "after" } | Select-Object -First 1
+          if ($null -eq $after) { Write-Host "::error::no frame after the hand-off"; $fail = 1 }
+          elseif ($after.Distinct -lt 4) { Write-Host ("::error::window blank after hand-off: distinct={0}" -f $after.Distinct); $fail = 1 }
+          else {
+            $hAfter = (Get-FileHash (Join-Path $shots $after.File)).Hash
+            $hFirst = if ($null -ne $first) { (Get-FileHash (Join-Path $shots $first.File)).Hash } else { "" }
+            if ($hAfter -eq $hFirst) { Write-Host "::error::after-hand-off frame is identical to the first loading frame"; $fail = 1 }
+            else { Write-Host ("after hand-off frame OK (+{0}ms): distinct={1} dominant=#{2:X6}" -f $after.At, $after.Distinct, $after.Dom) }
+          }
+          if ($exited) { Write-Host "::error::app exited early (code $($p.ExitCode))"; $fail = 1 }
+          exit $fail
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: loader-shots
+          path: out/loader-shots/
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v7
         if: always()
         with:
