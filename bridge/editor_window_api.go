@@ -56,38 +56,38 @@ func (b *Bridge) savedUpTo(sessionID string) bool {
 	return b.session != nil && b.session.id == sessionID && b.session.lastSavedRev >= b.session.dirtyRev
 }
 
-// cleanupSession is the off-UI-thread half of every editor teardown: the session is marked
-// closing (new saves get SESSION_CLOSING, in-flight saves get a bounded wait), capture ends,
-// forced/failed closes recover the draft, the session is released and script execution resumes.
-// It never takes part in native destroy, which already happened.
-func (b *Bridge) cleanupSession(gen uint64, kind teardownKind, stage, msg string) {
-	b.mu.Lock()
-	sess := b.session
+// cleanupSession is the off-UI-thread half of every editor teardown, bound to the generation that
+// started it: it touches only that generation's session and capture, and releases script execution
+// only when no editor generation is active. The session was already marked closing (lock-free)
+// BEFORE the window was destroyed. Order: bounded wait for in-flight saves, detach the session (so a
+// reopened editor can open its own), end that session's capture, recover its draft by deadline.
+func (b *Bridge) cleanupSession(gen uint64, kind teardownKind, stage, msg string, deadline time.Time) {
+	sess := b.sessAtomic.Load()
 	if sess != nil && (sess.gen != gen || gen == 0) {
 		sess = nil
 	}
-	b.mu.Unlock()
 	inflight := false
-	if sess != nil {
-		inflight = b.markClosing(sess)
-	}
-	b.capture.End(EndEditorClosed)
-	var rr RecoverResult
 	saved := false
+	var rr RecoverResult
 	if sess != nil {
-		if kind != tdNormal {
-			rr = b.recoverDraft(sess, inflight)
-		}
+		inflight = b.waitSaves(sess, saveLeaseWaitMax)
 		b.sessMu.Lock()
 		b.mu.Lock()
+		sess.detached = true
 		saved = sess.lastSavedRev > 0
 		if b.session == sess {
-			b.session = nil
+			b.setSessionLocked(nil)
 		}
 		b.mu.Unlock()
 		b.sessMu.Unlock()
+		b.capture.EndSession(sess.id, EndEditorClosed)
+		if kind != tdNormal {
+			rr = b.recoverDraft(sess, inflight, deadline)
+		}
 	}
-	if b.d.Controller != nil {
+	if w := b.winCtl(); w != nil {
+		w.cleanupDone() // releases the gate only when no editor generation is active
+	} else if b.d.Controller != nil {
 		b.d.Controller.SetEditDialogOpen(false)
 	}
 	if kind == tdFailed {
@@ -97,8 +97,7 @@ func (b *Bridge) cleanupSession(gen uint64, kind teardownKind, stage, msg string
 		b.emit(evEditorWindowFailed, windowFailedEvent{Gen: gen, Stage: stage, Message: msg, RecoveredPath: rr.Path})
 		return
 	}
-	reason := rr.Reason
-	b.emit(evEditorWindowClosed, windowClosedEvent{Gen: gen, Saved: saved || rr.Persisted, Forced: kind == tdForced, RecoveredPath: rr.Path, Reason: reason})
+	b.emit(evEditorWindowClosed, windowClosedEvent{Gen: gen, Saved: saved || rr.Persisted, Forced: kind == tdForced, RecoveredPath: rr.Path, Reason: rr.Reason})
 }
 
 func (b *Bridge) needWindow() (*windowCtl, error) {

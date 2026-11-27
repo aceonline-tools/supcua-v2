@@ -92,13 +92,19 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 	u.editorGen.Store(w.gen)
 
 	var once sync.Once
+	// fail handles an asynchronous startup failure. With an owner (OnFailed) the window is only
+	// invalidated here: the owner re-enables main and restores its gate, THEN destroys it
+	// (DestroyEditorWindow), so the order is always invalidate → main enabled → destroy.
 	fail := func(err error) {
 		once.Do(func() {
 			log.Printf("webview: editor window gen=%d startup failed: %v", w.gen, err)
-			u.destroyEditor(w)
-			if o.OnFailed != nil {
-				o.OnFailed(w, err)
+			if o.OnFailed == nil {
+				u.destroyEditor(w)
+				return
 			}
+			w.invalidate()
+			u.editorGen.CompareAndSwap(w.gen, 0)
+			o.OnFailed(w, err)
 		})
 	}
 	b := w.newBrowser(u.dataPath)
@@ -150,9 +156,13 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		})
 	}
 	if err := b.EmbedFromEnvironment(u.browser.Environment(), uintptr(hwnd)); err != nil {
+		// Synchronous failure: no callback. The window is invalidated and RETURNED with the error so
+		// the caller rolls back in order (main enabled, gate restored) and then destroys it.
 		timer.Stop()
-		fail(err)
-		return nil, err
+		once.Do(func() {})
+		w.invalidate()
+		u.editorGen.CompareAndSwap(w.gen, 0)
+		return w, err
 	}
 	return w, nil
 }
@@ -305,4 +315,33 @@ func (u *UI) EmitEditor(gen uint64, event string, payload any) {
 		return
 	}
 	ed.postFrame(b, false)
+}
+
+// RecoverEditorOnScreen moves the editor to the main window's monitor when no monitor shows enough
+// of it any more (WM_DISPLAYCHANGE, DPI change). Reports whether it moved. UI thread only.
+func (u *UI) RecoverEditorOnScreen() bool {
+	w := u.editor
+	if w == nil || w.hwnd == 0 || !win.IsWindowVisible(w.hwnd) || win.IsIconic(w.hwnd) {
+		return false
+	}
+	var r win.RECT
+	if !win.GetWindowRect(w.hwnd, &r) {
+		return false
+	}
+	nearest := scRect{}
+	if h, _, _ := procMonitorFromRect.Call(uintptr(unsafe.Pointer(&r)), 2); h != 0 { // MONITOR_DEFAULTTONEAREST
+		mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
+		if win.GetMonitorInfo(win.HMONITOR(h), &mi) {
+			nearest = scRect{int(mi.RcWork.Left), int(mi.RcWork.Top), int(mi.RcWork.Right), int(mi.RcWork.Bottom)}
+		}
+	}
+	tw, ok := workArea(u.hwnd)
+	if !ok {
+		return false
+	}
+	out, moved := recoverRect(scRect{int(r.Left), int(r.Top), int(r.Right), int(r.Bottom)}, nearest, scRect{tw.L, tw.T, tw.R, tw.B})
+	if moved {
+		win.SetWindowPos(w.hwnd, 0, int32(out.L), int32(out.T), int32(out.w()), int32(out.h()), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+	}
+	return moved
 }

@@ -1,8 +1,6 @@
 package bridge
 
 import (
-	"encoding/json"
-
 	"github.com/yanmad27/supcua-v2/model"
 )
 
@@ -30,7 +28,7 @@ func (b *Bridge) editorCheckpoint(p struct {
 	if p.Revision == 0 || p.Revision > maxRevision {
 		return nil, newErr(CodeBadRequest)
 	}
-	if raw, err := json.Marshal(p.Script); err != nil || len(raw) > maxDraftBytes {
+	if draftBytes(p.Script) > maxDraftBytes { // the one compact measure, shared by every draft kind
 		return nil, newErr(CodeDraftTooLarge)
 	}
 	b.mu.Lock()
@@ -57,6 +55,7 @@ func (b *Bridge) editorCheckpoint(p struct {
 	if p.Revision > sess.dirtyRev {
 		sess.dirtyRev = p.Revision
 	}
+	sess.publishLocked()
 	return checkpointResult{Applied: true, Revision: p.Revision}, nil
 }
 

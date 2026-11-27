@@ -154,12 +154,13 @@ type Bridge struct {
 	initial   []model.Script // the list read once in New; immutable
 	initialOK bool           // false when that listing failed
 
-	mu      sync.Mutex
-	scripts []model.Script
-	rev     uint64
-	failed  map[string]struct{}
-	session *editorSession
-	closed  bool
+	mu         sync.Mutex
+	scripts    []model.Script
+	rev        uint64
+	failed     map[string]struct{}
+	session    *editorSession
+	sessAtomic atomic.Pointer[editorSession] // lock-free mirror of session (UI-thread teardown, recovery)
+	closed     bool
 
 	winMu        sync.RWMutex
 	win          *windowCtl // editor window controller; nil until AttachEditorHost (read it through winCtl)
@@ -389,7 +390,8 @@ func (b *Bridge) onSaveError(script model.Script, err error) {
 const (
 	shutdownRecovery = time.Second
 	shutdownDestroy  = 1500 * time.Millisecond
-	destroyCap       = 5 * time.Second // last-resort bound on the destroyed barrier
+	// shutdownDestroyGrace: how long past D3 the barrier waits for destroy before giving way.
+	shutdownDestroyGrace = 500 * time.Millisecond
 )
 
 // BeginShutdown starts a cooperative shutdown; call it on the UI thread. It returns at once:
@@ -412,7 +414,7 @@ func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 		}
 		b.emit(EvAppClosing, appClosingEvent{DeadlineMs: deadline.Milliseconds(), Roles: roles})
 		if w != nil {
-			w.beginShutdown()
+			w.beginShutdown(b.clock().Now().Add(deadline + shutdownRecovery)) // D2: nothing persists after it
 		}
 	})
 	if !started {
@@ -421,10 +423,12 @@ func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 	d1, stop1 := b.afterChan(deadline)
 	d2, stop2 := b.afterChan(deadline + shutdownRecovery)
 	d3, stop3 := b.afterChan(deadline + shutdownDestroy)
+	d3x, stop3x := b.afterChan(deadline + shutdownDestroy + shutdownDestroyGrace)
 	go func() {
 		defer stop1()
 		defer stop2()
 		defer stop3()
+		defer stop3x()
 		var destroyed, done <-chan struct{}
 		if w != nil {
 			destroyed, done = w.waitChans()
@@ -455,14 +459,15 @@ func (b *Bridge) BeginShutdown(deadline time.Duration, then func()) {
 		qdone := make(chan struct{})
 		go func() { b.quiesce(quiesceGrace); close(qdone) }()
 		if w != nil {
-			select { // D3: the window must be gone; teardown runs on the UI thread, independent of quiesce
+			select { // D3: teardown runs on the UI thread, independent of quiesce and of any Go-side wait
 			case <-destroyed:
 			case <-d3:
 				b.post(w.forceForShutdown)
 			}
-			select {
+			select { // the AND barrier; it gives way only when the UI thread itself is wedged
 			case <-destroyed:
-			case <-time.After(destroyCap):
+			case <-d3x:
+				log.Printf("bridge: shutdown proceeds although the editor window was not destroyed by D3+0.5s (UI thread wedged?)")
 			}
 		}
 		<-qdone
@@ -507,7 +512,12 @@ func (b *Bridge) ResetSession(reason string) {
 	}
 	b.sessMu.Lock()
 	b.mu.Lock()
-	if b.session != nil && b.session.gen != 0 { // the editor window's session: owned by its controller (§4.7)
+	// DISPOSITION (editor-window §4.7 vs §6.5): ResetSession serves the MAIN window's renderer
+	// recovery. A session opened by the editor window (gen != 0) belongs to the editor window's own
+	// controller, which already detaches it under the §6.5 protocol (closing flag, save lease,
+	// recovery) when the editor's renderer or the shared browser fails; a main-renderer reload does
+	// not affect the editor's renderer, so the session is deliberately left alone here.
+	if b.session != nil && b.session.gen != 0 {
 		b.mu.Unlock()
 		b.sessMu.Unlock()
 		return
@@ -516,7 +526,7 @@ func (b *Bridge) ResetSession(reason string) {
 	if b.session != nil {
 		sessionID = b.session.id
 	}
-	b.session = nil // in-flight saves/captures hold the old *editorSession and fail their commit check
+	b.setSessionLocked(nil) // in-flight saves/captures hold the old *editorSession and fail their commit check
 	b.mu.Unlock()
 	b.capture.End(endReason)
 	if b.d.Controller != nil {
@@ -546,7 +556,7 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 		b.sessMu.Lock()
 		b.mu.Lock()
 		b.closed = true
-		b.session = nil
+		b.setSessionLocked(nil)
 		b.mu.Unlock()
 		if b.d.Controller != nil {
 			b.d.Controller.SetEditDialogOpen(false)

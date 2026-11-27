@@ -73,11 +73,15 @@ func (h *EditorHost) CreateEditor() (uint64, error) {
 		o.Fixture = h.Fixture()
 	}
 	w, err := h.U.CreateEditorWindow(o)
+	var gen uint64
+	if w != nil {
+		gen = w.Gen() // valid even on error: the caller destroys the half-made window after rollback
+	}
 	if err != nil {
-		return 0, err
+		return gen, err
 	}
 	h.rec("create")
-	return w.Gen(), nil
+	return gen, nil
 }
 
 func (h *EditorHost) PrepareEditor(gen uint64, rem model.EditorWindow) (bridge.EditorMetrics, error) {

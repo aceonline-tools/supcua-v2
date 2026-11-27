@@ -92,6 +92,11 @@ func newFakeEdHost() *fakeEdHost {
 	return &fakeEdHost{visible: true, nextGen: 1, mainEnabled: true, payloads: map[string][]any{}, destroyed: map[uint64]bool{},
 		metrics: EditorMetrics{DPI: 96, FrameW: 16, FrameH: 39, Work: Rect{0, 0, 1920, 1040}, OwnerCX: 960, OwnerCY: 520}}
 }
+func (h *fakeEdHost) isDestroyed(g uint64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.destroyed[g]
+}
 func (h *fakeEdHost) rec(s string)      { h.mu.Lock(); h.log = append(h.log, s); h.mu.Unlock() }
 func (h *fakeEdHost) Post(f func())     { f() }
 func (h *fakeEdHost) MainVisible() bool { return h.visible }
@@ -108,7 +113,12 @@ func (h *fakeEdHost) EnableMain(e bool) {
 func (h *fakeEdHost) RevealMain() { h.rec("revealMain") }
 func (h *fakeEdHost) CreateEditor() (uint64, error) {
 	if h.createErr != nil {
-		return 0, h.createErr
+		h.mu.Lock()
+		g := h.nextGen
+		h.nextGen++
+		h.mu.Unlock()
+		h.rec("createFailed")
+		return g, h.createErr // the half-made window's generation comes back with the error
 	}
 	h.mu.Lock()
 	g := h.nextGen
@@ -137,7 +147,11 @@ func (h *fakeEdHost) DestroyEditor(g uint64) {
 	h.mu.Lock()
 	h.destroyed[g] = true
 	h.mu.Unlock()
-	h.rec("destroy")
+	gate := ""
+	if h.snap != nil {
+		gate = map[bool]string{true: ",gate=open", false: ",gate=closed"}[h.snap()]
+	}
+	h.rec("destroy" + gate)
 }
 func (h *fakeEdHost) EmitEditor(_ uint64, ev string, p any) {
 	h.mu.Lock()
@@ -312,7 +326,7 @@ func TestStartupFailureRollsBack(t *testing.T) {
 			if !e.h.mainEnabled || e.ctl.Snapshot().EditDialogOpen || e.b.session != nil || e.b.win.State() != "none" {
 				t.Fatalf("rollback incomplete: %v", e.h.log)
 			}
-			if len(e.em.named("editor.windowFailed")) != 1 || !e.h.destroyed[e.gen] {
+			if len(e.em.named("editor.windowFailed")) != 1 || !e.h.isDestroyed(e.gen) {
 				t.Fatal("main must get a toast event and the window must be destroyed")
 			}
 			e.mustCall(t, "editor.openWindow", `{"id":"a"}`) // and reopen works
@@ -391,7 +405,7 @@ func TestWatchdogFiresAtTenSecondsAndOnlyAfterACloseRequest(t *testing.T) {
 		t.Fatal("early")
 	}
 	e.clk.Advance(200 * time.Millisecond)
-	if e.b.win.State() != "none" || !e.h.destroyed[e.gen] {
+	if e.b.win.State() != "none" || !e.h.isDestroyed(e.gen) {
 		t.Fatalf("must fire at T0+10s: %s", e.b.win.State())
 	}
 	e.waitDone(t)
@@ -486,7 +500,7 @@ func TestFailEditorFromEveryState(t *testing.T) {
 			gen := e.b.win.currentGen()
 			e.b.win.ProcessFailed(gen, 1)
 			e.waitDone(t)
-			if e.b.win.State() != "none" || !e.h.mainEnabled || e.ctl.Snapshot().EditDialogOpen || e.b.session != nil || !e.h.destroyed[gen] {
+			if e.b.win.State() != "none" || !e.h.mainEnabled || e.ctl.Snapshot().EditDialogOpen || e.b.session != nil || !e.h.isDestroyed(gen) {
 				t.Fatalf("%s: not fully failed over: %v", name, e.h.log)
 			}
 			if got := len(e.em.named("editor.windowFailed")); got != 1 {
@@ -730,17 +744,34 @@ func TestRecoveryFilesArePrunedToFivePerScript(t *testing.T) {
 
 // ---- save lease (the session commit fence) ----
 
-func TestCleanupWaitsForAnInFlightSaveAndLaterSavesGetSessionClosing(t *testing.T) {
-	e := newEdRig(t, edScript("a"))
-	e.openAll(t, "a")
-	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Newer Draft")+`}`)
-	inSave, release := make(chan struct{}), make(chan struct{})
+func stuckSaveHook(e *edRig) (inSave, release chan struct{}) {
+	inSave, release = make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	e.b.testHook = func(stage string) {
 		if stage == "validated" {
 			once.Do(func() { close(inSave); <-release })
 		}
 	}
+	return
+}
+
+func (c *fakeClock) live() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, t := range c.timers {
+		if !t.dead.Load() {
+			n++
+		}
+	}
+	return n
+}
+
+func TestSaveNotPastItsCommitPointIsRejectedOnceClosingIsSetAndStillRecovered(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Newer Draft")+`}`)
+	inSave, release := stuckSaveHook(e)
 	saveDone := make(chan error, 1)
 	go func() {
 		_, err := e.m["editor.save"](json.RawMessage(`{"sessionId":"` + e.sid + `","snapshotRev":3,"script":` + scriptJSON("a", "In Flight") + `}`))
@@ -754,51 +785,57 @@ func TestCleanupWaitsForAnInFlightSaveAndLaterSavesGetSessionClosing(t *testing.
 		<-done
 		close(cleaned)
 	}()
-	waitFor(t, func() bool { e.b.mu.Lock(); defer e.b.mu.Unlock(); return e.b.session != nil && e.b.session.closing })
-	if _, err := e.call(t, "editor.save", `{"sessionId":"`+e.sid+`","snapshotRev":4,"script":`+scriptJSON("a", "Late")+`}`); err == nil {
-		t.Fatal("a save after closing began must be refused")
-	} else {
-		wantCode(t, err, CodeSessionClosing)
-	}
+	waitFor(t, func() bool {
+		return e.b.session != nil && e.b.session.closingFlag.Load() || e.b.sessAtomic.Load() != nil && e.b.sessAtomic.Load().closingFlag.Load()
+	})
+	_, err := e.call(t, "editor.save", `{"sessionId":"`+e.sid+`","snapshotRev":4,"script":`+scriptJSON("a", "Late")+`}`)
+	wantCode(t, err, CodeSessionClosing)
 	select {
 	case <-cleaned:
-		t.Fatal("cleanup must wait for the in-flight save (bounded)")
+		t.Fatal("cleanup must wait for the in-flight save within its bound")
 	case <-time.After(100 * time.Millisecond):
 	}
-	close(release) // the in-flight save finishes: it already passed its check, so it commits normally
-	if err := <-saveDone; err != nil {
-		t.Fatalf("a save that held the lease completes: %v", err)
-	}
+	close(release) // it passed validation but not its commit point: the fence rejects it
+	wantCode(t, <-saveDone, CodeSessionClosing)
 	<-cleaned
 	if e.scr("a").Name != "In Flight" {
-		t.Fatalf("recovery must not overwrite a newer committed revision: %q", e.scr("a").Name)
+		t.Fatalf("the rejected save's draft is the newest and must be recovered, not lost: %q", e.scr("a").Name)
+	}
+	if ents, _ := os.ReadDir(e.dir); len(ents) != 1 {
+		t.Fatalf("recovery file: %v", ents)
 	}
 }
 
-func TestCleanupGivesUpAfterTheBoundAndRecoversFileOnly(t *testing.T) {
+func TestLeaseWaitIsBoundedAt500msOnTheInjectedClock(t *testing.T) {
 	e := newEdRig(t, edScript("a"))
 	e.openAll(t, "a")
 	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Draft")+`}`)
-	inSave, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	e.b.testHook = func(stage string) {
-		if stage == "validated" {
-			once.Do(func() { close(inSave); <-release })
-		}
-	}
+	_, release := stuckSaveHook(e)
 	go e.m["editor.save"](json.RawMessage(`{"sessionId":"` + e.sid + `","snapshotRev":1,"script":` + scriptJSON("a", "Stuck") + `}`))
-	<-inSave
-	start := time.Now()
+	waitFor(t, func() bool { return e.b.sessAtomic.Load().savingN.Load() == 1 })
+	before := e.clk.live()
 	e.b.win.ProcessFailed(e.gen, 1)
-	e.waitDone(t)
-	if d := time.Since(start); d < saveLeaseWaitMax-50*time.Millisecond || d > 2*time.Second {
-		t.Fatalf("bounded wait %v", d)
+	waitFor(t, func() bool { return e.clk.live() > before-1 && e.b.sessAtomic.Load() != nil })
+	_, done := e.b.win.waitChans()
+	select {
+	case <-done:
+		t.Fatal("cleanup must wait for the lease until the bound")
+	case <-time.After(80 * time.Millisecond):
 	}
-	if ents, _ := os.ReadDir(e.dir); len(ents) != 1 {
-		t.Fatalf("file-only recovery: %v", ents)
+	e.clk.Advance(saveLeaseWaitMax - time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("just under 500ms it still waits")
+	case <-time.After(50 * time.Millisecond):
 	}
-	if e.scr("a").Name == "Draft" {
-		t.Fatal("with a save in flight recovery must not persist into the script")
+	e.clk.Advance(2 * time.Millisecond) // the bound passes
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cleanup must give up at 500ms")
+	}
+	if ents, _ := os.ReadDir(e.dir); len(ents) != 1 || e.scr("a").Name == "Draft" {
+		t.Fatalf("file-only recovery with a save in flight: %v %q", ents, e.scr("a").Name)
 	}
 	close(release)
 }
@@ -858,8 +895,8 @@ func TestShutdownForcesTheEditorAtD1WithRecoveryAndRespectsTheBarrier(t *testing
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown never completed")
 	}
-	if !e.h.destroyed[e.gen] || e.scr("a").Name != "Shutdown Draft" {
-		t.Fatalf("forced at D1 with recovery: destroyed=%v name=%q", e.h.destroyed[e.gen], e.scr("a").Name)
+	if !e.h.isDestroyed(e.gen) || e.scr("a").Name != "Shutdown Draft" {
+		t.Fatalf("forced at D1 with recovery: destroyed=%v name=%q", e.h.isDestroyed(e.gen), e.scr("a").Name)
 	}
 	if ents, _ := os.ReadDir(e.dir); len(ents) != 1 {
 		t.Fatal("recovery file")
@@ -938,3 +975,214 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not reached")
 }
+
+// ---- review fixes ----
+
+// A forced close whose recovery is still running must not release the gate, end the capture or
+// take the session of the editor reopened meanwhile.
+func TestReopenWhileOlderCleanupRunsKeepsTheNewEditorsGateSessionAndCapture(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	genA := e.gen
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "A Draft")+`}`)
+	_, release := stuckSaveHook(e) // A's recovery persistence blocks
+	e.b.win.CloseRequested(genA)
+	e.clk.Advance(closeBase + time.Millisecond) // watchdog: A force-closed, cleanup recovering
+	waitFor(t, func() bool { _, d := e.b.win.waitChans(); return d != nil && e.b.sessAtomic.Load() == nil })
+
+	e.openAll(t, "a") // B opens while A's cleanup is still running
+	sidB := e.sid
+	e.mustCall(t, "capture.hotkey.start", `{"sessionId":"`+sidB+`","field":"toggle"}`)
+	e.clk.Advance(recoverBound + time.Millisecond) // A's bounded recovery gives up
+	time.Sleep(100 * time.Millisecond)
+	if !e.ctl.Snapshot().EditDialogOpen {
+		t.Fatal("A's cleanup released the gate of the running editor B")
+	}
+	if e.b.sessionIDForGen(e.gen) != sidB {
+		t.Fatal("A's cleanup took or cleared B's session")
+	}
+	if mode, sess := e.b.capture.Active(); sess != sidB || mode == "" {
+		t.Fatalf("A's cleanup ended B's capture: %v %q", mode, sess)
+	}
+	if ents, _ := os.ReadDir(e.dir); len(ents) != 1 {
+		t.Fatalf("A's recovery snapshot must survive the reopen: %v", ents)
+	}
+	close(release)
+	// B closes normally: now the gate is released.
+	e.b.win.CloseRequested(e.gen)
+	e.mustCall(t, "editor.closeDecision", `{"sessionId":"`+sidB+`","decision":"discard"}`)
+	e.waitDone(t)
+	waitFor(t, func() bool { return !e.ctl.Snapshot().EditDialogOpen })
+}
+
+func TestConcurrentSavesDuringTeardownNeverCommitAfterTheFence(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 1; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				name := "W" + itoa(g) + "-" + itoa(i)
+				e.m["editor.save"](json.RawMessage(`{"sessionId":"` + e.sid + `","snapshotRev":` + itoa(g*1000+i) + `,"script":` + scriptJSON("a", name) + `}`))
+			}
+		}(g)
+	}
+	time.Sleep(30 * time.Millisecond)
+	e.b.win.ProcessFailed(e.gen, 1)
+	e.waitDone(t)
+	close(stop)
+	wg.Wait()
+	final := e.scr("a").Name
+	time.Sleep(50 * time.Millisecond)
+	if e.scr("a").Name != final {
+		t.Fatal("the script changed after cleanup finished")
+	}
+}
+
+func TestFailedDiskWriteKeepsTheDraftSoAForcedCloseRecoversIt(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.store.flushOK = false // queue accepted, flush reports the disk write failed
+	_, err := e.call(t, "editor.save", `{"sessionId":"`+e.sid+`","snapshotRev":5,"script":`+scriptJSON("a", "Disk Fail")+`}`)
+	wantCode(t, err, CodeSaveFailed)
+	e.store.flushOK = true
+	if e.b.session.lastSavedRev != 0 {
+		t.Fatal("lastSavedRev must not advance before queue+flush succeeded")
+	}
+	e.b.win.ProcessFailed(e.gen, 1)
+	e.waitDone(t)
+	ents, _ := os.ReadDir(e.dir)
+	if len(ents) != 1 {
+		t.Fatalf("the failed save's draft must be recovered: %v", ents)
+	}
+	raw, _ := os.ReadFile(filepath.Join(e.dir, ents[0].Name()))
+	var env RecoveryEnvelope
+	_ = json.Unmarshal(raw, &env)
+	if env.Script.Name != "Disk Fail" || env.Revision != 5 {
+		t.Fatalf("%s", raw)
+	}
+}
+
+func TestStartupFailureOrderIsMainEnabledThenGateThenDestroy(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.h.createErr = errors.New("embed failed synchronously")
+	if _, err := e.call(t, "editor.openWindow", `{"id":"a"}`); err == nil {
+		t.Fatal("the synchronous failure must come back as an error")
+	}
+	if !e.h.order("enableMain=false", "createFailed", "enableMain=true", "destroy") {
+		t.Fatalf("sync failure: %v", e.h.log)
+	}
+	if e.ctl.Snapshot().EditDialogOpen || !e.h.mainEnabled || e.b.win.State() != "none" {
+		t.Fatal("rolled back by openWindow itself")
+	}
+	if len(e.h.destroyed) != 1 {
+		t.Fatal("the half-made window is destroyed after the rollback")
+	}
+
+	e2 := newEdRig(t, edScript("a"))
+	res := e2.mustCall(t, "editor.openWindow", `{"id":"a"}`)
+	e2.h.rec("---")
+	e2.b.win.WindowFailed(uint64(res["gen"].(float64)), "embed", "async")
+	e2.waitDone(t)
+	if !e2.h.order("---", "enableMain=true,gate=open", "destroy,gate=closed") {
+		t.Fatalf("async failure: main enabled, gate restored, THEN destroy: %v", e2.h.log)
+	}
+}
+
+func TestSharedAfterD2NothingPersistsAndTheBarrierWaitsForDestroy(t *testing.T) {
+	e, then := shutdownRig(t)
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Late Draft")+`}`)
+	_, release := stuckSaveHook(e) // the recovery persistence blocks past D2
+	e.mustCall(t, "app.closingReady", ``)
+	e.clk.Advance(1500*time.Millisecond + time.Millisecond) // D1: forced
+	waitFor(t, func() bool { return e.h.isDestroyed(e.gen) })
+	e.clk.Advance(shutdownRecovery) // D2: recovery abandoned
+	select {
+	case <-then:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown must proceed once recovery is abandoned and the editor destroyed")
+	}
+	if ents, _ := os.ReadDir(e.dir); len(ents) != 1 {
+		t.Fatalf("the recovery FILE was written before D2: %v", ents)
+	}
+	close(release)
+	time.Sleep(150 * time.Millisecond)
+	if e.scr("a").Name == "Late Draft" {
+		t.Fatal("nothing may persist into the script after D2")
+	}
+}
+
+type heldUI struct {
+	mu sync.Mutex
+	fs []func()
+}
+
+func (h *heldUI) Post(f func()) { h.mu.Lock(); h.fs = append(h.fs, f); h.mu.Unlock() }
+func (h *heldUI) n() int        { h.mu.Lock(); defer h.mu.Unlock(); return len(h.fs) }
+
+func TestShutdownBarrierNeedsDestroyAndGivesWayOnlyWhenTheUIThreadIsWedged(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	ui := &heldUI{}
+	e.b.d.UI = ui // a wedged UI thread: posted work never runs
+	then := make(chan struct{})
+	e.b.BeginShutdown(1500*time.Millisecond, func() { close(then) })
+	e.mustCall(t, "app.closingReady", ``)
+	e.clk.Advance(1500*time.Millisecond + time.Millisecond) // D1: forced close is POSTED, never runs
+	waitFor(t, func() bool { return ui.n() >= 1 })
+	e.clk.Advance(shutdownRecovery)
+	e.clk.Advance(500 * time.Millisecond) // D3
+	time.Sleep(100 * time.Millisecond)
+	if isClosed(then) {
+		t.Fatal("then must wait for destroy")
+	}
+	mid := ui.n()
+	e.clk.Advance(shutdownDestroyGrace) // D3+0.5s: the barrier gives way (logged)
+	waitFor(t, func() bool { return ui.n() > mid })
+	if isClosed(then) { // then itself is a UI post: it is queued, not run, on a wedged UI thread
+		t.Fatal("unexpected")
+	}
+}
+
+func TestOversizedFailedSaveDraftIsNotKeptAndRecoveryFileIsCompact(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.openAll(t, "a")
+	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "Small Draft")+`}`)
+	huge := edScript("a")
+	huge.Name = strings.Repeat("x", maxDraftBytes+10)
+	hb, _ := json.Marshal(huge)
+	e.store.flushOK = false
+	e.call(t, "editor.save", `{"sessionId":"`+e.sid+`","snapshotRev":9,"script":`+string(hb)+`}`)
+	e.store.flushOK = true
+	e.b.win.ProcessFailed(e.gen, 1)
+	e.waitDone(t)
+	ents, _ := os.ReadDir(e.dir)
+	if len(ents) != 1 {
+		t.Fatalf("%v", ents)
+	}
+	raw, _ := os.ReadFile(filepath.Join(e.dir, ents[0].Name()))
+	var env RecoveryEnvelope
+	_ = json.Unmarshal(raw, &env)
+	if env.Script.Name != "Small Draft" || env.Revision != 2 {
+		t.Fatalf("an over-1MiB draft must never replace the small one: rev %d", env.Revision)
+	}
+	if strings.Contains(string(raw), "\n") || len(raw) != len(mustCompact(env)) {
+		t.Fatal("recovery file must be the compact encoding")
+	}
+	if err := func() error {
+		_, err := writeRecovery(t.TempDir(), RecoveryEnvelope{V: 1, ScriptID: "a", Script: huge})
+		return err
+	}(); err == nil {
+		t.Fatal("writeRecovery must refuse an over-limit script exactly, with no slack")
+	}
+}
+
+func mustCompact(v any) []byte { b, _ := json.Marshal(v); return b }

@@ -171,6 +171,14 @@ func (s *SelfTest) editorLifecycle() {
 		fmt.Sprintf("outer=%v client=%v dpi=%d work=%v wantClientW~%d", g.Outer, g.Client, g.DPI, g.Work, wantCli))
 	s.step("editor is owned by main and main is still disabled while it is open", win.GetWindow(win.HWND(h), win.GW_OWNER) == win.HWND(s.UI.HWND()) && !s.UI.MainEnabled(), "")
 
+	// Display change: park the window far off-screen (as a removed monitor would leave it), send
+	// WM_DISPLAYCHANGE, and it must come back onto a monitor.
+	win.SetWindowPos(win.HWND(h), 0, 20000, 20000, 0, 0, win.SWP_NOSIZE|win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+	win.SendMessage(win.HWND(h), 0x007E, 32, 0)
+	g2 := windowGeom(h)
+	s.step("WM_DISPLAYCHANGE moves an off-screen editor back onto the main monitor", g2.Outer[0] >= g2.Work[0] && g2.Outer[1] >= g2.Work[1] && g2.Outer[0] < g2.Work[2] && g2.Outer[1] < g2.Work[3],
+		fmt.Sprintf("outer=%v work=%v", g2.Outer, g2.Work))
+
 	win.PostMessage(win.HWND(h), win.WM_CLOSE, 0, 0) // the X / Alt-F4 path
 	d, gone := s.waitEditorGone(h, 15*time.Second)
 	log := s.Host.Log()

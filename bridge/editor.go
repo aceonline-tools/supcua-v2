@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/yanmad27/supcua-v2/model"
@@ -22,23 +23,60 @@ type editorSession struct {
 	draftRev uint64
 
 	// Guarded by Bridge.mu (editor-window contract §6.1, §6.5).
-	closing      bool // cleanup started: new saves get SESSION_CLOSING
-	saving       int  // saves holding the lease
 	lastSavedRev uint64
 	dirtyRev     uint64
 	checkpoint   *checkpoint
-	closingFlag  atomic.Bool // lock-free mirror of closing for the UI-thread force-close path
+	detached     bool // released from Bridge.session by cleanup; only recovery persistence may still commit
+
+	// Lock-free state: the UI-thread teardown and the bounded recovery must never wait on Bridge.mu.
+	closingFlag atomic.Bool             // cleanup began: new saves are refused, uncommitted ones rejected
+	savingN     atomic.Int32            // saves holding the lease
+	notify      chan struct{}           // a lease was released (cap 1)
+	snap        atomic.Pointer[recSnap] // newest unsaved draft, republished under Bridge.mu on every change
 }
 
-// isClosing reports whether cleanup began (either the locked or the lock-free mark).
-func (s *editorSession) isClosing() bool { return s.closing || s.closingFlag.Load() }
+// recSnap is what recovery reads without any lock.
+type recSnap struct {
+	ok        bool
+	script    model.Script
+	rev       uint64
+	lastSaved uint64
+}
+
+// isClosing reports whether cleanup began.
+func (s *editorSession) isClosing() bool { return s.closingFlag.Load() }
+
+// publishLocked republishes the recovery snapshot; call with Bridge.mu held after any change to
+// the checkpoint, the failed-save draft or lastSavedRev.
+func (s *editorSession) publishLocked() {
+	sc, rev, ok := s.newestDraftLocked()
+	s.snap.Store(&recSnap{ok: ok, script: sc, rev: rev, lastSaved: s.lastSavedRev})
+}
+
+// ownsLocked reports whether sess is still the bridge's current session.
+func (b *Bridge) ownsLocked(sess *editorSession) bool { return b.session == sess }
+
+// setSessionLocked assigns the current session and its lock-free mirror (Bridge.mu held).
+func (b *Bridge) setSessionLocked(s *editorSession) {
+	b.session = s
+	b.sessAtomic.Store(s)
+}
+
+// draftBytes is the one size measure for every draft kind: the compact JSON encoding.
+func draftBytes(s model.Script) int {
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return maxDraftBytes + 1
+	}
+	return len(raw)
+}
 
 func (b *Bridge) editorOpen(p struct {
 	ID *string `json:"id"`
 }) (any, error) {
 	w := b.winCtl()
 	var gen uint64 // read before b.mu: the controller's lock is taken before b.mu elsewhere
-	if w != nil { // a session opened by the editor window is for the script that window was opened for
+	if w != nil {  // a session opened by the editor window is for the script that window was opened for
 		if id, ok := w.pendingID(); ok {
 			p.ID = id
 		}
@@ -73,9 +111,9 @@ func (b *Bridge) editorOpen(p struct {
 			RunMode: model.RunModeOnce, HotkeyMode: model.HotkeyModeToggle, Actions: []model.Action{},
 		}
 	}
-	sess := &editorSession{id: uuid.New().String(), scriptID: script.ID}
+	sess := &editorSession{id: uuid.New().String(), scriptID: script.ID, notify: make(chan struct{}, 1)}
 	sess.gen = gen
-	b.session = sess
+	b.setSessionLocked(sess)
 	rev := sess.lastSavedRev
 	b.mu.Unlock()
 
@@ -120,7 +158,7 @@ func (b *Bridge) editorSave(p struct {
 	if rev == 0 || rev > maxRevision {
 		return nil, newErr(CodeBadRequest)
 	}
-	res, err := b.saveScript(sess, p.Script, saveOpts{override: p.OverrideConflicts, ignore: p.IgnoreConflicts, rev: rev, leased: true})
+	res, err := b.saveScript(sess, p.Script, saveOpts{override: p.OverrideConflicts, ignore: p.IgnoreConflicts, rev: rev})
 	if err != nil {
 		return nil, err
 	}
@@ -133,8 +171,8 @@ const maxRevision = 1<<53 - 1
 type saveOpts struct {
 	override, ignore bool
 	rev              uint64
-	recovery         bool // the host's recovery persistence: allowed after the session began closing
-	leased           bool // the caller holds the save lease (acquireSaveLease): it may commit while cleanup waits
+	recovery         bool      // the host's recovery persistence: allowed after the session began closing
+	deadline         time.Time // recovery only: nothing commits or flushes after this instant (zero = none)
 }
 
 // acquireSaveLease returns the session and holds a save lease on it (contract §6.5): from this
@@ -148,14 +186,16 @@ func (b *Bridge) acquireSaveLease(id string) (*editorSession, error) {
 	if b.session.isClosing() {
 		return nil, newErr(CodeSessionClosing)
 	}
-	b.session.saving++
+	b.session.savingN.Add(1)
 	return b.session, nil
 }
 
 func (b *Bridge) releaseSaveLease(s *editorSession) {
-	b.mu.Lock()
-	s.saving--
-	b.mu.Unlock()
+	s.savingN.Add(-1)
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
 }
 
 // saveScript validates and persists script as the session's script (one QueueSave for everything
@@ -166,12 +206,15 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, o saveOpts) (s
 	script.ID = sess.scriptID
 	fail := func(e error) (saveResult, error) {
 		b.mu.Lock()
-		if b.session == sess && o.rev >= sess.draftRev {
+		// The draft is kept at its revision for recovery (also after the session detached, so a save
+		// rejected by the closing fence is not lost); the same 1 MiB bound as every draft kind.
+		if (b.ownsLocked(sess) || sess.detached) && o.rev >= sess.draftRev && o.rev > sess.lastSavedRev && draftBytes(script) <= maxDraftBytes {
 			d := script
 			sess.draft, sess.draftRev = &d, o.rev
 			if o.rev > sess.dirtyRev {
 				sess.dirtyRev = o.rev
 			}
+			sess.publishLocked()
 		}
 		b.mu.Unlock()
 		return saveResult{}, e
@@ -223,16 +266,16 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, o saveOpts) (s
 
 	b.at("commit")
 	b.mu.Lock()
-	if b.session != sess { // ResetSession (or close) invalidated this operation after validation
+	if !b.ownsLocked(sess) && !(o.recovery && sess.detached) { // ResetSession (or close) invalidated this operation
 		b.mu.Unlock()
 		return saveResult{}, newErr(CodeEditorClosed)
 	}
-	if sess.isClosing() && !o.recovery && !o.leased { // cleanup began and this save holds no lease: not committed
+	if sess.isClosing() && !o.recovery { // the commit-time fence (§6.5): not past its commit point before closing began
 		b.mu.Unlock()
-		return saveResult{}, newErr(CodeSessionClosing)
+		return fail(newErr(CodeSessionClosing))
 	}
-	if o.recovery && o.rev <= sess.lastSavedRev { // a newer save already committed: never overwrite it
-		b.mu.Unlock()
+	if o.recovery && (o.rev <= sess.lastSavedRev || (!o.deadline.IsZero() && b.clock().Now().After(o.deadline))) {
+		b.mu.Unlock() // a newer save already committed, or the recovery deadline passed: nothing persists
 		return saveResult{}, newErr(CodeEditorClosed)
 	}
 	for _, s := range changed {
@@ -244,26 +287,24 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, o saveOpts) (s
 	}
 	b.rev++
 	rev := b.rev
-	if b.session == sess {
-		if o.rev > sess.lastSavedRev {
-			sess.lastSavedRev = o.rev
-		}
-		if o.rev > sess.dirtyRev {
-			sess.dirtyRev = o.rev
-		}
-		if sess.draftRev <= sess.lastSavedRev {
-			sess.draft = nil
-		}
-		if sess.checkpoint != nil && sess.checkpoint.Revision <= sess.lastSavedRev {
-			sess.checkpoint = nil
-		}
+	if o.rev > sess.dirtyRev && b.ownsLocked(sess) {
+		sess.dirtyRev = o.rev
 	}
 	b.mu.Unlock()
 
 	if !b.queue(changed) {
 		return fail(newErr(CodeSaveFailed))
 	}
-	flushed := b.d.Store.FlushSaves(saveWait)
+	wait := saveWait
+	if o.recovery && !o.deadline.IsZero() {
+		if left := o.deadline.Sub(b.clock().Now()); left < wait {
+			wait = left
+		}
+		if wait <= 0 {
+			return fail(newErr(CodeSaveFailed))
+		}
+	}
+	flushed := b.d.Store.FlushSaves(wait)
 	b.mu.Lock()
 	var failed bool
 	for _, s := range changed {
@@ -275,6 +316,22 @@ func (b *Bridge) saveScript(sess *editorSession, in model.Script, o saveOpts) (s
 	if failed || !flushed {
 		return fail(newErr(CodeSaveFailed))
 	}
+	// Only now, with queue and flush done, is the revision saved: a failed disk write above keeps
+	// the draft (and the checkpoint) for recovery.
+	b.mu.Lock()
+	if b.ownsLocked(sess) || sess.detached {
+		if o.rev > sess.lastSavedRev {
+			sess.lastSavedRev = o.rev
+		}
+		if sess.draftRev <= sess.lastSavedRev {
+			sess.draft = nil
+		}
+		if sess.checkpoint != nil && sess.checkpoint.Revision <= sess.lastSavedRev {
+			sess.checkpoint = nil
+		}
+		sess.publishLocked()
+	}
+	b.mu.Unlock()
 	b.emit(EvScriptsChanged, revResult{rev})
 	return saveResult{Script: script, Rev: rev, SavedRev: o.rev}, nil
 }
@@ -356,7 +413,7 @@ func (b *Bridge) editorClose(p struct {
 	b.sessMu.Lock()
 	b.mu.Lock()
 	if b.session == sess {
-		b.session = nil
+		b.setSessionLocked(nil)
 	}
 	if !res.Saved {
 		res.Rev = b.rev

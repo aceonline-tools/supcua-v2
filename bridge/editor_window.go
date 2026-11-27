@@ -21,7 +21,9 @@ type EditorHost interface {
 	EnableMain(enabled bool)
 	RevealMain() // restore and activate the main window
 	// CreateEditor creates the hidden window owned by main and starts its asynchronous controller;
-	// the host later calls WindowReady/WindowFailed with the returned generation.
+	// the host later calls WindowReady/WindowFailed with the returned generation. On a synchronous
+	// failure it returns the error WITH the generation of the half-made (invalidated) window, which
+	// the caller destroys via DestroyEditor after rolling back; it never calls WindowFailed then.
 	CreateEditor() (gen uint64, err error)
 	// PrepareEditor positions the hidden window on the target monitor (the remembered rect's, else
 	// the owner's), lets its DPI settle and returns that monitor's facts.
@@ -108,6 +110,8 @@ type windowCtl struct {
 	metrics        EditorMetrics
 	shown          bool
 	shutdown       bool
+	cleaning       int       // teardown cleanups still running (the gate is released only at 0 with no window)
+	recoverBy      time.Time // shutdown: the D2 recovery deadline (zero outside shutdown)
 
 	t0, ceiling time.Time
 	deadline    time.Time
@@ -214,7 +218,13 @@ func (c *windowCtl) postGen(gen uint64, f func()) {
 // ---- open / focus ----
 
 // openWindow is editor.openWindow (UI thread): focus the existing editor, else create one.
+//
+// An older window's cleanup may still be running (recovery). Decision: the new window does NOT wait
+// for it. Every cleanup action is bound to the generation that started it, so the older cleanup
+// only touches its own (detached) session and capture and releases the gate only when no editor
+// generation is active (cleanupDone).
 func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error) {
+	visible := c.h.MainVisible()
 	c.mu.Lock()
 	if c.state != stNone && c.state != stClosing {
 		gen = c.gen
@@ -226,29 +236,59 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 		c.mu.Unlock()
 		return "", 0, newErr(CodeShuttingDown)
 	}
-	c.mainWasVisible = c.h.MainVisible()
-	c.mu.Unlock()
-
-	// Creation start: script hotkeys are blocked and main is disabled BEFORE the editor can be
-	// interactive (contract §4.2).
+	// Creation start: the state and the gate are raised together under c.mu, so an older cleanup's
+	// gate release (also under c.mu) can never slip between them. Script hotkeys are blocked and main
+	// is disabled BEFORE the editor can be interactive (contract §4.2).
+	c.mainWasVisible = visible
+	c.state, c.gen, c.scriptID = stCreating, 0, id
+	c.shown, c.shutdown, c.token, c.tries = false, false, 0, 0
+	c.recoverBy = time.Time{}
+	c.destroyed, c.done = make(chan struct{}), make(chan struct{})
 	c.b.d.Controller.SetEditDialogOpen(true)
+	c.mu.Unlock()
 	c.h.EnableMain(false)
 	gen, cerr := c.h.CreateEditor()
 	if cerr != nil {
+		// A synchronous failure returns here and is rolled back here (never through the async
+		// callback): main is re-enabled and the gate restored BEFORE the half-made window is destroyed.
 		c.h.EnableMain(true)
-		c.b.d.Controller.SetEditDialogOpen(false)
+		c.mu.Lock()
+		c.state, c.gen = stNone, 0
+		close(c.destroyed)
+		close(c.done)
+		c.releaseGateLocked()
+		c.mu.Unlock()
+		if gen != 0 {
+			c.h.DestroyEditor(gen)
+		}
 		c.b.emit(evEditorWindowFailed, windowFailedEvent{Gen: gen, Stage: "create", Message: "could not open the editor window"})
 		return "", 0, newErr(CodeInternal)
 	}
 	c.mu.Lock()
-	c.state, c.gen, c.scriptID = stCreating, gen, id
-	c.shown, c.shutdown, c.token, c.tries = false, false, 0, 0
-	c.destroyed, c.done = make(chan struct{}), make(chan struct{})
+	c.gen = gen
 	c.startupT = c.clk.AfterFunc(startupGuard, func() {
 		c.postGen(gen, func() { c.failEditor(gen, "timeout", "the editor window did not start in time") })
 	})
 	c.mu.Unlock()
 	return "opening", gen, nil
+}
+
+// releaseGateLocked releases script execution when no editor generation is active and no
+// teardown cleanup is still running (c.mu held).
+func (c *windowCtl) releaseGateLocked() {
+	if c.state == stNone && c.cleaning == 0 && c.b.d.Controller != nil {
+		c.b.d.Controller.SetEditDialogOpen(false)
+	}
+}
+
+// cleanupDone is the end of one generation's cleanup.
+func (c *windowCtl) cleanupDone() {
+	c.mu.Lock()
+	if c.cleaning > 0 {
+		c.cleaning--
+	}
+	c.releaseGateLocked()
+	c.mu.Unlock()
 }
 
 // WindowReady is the host's report that the controller exists and navigation started.
@@ -577,9 +617,12 @@ func (c *windowCtl) SharedBrowserFailed() {
 
 // ---- teardown ----
 
-// teardown is the single cleanup path (UI thread): main is re-enabled BEFORE the editor is
-// destroyed, focus is restored per the visibility rule, then session cleanup (recovery for forced
-// and failed closes) continues off the UI thread. Idempotent.
+// teardown is the single cleanup path (UI thread). Order, always: the session is marked closing
+// (lock-free, so a save not past its commit point is rejected and none new takes a lease), main is
+// re-enabled, script execution is restored when there is no session to recover, THEN the window is
+// destroyed (posted Close, no lock, no wait); focus is restored per the visibility rule; session
+// cleanup (recovery for forced and failed closes) continues off the UI thread, bound to this
+// generation. Idempotent.
 func (c *windowCtl) teardown(gen uint64, kind teardownKind, stage, msg string) {
 	c.mu.Lock()
 	if c.gen != gen || c.state == stNone || c.state == stClosing {
@@ -590,12 +633,28 @@ func (c *windowCtl) teardown(gen uint64, kind teardownKind, stage, msg string) {
 	c.stopTimersLocked()
 	wasVisible := c.mainWasVisible
 	destroyed, done := c.destroyed, c.done
+	deadline := c.clk.Now().Add(recoverBound)
+	if !c.recoverBy.IsZero() && c.recoverBy.Before(deadline) {
+		deadline = c.recoverBy
+	}
 	c.mu.Unlock()
 
+	hasSession := false
+	if s := c.b.sessAtomic.Load(); s != nil && s.gen == gen && gen != 0 {
+		s.closingFlag.Store(true) // the commit fence, set before anything is destroyed
+		hasSession = true
+	}
 	if r, max, ok := c.h.EditorBounds(gen); ok && c.shownBefore() {
 		c.saveBounds(r, max)
 	}
 	c.h.EnableMain(true) // before destroy: otherwise Windows activates another application
+	c.mu.Lock()
+	if hasSession {
+		c.cleaning++
+	} else if c.b.d.Controller != nil {
+		c.b.d.Controller.SetEditDialogOpen(false) // nothing to recover: restore the gate before destroy
+	}
+	c.mu.Unlock()
 	c.h.DestroyEditor(gen)
 	close(destroyed)
 	if wasVisible {
@@ -607,7 +666,7 @@ func (c *windowCtl) teardown(gen uint64, kind teardownKind, stage, msg string) {
 
 	go func() {
 		defer close(done)
-		c.b.cleanupSession(gen, kind, stage, msg)
+		c.b.cleanupSession(gen, kind, stage, msg, deadline)
 	}()
 }
 
@@ -642,10 +701,11 @@ func (c *windowCtl) BoundsChanged(gen uint64, r Rect, maximized bool) {
 
 // beginShutdown (UI thread) asks an open editor to close for app exit; windows that never became
 // interactive are rolled back silently.
-func (c *windowCtl) beginShutdown() {
+func (c *windowCtl) beginShutdown(recoverBy time.Time) {
 	c.mu.Lock()
 	gen, st := c.gen, c.state
 	c.shutdown = true
+	c.recoverBy = recoverBy
 	c.mu.Unlock()
 	switch st {
 	case stOpen:

@@ -55,7 +55,15 @@ func clampInt(v, lo, hi int) int {
 // ValidRemembered reports whether remembered bounds may be reused: set, current layout version,
 // at least the minimum size and overlapping the work area by minVisibleW × minVisibleH.
 func ValidRemembered(m model.EditorWindow, dpi int, work Rect) bool {
-	if m.W <= 0 || m.H <= 0 || m.Version != model.EditorLayoutVersion {
+	if m.Version != model.EditorLayoutVersion {
+		return false
+	}
+	return validRect(m, dpi, work)
+}
+
+// validRect is the geometric part: set, at least the minimum size, overlapping the work area.
+func validRect(m model.EditorWindow, dpi int, work Rect) bool {
+	if m.W <= 0 || m.H <= 0 {
 		return false
 	}
 	if dpi <= 0 {
@@ -89,6 +97,10 @@ func computeEditorBounds(in BoundsIn) BoundsOut {
 		return BoundsOut{Outer: Rect{x, y, x + w, y + h}, FromMemory: true, Maximized: in.Remembered.Maximized}
 	}
 
+	// A layout-version change invalidates the remembered SIZE only: the measured size is used at the
+	// remembered position (corrected into the work area), per contract §9.
+	keepPos := in.Remembered.Version != model.EditorLayoutVersion && validRect(in.Remembered, dpi, in.Work)
+
 	cssW := clampInt(in.CssW, MinCssW, maxCss)
 	cssH := clampInt(in.CssH, MinCssH, maxCss)
 	w := scalePx(cssW, dpi) + in.FrameW
@@ -104,6 +116,10 @@ func computeEditorBounds(in BoundsIn) BoundsOut {
 	w, h = max(w, minW), max(h, minH)
 	x := clampInt(in.OwnerCX-w/2, in.Work.L, in.Work.R-w)
 	y := clampInt(in.OwnerCY-h/2, in.Work.T, in.Work.B-h)
+	if keepPos {
+		x = clampInt(in.Remembered.X, in.Work.L, in.Work.R-w)
+		y = clampInt(in.Remembered.Y, in.Work.T, in.Work.B-h)
+	}
 	out.Outer = Rect{x, y, x + w, y + h}
 	return out
 }

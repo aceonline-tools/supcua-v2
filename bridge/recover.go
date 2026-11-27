@@ -15,6 +15,7 @@ import (
 const (
 	recoveredKeep    = 5 // files kept per script
 	saveLeaseWaitMax = 500 * time.Millisecond
+	recoverBound     = 2 * time.Second // persistence bound after a forced close (contract §4.5)
 )
 
 // RecoveryEnvelope is the on-disk form of a recovered draft (model.Script has no version field).
@@ -35,65 +36,79 @@ type RecoverResult struct {
 	Reason    string
 }
 
-// closeSessionState marks the session as closing (atomically, before anything else) and waits at
-// most saveLeaseWaitMax for in-flight saves to finish (contract §6.5). It never blocks longer and
-// never takes part in native teardown. Reports whether saves are still in flight.
-func (b *Bridge) markClosing(sess *editorSession) (savesInFlight bool) {
-	sess.closingFlag.Store(true) // lock-free: visible even if b.mu is held by a stuck handler
-	deadline := time.Now().Add(saveLeaseWaitMax)
-	for {
-		b.mu.Lock()
-		sess.closing = true
-		n := sess.saving
-		b.mu.Unlock()
-		if n == 0 {
-			return false
-		}
-		if time.Now().After(deadline) {
-			return true
-		}
-		time.Sleep(2 * time.Millisecond)
+// waitSaves waits at most d, on the injected clock, for the session's in-flight saves to release
+// their leases. It takes no lock (the lease count and the notification are lock-free) and reports
+// whether saves are still in flight when the bound expired.
+func (b *Bridge) waitSaves(sess *editorSession, d time.Duration) (inFlight bool) {
+	if sess.savingN.Load() == 0 {
+		return false
 	}
+	expired := make(chan struct{})
+	t := b.clock().AfterFunc(d, func() { close(expired) })
+	defer t.Stop()
+	for sess.savingN.Load() > 0 {
+		select {
+		case <-sess.notify:
+		case <-expired:
+			return sess.savingN.Load() > 0
+		}
+	}
+	return false
 }
 
-// recoverDraft snapshots the newest unsaved draft and ALWAYS writes the recovery file; it also
-// persists it into the script only when no save is in flight, the snapshot is newer than the last
-// saved revision and it validates without conflicts. It bypasses the mutation fence (the session
-// is already closing) and never overwrites a newer revision. Safe from any goroutine.
-func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool) RecoverResult {
-	b.mu.Lock()
-	script, rev, ok := sess.newestDraftLocked()
-	b.mu.Unlock()
-	if !ok {
+// recoverDraft writes the newest unsaved draft to the recovery file (always) and then persists it
+// into the script only when no save is in flight, it is newer than the last saved revision and it
+// validates without conflicts. Everything is bounded by deadline: it reads the lock-free snapshot,
+// runs the persistence on its own goroutine and abandons it at the deadline, and nothing commits
+// or flushes after it. It bypasses the mutation fence (the session is already closing) and never
+// overwrites a newer revision.
+func (b *Bridge) recoverDraft(sess *editorSession, savesInFlight bool, deadline time.Time) RecoverResult {
+	snap := sess.snap.Load()
+	if snap == nil || !snap.ok || snap.rev <= snap.lastSaved {
 		return RecoverResult{}
 	}
-	res := RecoverResult{Found: true, Revision: rev}
-	if b.recoveredDir != "" {
-		if path, err := writeRecovery(b.recoveredDir, RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: script}); err != nil {
+	res := RecoverResult{Found: true, Revision: snap.rev}
+	clk := b.clock()
+	if b.recoveredDir != "" && clk.Now().Before(deadline) {
+		env := RecoveryEnvelope{V: 1, ScriptID: sess.scriptID, Revision: snap.rev, SavedAt: time.Now().UTC().Format(time.RFC3339), Script: snap.script}
+		if path, err := writeRecovery(b.recoveredDir, env); err != nil {
 			res.Reason = "could not write recovery file"
 		} else {
 			res.Path = path
 		}
 	}
-	if savesInFlight {
+	if savesInFlight || !clk.Now().Before(deadline) {
 		return res
 	}
-	if _, err := b.saveScript(sess, script, saveOpts{rev: rev, recovery: true}); err == nil {
-		res.Persisted = true
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.saveScript(sess, snap.script, saveOpts{rev: snap.rev, recovery: true, deadline: deadline})
+		done <- err
+	}()
+	expired := make(chan struct{})
+	t := clk.AfterFunc(deadline.Sub(clk.Now()), func() { close(expired) })
+	defer t.Stop()
+	select {
+	case err := <-done:
+		res.Persisted = err == nil
+	case <-expired: // abandoned: the commit-time deadline check keeps it from persisting later
 	}
 	return res
 }
 
+// writeRecovery writes the envelope as compact JSON, atomically (temp + rename), 0600. The script
+// is bounded by the same compact measure as every draft (maxDraftBytes); the envelope adds only its
+// fixed fields, so no slack is allowed.
 func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
+	if draftBytes(env.Script) > maxDraftBytes {
+		return "", fmt.Errorf("draft too large")
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	raw, err := json.MarshalIndent(env, "", "  ")
+	raw, err := json.Marshal(env)
 	if err != nil {
 		return "", err
-	}
-	if len(raw) > maxDraftBytes+4096 {
-		return "", fmt.Errorf("draft too large")
 	}
 	name := fmt.Sprintf("%s-%d.json", safeName(env.ScriptID), time.Now().UnixMilli())
 	final := filepath.Join(dir, name)

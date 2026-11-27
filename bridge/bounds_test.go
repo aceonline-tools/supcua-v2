@@ -79,3 +79,19 @@ func TestRememberedBoundsPrecedenceValidityAndCorrection(t *testing.T) {
 		t.Fatal("off-screen memory must fall back to measurement")
 	}
 }
+
+func TestLayoutVersionMismatchInvalidatesTheSizeButKeepsThePosition(t *testing.T) {
+	old := model.EditorWindow{X: 300, Y: 200, W: 900, H: 700, Version: model.EditorLayoutVersion - 1}
+	o := computeEditorBounds(BoundsIn{CssW: 1000, CssH: 600, DPI: 96, FrameW: 16, FrameH: 39, Work: work1080, OwnerCX: 960, OwnerCY: 520, Remembered: old})
+	if o.FromMemory || o.Outer.W() != 1016 || o.Outer.H() != 639 {
+		t.Fatalf("size must come from measurement: %+v", o)
+	}
+	if o.Outer.L != 300 || o.Outer.T != 200 {
+		t.Fatalf("position must be kept: %+v", o)
+	}
+	old.X = 5000 // an unreachable remembered position falls back to the owner placement
+	o = computeEditorBounds(BoundsIn{CssW: 1000, CssH: 600, DPI: 96, FrameW: 16, FrameH: 39, Work: work1080, OwnerCX: 960, OwnerCY: 520, Remembered: old})
+	if o.Outer.L == 5000 {
+		t.Fatal("off-screen position must not be kept")
+	}
+}

@@ -414,8 +414,9 @@ var (
 )
 
 const (
-	wmDpiChanged   = 0x02E0
-	wmExitSizeMove = 0x0232
+	wmDpiChanged    = 0x02E0
+	wmExitSizeMove  = 0x0232
+	wmDisplayChange = 0x007E
 )
 
 func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
@@ -439,6 +440,9 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 			if w.onDPI != nil {
 				w.onDPI()
 			}
+			if w.role == rpc.RoleEditor {
+				u.RecoverEditorOnScreen() // a DPI change can land it off-screen
+			}
 			return 0
 		case win.WM_CLOSE:
 			if w.role == rpc.RoleEditor {
@@ -457,6 +461,8 @@ func hostProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
 		}
 		if w.role == rpc.RoleEditor {
 			switch msg {
+			case wmDisplayChange: // a monitor was removed or rearranged
+				u.RecoverEditorOnScreen()
 			case wmExitSizeMove:
 				if w.onBounds != nil {
 					w.onBounds()
