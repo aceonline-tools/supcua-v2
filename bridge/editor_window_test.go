@@ -985,10 +985,10 @@ func TestReopenWhileOlderCleanupRunsKeepsTheNewEditorsGateSessionAndCapture(t *t
 	e.openAll(t, "a")
 	genA := e.gen
 	e.mustCall(t, "editor.checkpoint", `{"sessionId":"`+e.sid+`","revision":2,"script":`+scriptJSON("a", "A Draft")+`}`)
-	_, release := stuckSaveHook(e) // A's recovery persistence blocks
+	inRecovery, release := stuckSaveHook(e) // A's recovery persistence blocks
 	e.b.win.CloseRequested(genA)
 	e.clk.Advance(closeBase + time.Millisecond) // watchdog: A force-closed, cleanup recovering
-	waitFor(t, func() bool { _, d := e.b.win.waitChans(); return d != nil && e.b.sessAtomic.Load() == nil })
+	<-inRecovery                                // A's cleanup is inside its recovery (deadline armed)
 
 	e.openAll(t, "a") // B opens while A's cleanup is still running
 	sidB := e.sid
