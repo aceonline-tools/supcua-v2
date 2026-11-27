@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.4.0...v1.4.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* show the licence screen on unlicensed machines ([1d531dc](https://github.com/aceonline-tools/supcua-v2/commit/1d531dc58ceb14154697d5fc6dc0e679ec105271))
+
 ## [1.4.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.3.0...v1.4.0) (2026-11-26)
 
 
