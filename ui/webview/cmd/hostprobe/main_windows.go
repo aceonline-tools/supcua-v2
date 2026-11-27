@@ -1,5 +1,5 @@
 // hostprobe is a tiny program that imports ui/webview and exercises the host the way the
-// final app's -selftest will: page served from https://app.local/ under the CSP, JS->Go
+// final app's -selftest will: page served from https://app.invalid/ under the CSP, JS->Go
 // call, Go->JS events through PostWebMessageAsJson, navigation lock, resource flatness and
 // a constant NewCallback count. Flags: -selftest, -selftest-noruntime, -label, -timeout.
 package main
@@ -117,7 +117,7 @@ func drive(ui *webview.UI, res *webview.Result, ready chan struct{}, reports cha
 	fail := func(name, detail string) { res.Step(name, false, detail); ui.RequestQuit() }
 	select {
 	case <-ready:
-		res.Step("page loaded + ready over https://app.local (CSP, JS->Go)", true, "")
+		res.Step("page loaded + ready over https://app.invalid (CSP, JS->Go)", true, "")
 	case <-time.After(20 * time.Second):
 		fail("page loaded + ready", "timeout")
 		return

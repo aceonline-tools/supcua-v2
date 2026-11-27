@@ -116,7 +116,7 @@ func (s *SelfTest) Run() {
 
 	select {
 	case <-s.Ready:
-		res.Step("page loaded over https://app.local under CSP, app.ready (JS->Go)", true, "")
+		res.Step("page loaded over https://app.invalid under CSP, app.ready (JS->Go)", true, "")
 	case <-time.After(20 * time.Second):
 		fail("page loaded + app.ready", errors.New("timeout"))
 		return
@@ -189,7 +189,7 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 		fmt.Sprintf("ui-layer calls %d -> %d (max %d: host proc, key hook, overlay proc)", cbBefore, cbAfter, maxUICallbacks))
 	res.Callbacks = []int32{cbBefore, cbAfter}
 
-	res.Step("navigation locked to app.local", s.UI.ProbeNavigationLock(5*time.Second), fmt.Sprintf("stats=%+v", s.UI.Stats()))
+	res.Step("navigation locked to app.invalid", s.UI.ProbeNavigationLock(5*time.Second), fmt.Sprintf("stats=%+v", s.UI.Stats()))
 
 	overlayDone := make(chan struct{})
 	post(func() {

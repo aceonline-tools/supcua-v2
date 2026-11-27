@@ -17,10 +17,10 @@ describe('diag-init.js (classic script, runs before the module)', () => {
 
   it('forwards a failed script/module load (error on the element, capture phase)', () => {
     const s = document.createElement('script');
-    s.src = 'https://app.local/assets/index-abc.js';
+    s.src = 'https://app.invalid/assets/index-abc.js';
     document.head.appendChild(s);
     s.dispatchEvent(new Event('error'));
-    expect(posted.at(-1)!.params.message).toBe('resource failed to load: https://app.local/assets/index-abc.js');
+    expect(posted.at(-1)!.params.message).toBe('resource failed to load: https://app.invalid/assets/index-abc.js');
   });
 
   it('forwards unhandled promise rejections', () => {

@@ -9,13 +9,13 @@ import (
 
 func TestCleanPath(t *testing.T) {
 	good := map[string]string{
-		"https://app.local/":                  "index.html",
-		"https://app.local":                   "index.html",
-		"https://APP.local/index.html":        "index.html",
-		"https://app.local/assets/a-1.js":     "assets/a-1.js",
-		"https://app.local/assets/a.js?x=1#h": "assets/a.js",
-		"https://app.local/sub/":              "sub/index.html",
-		"https://app.local/a%20b.txt":         "a b.txt",
+		"https://app.invalid/":                  "index.html",
+		"https://app.invalid":                   "index.html",
+		"https://APP.invalid/index.html":        "index.html",
+		"https://app.invalid/assets/a-1.js":     "assets/a-1.js",
+		"https://app.invalid/assets/a.js?x=1#h": "assets/a.js",
+		"https://app.invalid/sub/":              "sub/index.html",
+		"https://app.invalid/a%20b.txt":         "a b.txt",
 	}
 	for in, want := range good {
 		got, ok := CleanPath(in)
@@ -24,28 +24,28 @@ func TestCleanPath(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"https://app.local/../secret",
-		"https://app.local/a/../../secret",
-		"https://app.local/%2e%2e/secret",
-		"https://app.local/%2E%2E%2Fsecret",
-		"https://app.local/a/%2e%2e/b",
-		"https://app.local/./x",
-		"https://app.local/a\\b",
-		"https://app.local/%5Cwindows",
-		"https://app.local/C:/windows/win.ini",
-		"https://app.local/c%3A/x",
-		"https://app.local/a%00b",
-		"https://app.local@evil.com/",
+		"https://app.invalid/../secret",
+		"https://app.invalid/a/../../secret",
+		"https://app.invalid/%2e%2e/secret",
+		"https://app.invalid/%2E%2E%2Fsecret",
+		"https://app.invalid/a/%2e%2e/b",
+		"https://app.invalid/./x",
+		"https://app.invalid/a\\b",
+		"https://app.invalid/%5Cwindows",
+		"https://app.invalid/C:/windows/win.ini",
+		"https://app.invalid/c%3A/x",
+		"https://app.invalid/a%00b",
+		"https://app.invalid@evil.com/",
 		"https://evil.com/",
-		"https://app.local.evil.com/",
-		"https://app.local:8443/",
-		"http://app.local/",
+		"https://app.invalid.evil.com/",
+		"https://app.invalid:8443/",
+		"http://app.invalid/",
 		"file:///C:/x",
 		"about:blank",
-		"//app.local/x",
+		"//app.invalid/x",
 		"/index.html",
 		"",
-		"https://user:pw@app.local/",
+		"https://user:pw@app.invalid/",
 	}
 	for _, in := range bad {
 		if got, ok := CleanPath(in); ok {
@@ -55,10 +55,10 @@ func TestCleanPath(t *testing.T) {
 }
 
 func TestAllowNavigation(t *testing.T) {
-	if !AllowNavigation("https://app.local/settings") {
+	if !AllowNavigation("https://app.invalid/settings") {
 		t.Fatal("app origin must be allowed")
 	}
-	for _, u := range []string{"https://example.com/", "http://app.local/", "javascript:alert(1)", "data:text/html,x", "ms-appx://x"} {
+	for _, u := range []string{"https://example.com/", "http://app.invalid/", "javascript:alert(1)", "data:text/html,x", "ms-appx://x"} {
 		if AllowNavigation(u) {
 			t.Errorf("navigation to %q must be blocked", u)
 		}
@@ -97,7 +97,7 @@ func TestHandle(t *testing.T) {
 		"index.html":    {Data: []byte("<html>")},
 		"assets/app.js": {Data: []byte("1")},
 	}}
-	r := s.Handle("GET", "https://app.local/assets/app.js")
+	r := s.Handle("GET", "https://app.invalid/assets/app.js")
 	if r.Status != 200 || string(r.Body) != "1" {
 		t.Fatalf("js: %+v", r)
 	}
@@ -106,19 +106,19 @@ func TestHandle(t *testing.T) {
 			t.Errorf("header lacks %q:\n%s", h, r.Header)
 		}
 	}
-	if r := s.Handle("GET", "https://app.local/settings/profile"); r.Status != 200 || string(r.Body) != "<html>" {
+	if r := s.Handle("GET", "https://app.invalid/settings/profile"); r.Status != 200 || string(r.Body) != "<html>" {
 		t.Errorf("SPA fallback: %+v", r)
 	}
-	if r := s.Handle("GET", "https://app.local/missing.js"); r.Status != 404 {
+	if r := s.Handle("GET", "https://app.invalid/missing.js"); r.Status != 404 {
 		t.Errorf("missing file with extension must 404: %+v", r)
 	}
-	if r := s.Handle("GET", "https://app.local/../x"); r.Status != 404 {
+	if r := s.Handle("GET", "https://app.invalid/../x"); r.Status != 404 {
 		t.Errorf("traversal must 404: %+v", r)
 	}
-	if r := s.Handle("POST", "https://app.local/"); r.Status != 405 {
+	if r := s.Handle("POST", "https://app.invalid/"); r.Status != 405 {
 		t.Errorf("POST must 405: %+v", r)
 	}
-	if r := s.Handle("HEAD", "https://app.local/"); r.Status != 200 || r.Body != nil {
+	if r := s.Handle("HEAD", "https://app.invalid/"); r.Status != 200 || r.Body != nil {
 		t.Errorf("HEAD: %+v", r)
 	}
 	if r := s.Handle("GET", "https://evil.com/"); r.Status != 404 {
@@ -129,7 +129,7 @@ func TestHandle(t *testing.T) {
 func TestLoggedURLsAreSanitisedAndCapped(t *testing.T) {
 	var lines []string
 	s := &Server{FS: fstest.MapFS{}, Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
-	s.Handle("GET", "https://app.local/x\r\nforged: line"+strings.Repeat("a", 5000))
+	s.Handle("GET", "https://app.invalid/x\r\nforged: line"+strings.Repeat("a", 5000))
 	if len(lines) != 1 || strings.ContainsAny(lines[0], "\r\n") || len(lines[0]) > maxLoggedURL+80 {
 		t.Fatalf("%d lines: %q", len(lines), lines)
 	}
@@ -144,17 +144,26 @@ func TestMissesAreLoggedOnceEachAndBounded(t *testing.T) {
 	var lines []string
 	s := &Server{FS: fstest.MapFS{"index.html": {Data: []byte("x")}}, Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
 	for i := 0; i < 3; i++ {
-		s.Handle("GET", "https://app.local/assets/missing.js")
+		s.Handle("GET", "https://app.invalid/assets/missing.js")
 	}
-	s.Handle("POST", "https://app.local/")
-	s.Handle("GET", "https://app.local/") // success: not logged
-	if len(lines) != 2 || !strings.Contains(lines[0], "GET https://app.local/assets/missing.js -> 404") || !strings.Contains(lines[1], "-> 405") {
+	s.Handle("POST", "https://app.invalid/")
+	s.Handle("GET", "https://app.invalid/") // success: not logged
+	if len(lines) != 2 || !strings.Contains(lines[0], "GET https://app.invalid/assets/missing.js -> 404") || !strings.Contains(lines[1], "-> 405") {
 		t.Fatalf("lines = %q", lines)
 	}
 	for i := 0; i < 200; i++ {
-		s.Handle("GET", fmt.Sprintf("https://app.local/a%d.js", i))
+		s.Handle("GET", fmt.Sprintf("https://app.invalid/a%d.js", i))
 	}
 	if len(lines) > maxLoggedMisses {
 		t.Fatalf("%d lines, cap %d", len(lines), maxLoggedMisses)
+	}
+}
+
+func TestHostIsNotMDNS(t *testing.T) {
+	if strings.HasSuffix(strings.ToLower(Host), ".local") {
+		t.Fatalf("Host %q is under .local: Windows resolves it via mDNS and stalls navigation ~2s", Host)
+	}
+	if Origin != "https://"+Host || Filter != Origin+"/*" {
+		t.Fatalf("Origin/Filter not derived from Host: %q %q", Origin, Filter)
 	}
 }
