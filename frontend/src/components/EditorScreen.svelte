@@ -172,7 +172,7 @@
         <section>
           <h3>Mouse</h3>
           <div class="inline" style:margin-bottom="8px"><span>X: {ed.mouse.x}</span><span>Y: {ed.mouse.y}</span><span class="spacer"></span>
-            <button onclick={() => ed.addMouseMove()}><Icon name="move" />Move</button></div>
+            <button onclick={() => ed.addMouseMove()}><Icon name="move" size={12} />Move</button></div>
           <div class="button-grid">{#each mouseButtons as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
           <div class="muted small tight">Press {store.settings?.capture_hotkey ?? 'P'} to capture cursor position</div>
         </section>
@@ -181,16 +181,16 @@
           <div class="inline" style:margin-bottom="6px">
             <button type="button" class="input hk-field" class:capturing={ed.capturing === 'key'} aria-label="Key"
               onclick={() => ed.startKeyCapture()}><Icon name="keyboard" />{#if ed.capturing === 'key'}<span class="accent">Press a key…</span>{:else if ed.builder.key}{ed.builder.key}{:else}<span class="muted">Click &amp; press key</span>{/if}</button>
-            <button onclick={() => ed.addKey('key_press')}><Icon name="corner-down-left" />Press</button>
+            <button onclick={() => ed.addKey('key_press')}><Icon name="corner-down-left" size={12} />Press</button>
           </div>
-          <div class="button-grid"><button onclick={() => ed.addKey('key_down')}><Icon name="arrow-down-to-line" />Key Down</button><button onclick={() => ed.addKey('key_up')}><Icon name="arrow-up-from-line" />Key Up</button></div>
+          <div class="button-grid"><button onclick={() => ed.addKey('key_down')}><Icon name="arrow-down-to-line" size={12} />Key Down</button><button onclick={() => ed.addKey('key_up')}><Icon name="arrow-up-from-line" size={12} />Key Up</button></div>
         </section>
-        <section class="inline"><h3 class="side">Wait</h3>
+        <section class="inline"><span class="side">Wait</span>
           <input class="input" type="number" min="1" aria-label="Wait ms" bind:value={ed.builder.delay} /><span class="muted">ms</span>
-          <button onclick={() => ed.addDelay()}><Icon name="timer" />Wait</button></section>
-        <section class="inline"><h3 class="side">Loop</h3>
+          <button onclick={() => ed.addDelay()}><Icon name="timer" size={12} />Wait</button></section>
+        <section class="inline"><span class="side">Loop</span>
           <input class="input" type="number" min="0" title="0 = infinite" aria-label="Loop count" bind:value={ed.builder.loop} />
-          <button onclick={() => ed.addLoop()}><Icon name="repeat" />Start Loop</button><button onclick={() => ed.addSimple('loop_end')}><Icon name="circle-stop" />End Loop</button></section>
+          <button onclick={() => ed.addLoop()}><Icon name="repeat" size={12} />Start Loop</button><button onclick={() => ed.addSimple('loop_end')}><Icon name="circle-stop" size={12} />End Loop</button></section>
         <section>
           <h3>Lock</h3>
           <div class="button-grid">{#each locks as [label, type, icon] (type)}<button onclick={() => ed.addSimple(type)}><Icon name={icon} size={12} />{label}</button>{/each}</div>
