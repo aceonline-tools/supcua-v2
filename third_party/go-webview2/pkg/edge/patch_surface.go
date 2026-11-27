@@ -50,3 +50,24 @@ func (e *Chromium) Reassert() error {
 	}
 	return nil
 }
+
+// SetDefaultBackground sets the surface colour shown before (and behind) the page, so the window is
+// never white before the first paint. It reaches ICoreWebView2Controller2 through QueryInterface
+// (released here) and checks the HRESULTs from the call results, not GetLastError.
+func (e *Chromium) SetDefaultBackground(r, g, b uint8) error {
+	if e.controller == nil {
+		return errors.New("no controller")
+	}
+	c := unsafe.Pointer(e.controller)
+	var c2 *ICoreWebView2Controller2
+	iid := NewGUID("{c979903e-d4ca-4228-92eb-47ee3fa96eab}")
+	if hr, _, _ := e.controller.vtbl.QueryInterface.Call(uintptr(c), uintptr(unsafe.Pointer(iid)), uintptr(unsafe.Pointer(&c2))); int32(hr) < 0 || c2 == nil {
+		return fmt.Errorf("QueryInterface(Controller2): HRESULT 0x%08X", uint32(hr))
+	}
+	defer c2.vtbl.Release.Call(uintptr(unsafe.Pointer(c2)))
+	col := COREWEBVIEW2_COLOR{A: 0xff, R: r, G: g, B: b}
+	if hr, _, _ := c2.vtbl.PutDefaultBackgroundColor.Call(uintptr(unsafe.Pointer(c2)), uintptr(*(*uint32)(unsafe.Pointer(&col)))); int32(hr) < 0 {
+		return fmt.Errorf("put_DefaultBackgroundColor: HRESULT 0x%08X", uint32(hr))
+	}
+	return nil
+}

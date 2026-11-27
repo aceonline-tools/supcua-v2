@@ -179,6 +179,13 @@ func New(cfg Config) (*UI, error) {
 	if err = b.Lockdown(cfg.Debug); err != nil {
 		return nil, fmt.Errorf("webview lockdown: %w", err)
 	}
+	bgR, bgG, bgB := uint8(0xf3), uint8(0xf6), uint8(0xfb)
+	if cfg.DarkTitleBar {
+		bgR, bgG, bgB = 0x10, 0x13, 0x18
+	}
+	if err := b.SetDefaultBackground(bgR, bgG, bgB); err != nil {
+		log.Printf("webview: default background: %v", err)
+	}
 	if err = b.AddResourceFilter(serve.Filter); err != nil {
 		return nil, fmt.Errorf("webview resource filter: %w", err)
 	}
