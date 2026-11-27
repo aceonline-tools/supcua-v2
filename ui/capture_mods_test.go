@@ -159,3 +159,20 @@ func TestSettingsHandlerModifierHeldBeforeRecordingMakesALaterTapAChord(t *testi
 		t.Fatalf("with nothing held a tap must record: %+v", s.got)
 	}
 }
+
+func TestSettingsHandlerOtherSideHeldBeforeRecordingMakesATapAChord(t *testing.T) {
+	s := &hkSink{}
+	h := settingsHotkeyHandler(s, nameOf)
+	// LCtrl was already down when recording began (seeded), so Held.Ctrl stays true after RCtrl is up.
+	h(ev(0xA3, true, webview.Held{Ctrl: true}))
+	h(ev(0xA3, false, webview.Held{Ctrl: true}))
+	if len(s.got) != 0 {
+		t.Fatalf("RCtrl tapped while LCtrl held was recorded: %+v", s.got)
+	}
+	h(ev(0xA2, false, webview.Held{}))
+	h(ev(0xA3, true, webview.Held{Ctrl: true}))
+	h(ev(0xA3, false, webview.Held{}))
+	if len(s.got) != 1 || s.got[0].Key != "rctrl" {
+		t.Fatalf("a clean RCtrl tap afterwards must be recorded: %+v", s.got)
+	}
+}

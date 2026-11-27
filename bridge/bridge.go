@@ -37,6 +37,7 @@ type Controller interface {
 	Snapshot() status.Snapshot
 	Subscribe(fn func(status.Snapshot))
 	SetEditDialogOpen(open bool)
+	SetHotkeyRecording(on bool)
 }
 
 type Store interface {
@@ -203,8 +204,13 @@ func New(d Deps, e Emitter) *Bridge {
 		closingReady: make(chan struct{}),
 	}
 	b.capture = newCaptureManager(d.Capture, b.emit, defaultCaptureIdle)
-	if d.HotkeyMute != nil {
-		b.capture.suspend = d.HotkeyMute.SetSuspended
+	b.capture.suspend = func(on bool) {
+		if d.Controller != nil {
+			d.Controller.SetHotkeyRecording(on)
+		}
+		if d.HotkeyMute != nil {
+			d.HotkeyMute.SetSuspended(on)
+		}
 	}
 	if d.Store != nil {
 		if scripts, err := d.Store.List(); err != nil {

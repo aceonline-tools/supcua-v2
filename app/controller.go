@@ -23,6 +23,8 @@ type Controller struct {
 	stateMutex          sync.RWMutex
 	globalActive        bool
 	editDialogOpen      bool
+	hotkeyRecording     int // active Settings hotkey recordings; > 0 blocks every hotkey action
+	hotkeyActionMu      sync.Mutex
 	runningScriptID     string
 	runningScriptName   string
 	cancelRunningScript context.CancelFunc
@@ -127,7 +129,7 @@ func (appController *Controller) notify() {
 func (appController *Controller) CanStartScript(script model.Script) bool {
 	appController.stateMutex.RLock()
 	defer appController.stateMutex.RUnlock()
-	return appController.globalActive && !appController.editDialogOpen && script.Enabled && appController.runningScriptID == ""
+	return appController.globalActive && !appController.editDialogOpen && appController.hotkeyRecording == 0 && script.Enabled && appController.runningScriptID == ""
 }
 
 // SetEditDialogOpen blocks or unblocks script execution while an edit dialog is open.
@@ -140,6 +142,60 @@ func (appController *Controller) SetEditDialogOpen(open bool) {
 		appController.StopRunningScript()
 	}
 	appController.publish()
+}
+
+// SetHotkeyRecording marks a Settings hotkey recording as started or ended; calls nest, so the
+// end of an older recording never clears the gate of a newer one. While any recording is active
+// no hotkey action runs: script start and queue launch are refused under stateMutex, the global
+// toggle via ToggleGlobalFromHotkey, and other actions via RunHotkeyAction. Starting returns only
+// after an action already inside RunHotkeyAction has finished. A running script is not stopped.
+func (appController *Controller) SetHotkeyRecording(on bool) {
+	if on {
+		appController.hotkeyActionMu.Lock()
+		defer appController.hotkeyActionMu.Unlock()
+	}
+	appController.stateMutex.Lock()
+	if on {
+		appController.hotkeyRecording++
+	} else if appController.hotkeyRecording > 0 {
+		appController.hotkeyRecording--
+	}
+	appController.stateMutex.Unlock()
+}
+
+func (appController *Controller) hotkeyRecordingActive() bool {
+	appController.stateMutex.RLock()
+	defer appController.stateMutex.RUnlock()
+	return appController.hotkeyRecording > 0
+}
+
+// ToggleGlobalFromHotkey is the global hotkey's action: ToggleGlobalStatus unless a Settings
+// recording is active (checked in the same critical section as the flip).
+func (appController *Controller) ToggleGlobalFromHotkey() {
+	appController.stateMutex.Lock()
+	if appController.hotkeyRecording > 0 {
+		appController.stateMutex.Unlock()
+		return
+	}
+	appController.globalActive = !appController.globalActive
+	nowActive := appController.globalActive
+	appController.stateMutex.Unlock()
+	if !nowActive {
+		appController.StopRunningScript()
+	}
+	appController.notify()
+}
+
+// RunHotkeyAction runs action unless a Settings recording is active, and reports whether it ran.
+// action must be short and must not start a recording (SetHotkeyRecording(true) waits for it).
+func (appController *Controller) RunHotkeyAction(action func()) bool {
+	appController.hotkeyActionMu.Lock()
+	defer appController.hotkeyActionMu.Unlock()
+	if appController.hotkeyRecordingActive() {
+		return false
+	}
+	action()
+	return true
 }
 
 // GetRunningScriptID returns the ID of the currently running script, or empty.
@@ -213,7 +269,7 @@ func (appController *Controller) dequeueNext() {
 	appController.runningScriptID = ""
 	appController.runningScriptName = ""
 	appController.cancelRunningScript = nil
-	if len(appController.scriptQueue) > 0 && appController.globalActive && !appController.editDialogOpen {
+	if len(appController.scriptQueue) > 0 && appController.globalActive && !appController.editDialogOpen && appController.hotkeyRecording == 0 {
 		next, _ := appController.popQueueLocked()
 		if next.Enabled {
 			appController.launchLocked(next)
@@ -256,7 +312,7 @@ func (appController *Controller) StartScript(script model.Script) {
 		script.ID, script.Name, appController.globalActive, script.Enabled, appController.runningScriptID)
 
 	appController.stateMutex.Lock()
-	if !appController.globalActive || appController.editDialogOpen || !script.Enabled {
+	if !appController.globalActive || appController.editDialogOpen || appController.hotkeyRecording > 0 || !script.Enabled {
 		appController.stateMutex.Unlock()
 		return
 	}

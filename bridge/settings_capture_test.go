@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"errors"
+	"github.com/yanmad27/supcua-v2/app"
 	"sync"
 	"testing"
 
@@ -181,5 +182,24 @@ func TestFailedRestoreOfThePreviousHotkeyIsReportedNotSilent(t *testing.T) {
 	var be *Error
 	if !errors.As(err, &be) || be.Code != CodeHotkeyRestoreFail {
 		t.Fatalf("want HOTKEY_RESTORE_FAILED, got %v", err)
+	}
+}
+
+func TestSettingsCaptureSuspendGatesControllerAndPolledKeys(t *testing.T) {
+	ctl := app.NewController(nil, nil, nil, nil)
+	mute := &fakeMute{}
+	b := New(Deps{Controller: ctl, HotkeyMute: mute}, &recEmitter{})
+	b.capture.suspend(true)
+	if ctl.RunHotkeyAction(func() {}) {
+		t.Fatal("controller hotkey actions not gated while recording")
+	}
+	b.capture.suspend(false)
+	if !ctl.RunHotkeyAction(func() {}) {
+		t.Fatal("controller gate not released after recording")
+	}
+	mute.mu.Lock()
+	defer mute.mu.Unlock()
+	if len(mute.calls) != 2 || !mute.calls[0] || mute.calls[1] {
+		t.Fatalf("poll mute calls = %v", mute.calls)
 	}
 }

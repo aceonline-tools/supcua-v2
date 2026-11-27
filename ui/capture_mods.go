@@ -75,10 +75,12 @@ func (t *modTap) down(vk uint32, heldCategories int) {
 }
 
 // up reports the modifier name when vk was tapped alone. noneHeld is the hook-tracked "no
-// modifier is down any more" state; it drops keys whose release the hook never saw (focus loss).
+// modifier is down any more" state; it drops keys whose release the hook never saw (focus loss),
+// and a release that leaves any modifier held is never a tap: with LCtrl held since before the
+// recording, an RCtrl tap is still a chord.
 func (t *modTap) up(vk uint32, noneHeld bool) (name string, tapped bool) {
 	delete(t.held, vk)
-	if n, ok := sidedModifierNames[vk]; ok && t.pending == vk {
+	if n, ok := sidedModifierNames[vk]; ok && t.pending == vk && noneHeld {
 		name, tapped = n, true
 	}
 	if t.pending == vk {

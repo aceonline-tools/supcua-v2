@@ -725,9 +725,9 @@ func main() {
 	if policy.RegisterHotkeys {
 		go hotkeyManager.ListenForHotkeys() // before any Register: it services the channel
 		stages.Mark("hotkey listener started")
-		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalStatus() })
+		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalFromHotkey() })
 		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(int) {
-			late.Post(overlayCtl.ToggleVisibility)
+			late.Post(func() { appController.RunHotkeyAction(overlayCtl.ToggleVisibility) })
 		})
 		registerStartupHotkeys := func() {
 			t0 := time.Now()
