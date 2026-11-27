@@ -19,6 +19,7 @@ type OverlayController struct {
 	OnExternalChange func()
 
 	w       *OverlayWindow
+	style   *model.ResolvedOverlayStyle
 	lastX   int
 	lastY   int
 	havePos bool
@@ -60,13 +61,36 @@ func (o *OverlayController) SetEnabled(enabled bool) error {
 		return nil
 	}
 	x, y := o.position()
-	w, err := NewOverlayWindow(o.Controller, x, y, true)
+	st := o.resolvedStyle()
+	x, y = ClampToVirtualScreen(x, y, st.Width, st.Height)
+	w, err := NewOverlayWindow(o.Controller, x, y, true, st)
 	if err != nil {
 		return err
 	}
 	w.OnMoved = func(int, int) { o.external() }
 	o.w = w
 	return nil
+}
+
+func (o *OverlayController) resolvedStyle() model.ResolvedOverlayStyle {
+	if o.style != nil {
+		return *o.style
+	}
+	return o.Config.Get().OverlayStyle.Resolve()
+}
+
+// ApplyStyle implements bridge.Overlay: applies the style live (or remembers it while the overlay
+// is disabled) and returns the effective, screen-clamped position.
+func (o *OverlayController) ApplyStyle(style model.OverlayStyle, x, y int) (int, int) {
+	st := style.Resolve()
+	o.style = &st
+	if o.w != nil {
+		x, y = o.w.ApplyStyle(st, x, y)
+		return x, y
+	}
+	x, y = ClampToVirtualScreen(x, y, st.Width, st.Height)
+	o.lastX, o.lastY, o.havePos = x, y, true
+	return x, y
 }
 
 // SetVisible implements bridge.Overlay.

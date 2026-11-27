@@ -3,6 +3,7 @@
   import type { ThemeSetting } from '../api/types';
   import Toggle from './Toggle.svelte';
   import TextSetting from './TextSetting.svelte';
+  import OverlayStyle from './OverlayStyle.svelte';
   let { store }: { store: AppStore } = $props();
 
   const themes: { id: ThemeSetting; label: string }[] = [
@@ -63,6 +64,7 @@
         <TextSetting label="Overlay hotkey" value={cfg.overlay_hotkey} commit={(v) => store.updateSettings({ overlay_hotkey: String(v) })} />
       </div>
     {/if}
+    <OverlayStyle {store} />
   </div>
 {/if}
 

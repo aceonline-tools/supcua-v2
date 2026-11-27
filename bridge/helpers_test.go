@@ -171,9 +171,11 @@ func (l fakeLocks) MouseLocked() bool    { return l.mouse }
 func (l fakeLocks) KeyboardLocked() bool { return l.kb }
 
 type fakeOverlay struct {
-	mu    sync.Mutex
-	state OverlayDTO
-	err   error
+	mu      sync.Mutex
+	state   OverlayDTO
+	err     error
+	style   model.OverlayStyle
+	applied int
 }
 
 func (o *fakeOverlay) State() OverlayDTO { o.mu.Lock(); defer o.mu.Unlock(); return o.state }
@@ -185,6 +187,15 @@ func (o *fakeOverlay) SetEnabled(v bool) error {
 	}
 	o.state.Enabled = v
 	return nil
+}
+func (o *fakeOverlay) ApplyStyle(s model.OverlayStyle, x, y int) (int, int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.style, o.applied = s, o.applied+1
+	st := s.Resolve()
+	x, y = model.ClampOverlayPosition(x, y, st.Width, st.Height, 0, 0, 1920, 1080)
+	o.state.X, o.state.Y = x, y
+	return x, y
 }
 func (o *fakeOverlay) SetVisible(v bool)   { o.mu.Lock(); o.state.Visible = v; o.mu.Unlock() }
 func (o *fakeOverlay) SetDraggable(v bool) { o.mu.Lock(); o.state.Draggable = v; o.mu.Unlock() }

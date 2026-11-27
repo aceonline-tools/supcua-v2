@@ -1,7 +1,7 @@
 import { ApiError, type Client } from '../api/client';
 import { EditorStore } from './editor.svelte';
 import type {
-  BootState, GroupDTO, ScriptSummary, SettingsDTO, SettingsPatch, StateDTO, ThemeSetting,
+  BootState, GroupDTO, OverlayStyleDTO, ScriptSummary, SettingsDTO, SettingsPatch, StateDTO, ThemeSetting,
 } from '../api/types';
 
 export type Route = { name: 'scripts' } | { name: 'settings' } | { name: 'editor'; id: string | null };
@@ -37,6 +37,11 @@ export class AppStore {
   private sidebarPending = 0;
   private sidebarConfirmed = false;
   private sidebarChain: Promise<void> = Promise.resolve();
+  private ovSeq = 0;
+  private ovPending = 0;
+  private ovConfirmed: OverlayStyleDTO | null = null;
+  private ovTimer: ReturnType<typeof setTimeout> | null = null;
+  private ovChain: Promise<void> = Promise.resolve();
   selectedId = $state<string | null>(null);
   route = $state<Route>({ name: 'scripts' });
   unsaved = $state<Record<string, string>>({});
@@ -150,6 +155,7 @@ export class AppStore {
     const seq = this.sidebarSeq;
     const next = await this.api.call('settings.get');
     if (this.sidebarSeq !== seq || this.sidebarPending > 0) next.sidebar_collapsed = this.settings?.sidebar_collapsed ?? next.sidebar_collapsed;
+    if (this.ovTimer !== null || this.ovPending > 0) next.overlay_style = this.settings?.overlay_style ?? next.overlay_style;
     this.settings = next;
   }
 
@@ -280,6 +286,65 @@ export class AppStore {
     };
     this.sidebarChain = this.sidebarChain.then(run);
     return this.sidebarChain;
+  }
+
+  get overlayStyle(): OverlayStyleDTO | null {
+    return this.settings?.overlay_style ?? null;
+  }
+
+  // Overlay style edits apply optimistically, are coalesced for 120 ms (slider drags), and are sent
+  // one at a time like the sidebar toggle; a failure rolls back to the last backend-confirmed style
+  // unless a newer edit is waiting. The backend's clamped answer replaces the local value.
+  setOverlayStyle(patch: Partial<OverlayStyleDTO>): Promise<void> {
+    if (!this.settings) return Promise.resolve();
+    if (this.ovPending === 0 && this.ovTimer === null) this.ovConfirmed = { ...this.settings.overlay_style };
+    this.settings.overlay_style = { ...this.settings.overlay_style, ...patch };
+    if (this.ovTimer !== null) clearTimeout(this.ovTimer);
+    this.ovTimer = setTimeout(() => { this.ovTimer = null; void this.flushOverlayStyle(); }, 120);
+    return this.ovChain;
+  }
+
+  resetOverlayStyle(): Promise<void> {
+    if (!this.settings) return Promise.resolve();
+    if (this.ovTimer !== null) { clearTimeout(this.ovTimer); this.ovTimer = null; }
+    if (this.ovPending === 0) this.ovConfirmed = { ...this.settings.overlay_style };
+    const seq = ++this.ovSeq;
+    this.ovPending++;
+    const run = async () => {
+      try {
+        const eff = await this.api.call('overlay.resetStyle');
+        this.ovConfirmed = eff;
+        if (seq === this.ovSeq && this.settings) this.settings.overlay_style = eff;
+      } catch (e) {
+        if (seq === this.ovSeq && this.settings && this.ovConfirmed) this.settings.overlay_style = this.ovConfirmed;
+        this.error = errorText(e);
+      } finally {
+        this.ovPending--;
+      }
+    };
+    this.ovChain = this.ovChain.then(run);
+    return this.ovChain;
+  }
+
+  private flushOverlayStyle(): Promise<void> {
+    if (!this.settings) return this.ovChain;
+    const style = { ...this.settings.overlay_style };
+    const seq = ++this.ovSeq;
+    this.ovPending++;
+    const run = async () => {
+      try {
+        const eff = await this.api.call('overlay.setStyle', style);
+        this.ovConfirmed = eff;
+        if (seq === this.ovSeq && this.settings) this.settings.overlay_style = eff;
+      } catch (e) {
+        if (seq === this.ovSeq && this.settings && this.ovConfirmed) this.settings.overlay_style = this.ovConfirmed;
+        this.error = errorText(e);
+      } finally {
+        this.ovPending--;
+      }
+    };
+    this.ovChain = this.ovChain.then(run);
+    return this.ovChain;
   }
 
   async cloneSelected(): Promise<void> {
