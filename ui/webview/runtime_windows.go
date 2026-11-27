@@ -137,6 +137,7 @@ type Resources struct {
 	GDI     uint32 `json:"gdi"`
 	User    uint32 `json:"user"`
 	Handles uint32 `json:"handles"`
+	Threads uint32 `json:"threads"` // OS threads of this process (attributes a handle step to thread growth)
 }
 
 // SampleResources reads GetGuiResources (GDI, USER) and GetProcessHandleCount.
@@ -146,8 +147,27 @@ func SampleResources() Resources {
 	usr, _, _ := procGuiResources.Call(p, 1)
 	var h uint32
 	procHandleCount.Call(p, uintptr(unsafe.Pointer(&h)))
-	return Resources{GDI: uint32(gdi), User: uint32(usr), Handles: h}
+	return Resources{GDI: uint32(gdi), User: uint32(usr), Handles: h, Threads: processThreads()}
 }
 
 // AttachParentConsole lets a GUI-subsystem exe print to its parent's console (self-test).
 func AttachParentConsole() { procAttachConsole.Call(^uintptr(0)) }
+
+// processThreads counts this process's OS threads (Toolhelp snapshot); 0 when unavailable.
+func processThreads() uint32 {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return 0
+	}
+	defer windows.CloseHandle(snap)
+	pid := windows.GetCurrentProcessId()
+	var te windows.ThreadEntry32
+	te.Size = uint32(unsafe.Sizeof(te))
+	n := uint32(0)
+	for err = windows.Thread32First(snap, &te); err == nil; err = windows.Thread32Next(snap, &te) {
+		if te.OwnerProcessID == pid {
+			n++
+		}
+	}
+	return n
+}

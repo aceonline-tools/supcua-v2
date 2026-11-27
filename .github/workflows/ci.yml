@@ -50,6 +50,8 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - run: go test -count=1 ./...
+      - name: Flake guard (late-payload writer file count, 500 runs)
+        run: go test -count=500 -run TestE1bSealFloodOfLateSavesUsesOneCoalescingWriter ./bridge
 
   race-macos:
     runs-on: macos-latest
@@ -166,11 +168,12 @@ jobs:
               $exe = Join-Path $PWD "out/$v/supcua-v2.exe"
               $o = "out/$v/stdout$mode.txt"; $e = "out/$v/stderr$mode.txt"
               $env:SUPCUA_OVERLAY_SHOTS = Join-Path $PWD "out/overlay-shots/$v-$name"
+              $env:SUPCUA_EDITOR_SHOTS = Join-Path $PWD "out/editor-window-shots/$v-$name"
               $p = Start-Process -FilePath $exe -ArgumentList $mode -PassThru `
                    -RedirectStandardOutput $o -RedirectStandardError $e
-              if (-not $p.WaitForExit(120000)) {
+              if (-not $p.WaitForExit(240000)) {
                 $p.Kill($true)
-                Write-Host "$v $mode TIMEOUT after 120s"
+                Write-Host "$v $mode TIMEOUT after 240s"
                 $fail = 1
                 continue
               }
@@ -203,9 +206,10 @@ jobs:
             $log = Join-Path $dir "supcua-v2.log"
             Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
             $o = "$dir/stdout-prod.txt"; $e = "$dir/stderr-prod.txt"
+            $env:SUPCUA_EDITOR_SHOTS = Join-Path $PWD "out/editor-window-shots/$v-production"
             $p = Start-Process -FilePath (Join-Path $dir "supcua-v2.exe") -ArgumentList "-selftest-production","-fixture",$fixture,"-label",$v `
                  -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-            if (-not $p.WaitForExit(120000)) { $p.Kill($true); Write-Host "::error::$v selftest-production TIMEOUT"; $fail = 1 }
+            if (-not $p.WaitForExit(240000)) { $p.Kill($true); Write-Host "::error::$v selftest-production TIMEOUT"; $fail = 1 }
             else { Write-Host "$v selftest-production exit=$($p.ExitCode)"; if ($p.ExitCode -ne 0) { $fail = 1 } }
             Get-Content $o, $e -ErrorAction SilentlyContinue
             Copy-Item $o (Join-Path $results "$v-prod.stdout.txt") -ErrorAction SilentlyContinue
@@ -386,6 +390,13 @@ jobs:
         with:
           name: overlay-shots
           path: out/overlay-shots/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: editor-window-shots
+          path: out/editor-window-shots/
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v7

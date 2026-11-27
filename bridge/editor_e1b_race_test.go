@@ -477,18 +477,18 @@ func TestE1bSealFloodOfLateSavesUsesOneCoalescingWriter(t *testing.T) {
 	if peak > 5 {
 		t.Fatalf("late payload writers are not coalesced: +%d goroutines", peak)
 	}
-	waitFor(t, func() bool {
-		for _, f := range recoveryFiles(t, e.dir) {
-			if f.Revision == 2000 {
-				return true
-			}
-		}
-		return false
-	})
+	// Wait for the single writer to drain WITHOUT touching the directory: on Windows an open
+	// reader makes the writer's prune (os.Remove) fail with a sharing violation. The last call
+	// above set lateRunning under lateMu, and it clears only after its final write + prune.
 	sess := e.b.lastClosed.Load()
 	waitFor(t, func() bool { sess.lateMu.Lock(); defer sess.lateMu.Unlock(); return !sess.lateRunning })
-	if n := len(recoveryFiles(t, e.dir)); n > recoveredKeep { // each write prunes right after its rename
-		t.Fatalf("%d files", n)
+	files := recoveryFiles(t, e.dir)
+	newest := false
+	for _, f := range files {
+		newest = newest || f.Revision == 2000
+	}
+	if !newest || len(files) > recoveredKeep {
+		t.Fatalf("newest on disk=%v, %d files", newest, len(files))
 	}
 }
 

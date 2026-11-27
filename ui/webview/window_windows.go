@@ -262,6 +262,15 @@ func (w *Window) Show() {
 // Hide hides the window (tray state for main). UI thread only.
 func (w *Window) Hide() { win.ShowWindow(w.hwnd, win.SW_HIDE) }
 
+// Eval runs a script in this window's page (self-test driver only; production traffic uses frames).
+func (w *Window) Eval(js string) {
+	w.host.Post(func() {
+		if !w.gone.Load() && w.browser != nil {
+			w.browser.Eval(js)
+		}
+	})
+}
+
 // Visible reports whether the window is shown and not minimized. UI thread only.
 func (w *Window) Visible() bool { return win.IsWindowVisible(w.hwnd) && !win.IsIconic(w.hwnd) }
 

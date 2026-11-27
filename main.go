@@ -175,7 +175,7 @@ func main() {
 	prodFlag := flag.Bool("selftest-production", false, "run the production startup sequence against a fixture data dir and exit (0 = pass)")
 	fixtureDir := flag.String("fixture", "", "fixture data directory copied into the throw-away data dir (-selftest-production)")
 	label := flag.String("label", "plain", "build label echoed in the self-test result")
-	timeout := flag.Duration("timeout", 90*time.Second, "hard self-test timeout")
+	timeout := flag.Duration("timeout", 210*time.Second, "hard self-test timeout")
 	flag.Parse()
 
 	if *selftestFlag || *noRuntimeFlag || *prodFlag {
@@ -610,14 +610,16 @@ func main() {
 	stages.Mark("creating webview")
 	roleLists := bridge.Roles()
 	transitional := roleLists.TransitionalMain
+	both := roleLists.Both
 	if selftest != nil {
 		transitional = bridge.SelftestMainAllow()
+		both = append(append([]string(nil), both...), ui.SelfTestMethod) // the editor page's self-test driver reports too
 	}
 	webUI, err := webview.New(webview.Config{
 		Title:           title,
 		Methods:         methods,
 		CtxMethods:      br.CtxMethods(),
-		Roles:           rpc.NewMatrix(roleLists.Both, roleLists.MainOnly, roleLists.EditorOnly, transitional),
+		Roles:           rpc.NewMatrix(both, roleLists.MainOnly, roleLists.EditorOnly, transitional),
 		Assets:          assets.FS(),
 		DarkTitleBar:    wantDark(appConfig.Theme),
 		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
@@ -783,6 +785,7 @@ func main() {
 				GlobalActive: appController.IsGlobalActive, RunningScriptID: appController.GetRunningScriptID,
 				GlobalHotkey: appConfig.GlobalHotkey, ProbeHotkey: probe, ProbeID: "fx-probe-1",
 				ExpectFixed: 2, AutoActiveEnabled: appConfig.AutoActiveEnabled, ExpectRow: "Fixture Farm",
+				OverlayHotkey: appConfig.OverlayHotkey,
 			})
 		} else {
 			go selftest.Run()

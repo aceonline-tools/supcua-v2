@@ -254,7 +254,10 @@ func (s *SelfTest) AfterRun() {
 	el := time.Since(s.shutdownStart)
 	gone := s.UI.Editor() == nil && !hwndAlive(s.shutdownHWND)
 	n := len(s.recoveredDrafts())
-	s.step("shutdown with an unresponsive editor open completes within the worst-case bound and destroys it", gone && el <= 7*time.Second,
+	if s.shutdownName != "" {
+		n = len(s.draftsNamed(s.shutdownName))
+	}
+	s.step("shutdown with an unresponsive (real or fixture) editor open completes within the worst-case bound and destroys it", gone && el <= 7*time.Second,
 		fmt.Sprintf("shutdown %s (bound 5.5 s + teardown), editor destroyed=%v", el.Round(time.Millisecond), gone))
 	s.step("and its checkpoint was recovered to disk", n > s.shutdownBefore, fmt.Sprintf("files with the draft %d -> %d", s.shutdownBefore, n))
 }
