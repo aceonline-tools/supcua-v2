@@ -2,14 +2,17 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/model"
@@ -322,18 +325,36 @@ func writeRecovery(dir string, env RecoveryEnvelope) (string, error) {
 	return final, nil
 }
 
-// renameRetry renames, retrying briefly: on Windows a reader or an antivirus scanner holding the
-// reserved file open makes MoveFileEx fail with a sharing violation for a moment. Bounded (~1 s);
-// it runs on the recovery-file goroutine only.
+// renameRetry renames, retrying ONLY a transient Windows sharing or lock violation (a reader or an
+// antivirus scanner holding the reserved file open for a moment). Any other error returns at once.
+// Bounded (~1 s); it runs on the recovery-file goroutine only. ERROR_ACCESS_DENIED is not retried:
+// there is no evidence that a transient AV hold surfaces as it, and it is also the permanent error.
 func renameRetry(from, to string) error {
 	var err error
-	for i := 0; i < 50; i++ {
-		if err = os.Rename(from, to); err == nil {
-			return nil
+	for i := 0; i < renameTries; i++ {
+		if err = renameFn(from, to); err == nil || !isRetryable(err) {
+			return err
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(renameBackoff)
 	}
 	return err
+}
+
+var (
+	renameFn      = os.Rename
+	renameTries   = 50
+	renameBackoff = 20 * time.Millisecond
+	isRetryable   = retryableRename
+)
+
+// retryableRename reports a Windows ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33). The
+// errno values are Windows-specific (32 is EPIPE elsewhere), so other platforms never retry.
+func retryableRename(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && (errno == 32 || errno == 33)
 }
 
 // reserveRecoveryName creates base.json (or base-n.json) exclusively and returns its path.

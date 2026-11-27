@@ -11,8 +11,10 @@ const MAIN_ONLY = [
   'scripts.list', 'scripts.get', 'scripts.setEnabled', 'scripts.setGroupEnabled', 'scripts.setGroupCollapsed',
   'scripts.clone', 'scripts.delete', 'scripts.retrySave', 'settings.update', 'settings.setSidebarCollapsed',
   'overlay.set', 'overlay.setStyle', 'overlay.resetStyle', 'autoactive.set', 'update.apply', 'update.skip',
-  'editor.openWindow', 'editor.close',
+  'editor.openWindow',
 ];
+// Selftest-only gen-0 route (bridge/roles.go SelftestOnly): denied to both windows in production.
+const SELFTEST_ONLY = ['editor.close'];
 const EDITOR_ONLY = [
   'editor.windowReady', 'editor.measured', 'editor.measureAck', 'editor.checkpoint', 'editor.guardActive', 'editor.closeDecision',
   'editor.requestClose', 'editor.open', 'editor.save', 'editor.describeActions', 'editor.toJSON', 'editor.fromJSON',
@@ -104,6 +106,7 @@ export class MockHub {
   }
 
   private async call(ch: Channel, method: string, params: unknown): Promise<unknown> {
+    if (SELFTEST_ONLY.includes(method)) throw new ApiError({ code: 'FORBIDDEN_ROLE', message: 'Not allowed from this window' });
     if (!ALLOWED[ch.role].has(method)) {
       if (ch.role === 'editor') throw new ApiError({ code: 'FORBIDDEN_ROLE', message: 'Not allowed from this window' });
       if (EDITOR_ONLY.includes(method)) throw new ApiError({ code: 'FORBIDDEN_ROLE', message: 'Not allowed from this window' });

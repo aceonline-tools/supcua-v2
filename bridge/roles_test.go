@@ -7,7 +7,7 @@ import "testing"
 func TestEveryRegisteredMethodIsClassifiedOnce(t *testing.T) {
 	r := Roles()
 	class := map[string]string{}
-	for kind, l := range map[string][]string{"both": r.Both, "main": r.MainOnly, "editor": r.EditorOnly} {
+	for kind, l := range map[string][]string{"both": r.Both, "main": r.MainOnly, "editor": r.EditorOnly, "selftest": r.SelftestOnly} {
 		for _, n := range l {
 			if prev, dup := class[n]; dup {
 				t.Errorf("%s classified as %s and %s", n, prev, kind)
@@ -19,9 +19,6 @@ func TestEveryRegisteredMethodIsClassifiedOnce(t *testing.T) {
 		if class[n] == "" {
 			t.Errorf("registered method %s has no role classification", n)
 		}
-	}
-	if len(r.TransitionalMain) != 0 {
-		t.Errorf("TransitionalMain must be empty after E2, is %v", r.TransitionalMain)
 	}
 }
 
@@ -81,23 +78,20 @@ func TestLegacyEditorCloseIsMainOnly(t *testing.T) {
 		}
 		return false
 	}
-	if !in(r.MainOnly, "editor.close") || in(r.EditorOnly, "editor.close") || in(r.Both, "editor.close") || in(r.TransitionalMain, "editor.close") {
-		t.Fatalf("editor.close must be classified main-only only: %+v", r)
+	if !in(r.SelftestOnly, "editor.close") || in(r.MainOnly, "editor.close") || in(r.EditorOnly, "editor.close") || in(r.Both, "editor.close") {
+		t.Fatalf("editor.close must be classified selftest-only only: %+v", r)
 	}
 }
 
 func TestSelftestMainAllowIsEditorOnlyAndNotShipped(t *testing.T) {
 	r := Roles()
-	if len(r.TransitionalMain) != 0 {
-		t.Fatalf("shipped matrix must give main no editor-only method: %v", r.TransitionalMain)
-	}
-	editor := map[string]bool{}
-	for _, n := range r.EditorOnly {
-		editor[n] = true
+	restricted := map[string]bool{}
+	for _, n := range append(append([]string(nil), r.EditorOnly...), r.SelftestOnly...) {
+		restricted[n] = true
 	}
 	for _, n := range SelftestMainAllow() {
-		if !editor[n] {
-			t.Errorf("%s in SelftestMainAllow must be editor-only", n)
+		if !restricted[n] {
+			t.Errorf("%s in SelftestMainAllow must be editor-only or selftest-only", n)
 		}
 	}
 }

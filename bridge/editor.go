@@ -474,7 +474,9 @@ type closeResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// editorClose (autosave defaults to true when omitted, §9.1) always releases the session, stops captures and re-enables execution. With autosave,
+// editorClose is the close of the selftest-only gen-0 route (the leak check's main-page cycles; no
+// production caller, denied by the role matrix outside self-test runs). Autosave defaults to true
+// when omitted (§9.1); it always releases the session, stops captures and re-enables execution. With autosave,
 // the supplied (or last failed) draft is saved when valid; the result reports Saved / Not saved: reason.
 func (b *Bridge) editorClose(p struct {
 	SessionID string        `json:"sessionId"`

@@ -8,9 +8,10 @@ package bridge
 //	MainOnly   main window only
 //	EditorOnly editor window only (a main-side call is FORBIDDEN_ROLE)
 //
-// TransitionalMain is kept empty: the in-main editor route is gone (E2), so main can call no editor-only method.
+//	SelftestOnly denied to both windows; only the self-test runs grant them to main (the
+//	           selftest-only gen-0 route that the leak check drives from the main page)
 type RoleLists struct {
-	Both, MainOnly, EditorOnly, TransitionalMain []string
+	Both, MainOnly, EditorOnly, SelftestOnly []string
 }
 
 // SelftestMainAllow lists the editor-only methods the Windows self-test harness (ui/selftest_windows.go)
@@ -19,7 +20,7 @@ type RoleLists struct {
 // isolated temp data directory.
 func SelftestMainAllow() []string {
 	return []string{
-		"editor.open", "editor.save", "editor.describeActions", "editor.toJSON", "editor.fromJSON",
+		"editor.open", "editor.close", "editor.save", "editor.describeActions", "editor.toJSON", "editor.fromJSON",
 		"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.mouse.stop", "capture.stop",
 	}
 }
@@ -42,10 +43,9 @@ func Roles() RoleLists {
 			"settings.update", "settings.setSidebarCollapsed",
 			"overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip",
 			"editor.openWindow",
-			// Legacy in-main close: main-only (the editor window gets FORBIDDEN_ROLE, §3.1). Becomes
-			// host-internal in E1b and is removed with the in-main route in E2.
-			"editor.close",
 		},
+		// The selftest-only gen-0 route's close (the leak check's main-page cycles): no production caller.
+		SelftestOnly: []string{"editor.close"},
 		EditorOnly: append([]string{
 			"editor.windowReady", "editor.measured", "editor.measureAck", "editor.checkpoint", "editor.guardActive", "editor.closeDecision", "editor.requestClose",
 		}, legacyEditor...),

@@ -455,8 +455,9 @@ func (s *SelfTest) realEditorSuite() {
 func (s *SelfTest) captureTargeting(h uintptr) {
 	win.SetForegroundWindow(win.HWND(h))
 	if !waitFor(2*time.Second, func() bool { return win.GetForegroundWindow() == win.HWND(h) }) {
-		s.estep("capture targeting (SendInput into the editor)", true,
-			fmt.Sprintf("NOT RUN: Windows did not grant the editor the foreground (foreground=%#x); SendInput cannot target it", win.GetForegroundWindow()))
+		// The acceptance run must not pass without the real Alt capture: record it as UNVERIFIED (a failure).
+		s.estep("capture targeting: Ctrl+Alt+F8 via SendInput is captured by the editor's hotkey field", false,
+			fmt.Sprintf("SKIPPED/UNVERIFIED: Windows did not grant the editor the foreground (foreground=%#x); SendInput was not sent", win.GetForegroundWindow()))
 		return
 	}
 	_, err := s.driveEd(`(function(){var b=document.querySelector('button[aria-label="Toggle hotkey"]');if(!b)return false;b.click();return true})()`, 5*time.Second)

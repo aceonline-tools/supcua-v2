@@ -25,6 +25,7 @@ describe('MockHub role enforcement (bridge/roles.go)', () => {
     const { main, open } = setup();
     expect(await code(main.call('editor.open', { id: null }))).toBe('FORBIDDEN_ROLE');
     expect(await code(main.call('editor.save', {}))).toBe('FORBIDDEN_ROLE');
+    expect(await code(main.call('editor.close', {}))).toBe('FORBIDDEN_ROLE'); // selftest-only gen-0 route
     const { ed } = await open();
     for (const m of ['scripts.list', 'scripts.delete', 'settings.update', 'editor.openWindow', 'editor.close', 'overlay.set', 'nope.unknown']) {
       expect(await code(ed.call(m, {})), m).toBe('FORBIDDEN_ROLE');

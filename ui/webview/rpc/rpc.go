@@ -109,10 +109,10 @@ func (d *Deferred) bind(fin func(any, error)) {
 }
 
 // Matrix is the role matrix (contract §3.2). The editor is default-deny: it may call only methods
-// listed for it. The main window may call everything except the editor-only methods, minus the
-// transitional list that main keeps until the in-main editor route is removed.
+// listed for it. The main window may call everything except the editor-only and selftest-only
+// methods, unless a self-test run granted them to main (GrantMain).
 type Matrix struct {
-	both, mainOnly, editorOnly, transitional map[string]struct{}
+	both, mainOnly, editorOnly, selftestOnly, mainGrant map[string]struct{}
 }
 
 func set(l []string) map[string]struct{} {
@@ -123,8 +123,17 @@ func set(l []string) map[string]struct{} {
 	return m
 }
 
-func NewMatrix(both, mainOnly, editorOnly, transitionalMain []string) *Matrix {
-	return &Matrix{set(both), set(mainOnly), set(editorOnly), set(transitionalMain)}
+// NewMatrix builds the production matrix. selftestOnly methods are denied to both windows.
+func NewMatrix(both, mainOnly, editorOnly, selftestOnly []string) *Matrix {
+	return &Matrix{set(both), set(mainOnly), set(editorOnly), set(selftestOnly), set(nil)}
+}
+
+// GrantMain returns a copy that also lets main call the listed editor-only or selftest-only
+// methods (the diagnostic self-test runs only).
+func (m *Matrix) GrantMain(methods []string) *Matrix {
+	c := *m
+	c.mainGrant = set(methods)
+	return &c
 }
 
 // Allow reports whether role may call method.
@@ -132,12 +141,15 @@ func (m *Matrix) Allow(role Role, method string) bool {
 	if m == nil {
 		return true
 	}
+	_, granted := m.mainGrant[method]
+	if _, st := m.selftestOnly[method]; st {
+		return role == RoleMain && granted
+	}
 	_, both := m.both[method]
 	switch role {
 	case RoleMain:
 		if _, ed := m.editorOnly[method]; ed {
-			_, tr := m.transitional[method]
-			return tr
+			return granted
 		}
 		return true
 	case RoleEditor:

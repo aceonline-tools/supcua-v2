@@ -101,7 +101,7 @@ func TestBusyGoesToTheSubmitterOnly(t *testing.T) {
 }
 
 func TestRoleMatrixIsDefaultDenyForEditor(t *testing.T) {
-	m := NewMatrix([]string{"both"}, []string{"mainOnly"}, []string{"edOnly", "legacy"}, []string{"legacy"})
+	m := NewMatrix([]string{"both"}, []string{"mainOnly"}, []string{"edOnly", "granted"}, []string{"stOnly"}).GrantMain([]string{"granted", "stOnly"})
 	cases := []struct {
 		role   Role
 		method string
@@ -110,7 +110,8 @@ func TestRoleMatrixIsDefaultDenyForEditor(t *testing.T) {
 		{RoleMain, "both", true}, {RoleEditor, "both", true},
 		{RoleMain, "mainOnly", true}, {RoleEditor, "mainOnly", false},
 		{RoleMain, "edOnly", false}, {RoleEditor, "edOnly", true},
-		{RoleMain, "legacy", true}, {RoleEditor, "legacy", true},
+		{RoleMain, "granted", true}, {RoleEditor, "granted", true},
+		{RoleMain, "stOnly", true}, {RoleEditor, "stOnly", false},
 		{RoleEditor, "unlisted", false}, {RoleMain, "unlisted", true},
 		{Role(0), "both", false},
 	}

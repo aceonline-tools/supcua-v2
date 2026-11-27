@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -636,4 +638,66 @@ func TestE1bPruneIgnoresInProgressReservationsAndRemovesStaleOnes(t *testing.T) 
 	if n := len(recoveryFiles(t, dir)); n != 5 {
 		t.Fatalf("five real files kept: %d", n)
 	}
+}
+
+func withRename(t *testing.T, fn func(string, string) error, retryable func(error) bool) {
+	t.Helper()
+	of, or, ob := renameFn, isRetryable, renameBackoff
+	renameFn, isRetryable, renameBackoff = fn, retryable, time.Millisecond
+	t.Cleanup(func() { renameFn, isRetryable, renameBackoff = of, or, ob })
+}
+
+// A transient sharing/lock violation is retried until the rename succeeds.
+func TestRenameRetryRetriesARetryableErrorThenSucceeds(t *testing.T) {
+	transient := errors.New("sharing violation")
+	n := 0
+	withRename(t, func(string, string) error {
+		n++
+		if n < 3 {
+			return transient
+		}
+		return nil
+	}, func(err error) bool { return err == transient })
+	if err := renameRetry("a", "b"); err != nil || n != 3 {
+		t.Fatalf("err=%v attempts=%d", err, n)
+	}
+}
+
+// A permanent error (missing source, invalid destination) returns after ONE attempt, no backoff.
+func TestRenameRetryReturnsAPermanentErrorAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	n := 0
+	withRename(t, func(a, b string) error { n++; return os.Rename(a, b) }, retryableRename)
+	renameBackoff = time.Second // any retry would be visible in the elapsed time
+	for _, c := range [][2]string{
+		{filepath.Join(dir, "missing"), filepath.Join(dir, "x")},
+		{writeTmp(t, dir), filepath.Join(dir, "no-such-dir", "x")},
+	} {
+		n = 0
+		t0 := time.Now()
+		if err := renameRetry(c[0], c[1]); err == nil || n != 1 || time.Since(t0) > 200*time.Millisecond {
+			t.Fatalf("%v: err=%v attempts=%d in %s", c, err, n, time.Since(t0))
+		}
+	}
+}
+
+// Only Windows ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) are retryable.
+func TestRetryableRenameClassification(t *testing.T) {
+	wrap := func(e syscall.Errno) error { return &os.LinkError{Op: "rename", Err: e} }
+	win := runtime.GOOS == "windows"
+	if retryableRename(wrap(32)) != win || retryableRename(wrap(33)) != win {
+		t.Fatal("32/33 are retryable on Windows only")
+	}
+	if retryableRename(wrap(5)) || retryableRename(wrap(2)) || retryableRename(errors.New("x")) {
+		t.Fatal("access denied, not found and other errors are permanent")
+	}
+}
+
+func writeTmp(t *testing.T, dir string) string {
+	t.Helper()
+	p := filepath.Join(dir, "src")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

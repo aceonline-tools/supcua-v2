@@ -609,17 +609,19 @@ func main() {
 	var navLogged sync.Once
 	stages.Mark("creating webview")
 	roleLists := bridge.Roles()
-	transitional := roleLists.TransitionalMain
 	both := roleLists.Both
 	if selftest != nil {
-		transitional = bridge.SelftestMainAllow()
 		both = append(append([]string(nil), both...), ui.SelfTestMethod) // the editor page's self-test driver reports too
+	}
+	roles := rpc.NewMatrix(both, roleLists.MainOnly, roleLists.EditorOnly, roleLists.SelftestOnly)
+	if selftest != nil {
+		roles = roles.GrantMain(bridge.SelftestMainAllow()) // the selftest-only gen-0 route
 	}
 	webUI, err := webview.New(webview.Config{
 		Title:           title,
 		Methods:         methods,
 		CtxMethods:      br.CtxMethods(),
-		Roles:           rpc.NewMatrix(both, roleLists.MainOnly, roleLists.EditorOnly, transitional),
+		Roles:           roles,
 		Assets:          assets.FS(),
 		DarkTitleBar:    wantDark(appConfig.Theme),
 		Initial:         webview.Bounds{X: pos.X, Y: pos.Y, W: pos.Width, H: pos.Height},
