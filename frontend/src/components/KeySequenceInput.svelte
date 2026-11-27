@@ -52,19 +52,23 @@
     <datalist id="key-names">{#each KEY_NAMES as n (n)}<option value={n}></option>{/each}</datalist>
     <button type="button" aria-label="Add typed key" disabled={full} onclick={add}><Icon name="plus" />Add</button>
   </div>
-  {#if typedBad}<div class="error small" role="alert">Unknown key. Use a key name with optional Ctrl/Alt/Shift/Win, e.g. Ctrl+A.</div>{/if}
-  {#if note}<div class="muted small" role="status">{note}</div>{/if}
-  {#if errors.keys}<div class="error small" role="alert">{errors.keys}</div>{/if}
+  <div class="msg-slot two">
+    {#if typedBad}<div class="error small" role="alert">Unknown key. Use a key name with optional Ctrl/Alt/Shift/Win, e.g. Ctrl+A.</div>{/if}
+    {#if note}<div class="muted small" role="status">{note}</div>{/if}
+    {#if errors.keys}<div class="error small" role="alert">{errors.keys}</div>{/if}
+  </div>
   <div class="field"><label for="ap-key-delay">Delay between keys (ms):</label>
     <input id="ap-key-delay" class="input" type="number" min="0" max={MAX_DELAY_MS} step="1" value={delay}
       aria-invalid={!!errors.delay} oninput={(e) => ondelay(e.currentTarget.value)} /></div>
-  {#if errors.delay}<div class="error small" role="alert">{errors.delay}</div>{/if}
+  <div class="msg-slot one">{#if errors.delay}<div class="error small" role="alert">{errors.delay}</div>{/if}</div>
   <div class="muted small">{keys.length}/{MAX_KEYS} keys. Modifiers held before a key are recorded with it.</div>
 </div>
 
 <style>
   .keyseq { display: flex; flex-direction: column; gap: 8px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+  .chips { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; list-style: none; margin: 0; padding: 0; height: 66px; overflow-y: auto; scrollbar-gutter: stable; }
+  .seq-preview { height: 20px; }
+  .seq-preview kbd { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: 1px solid var(--border, #8884); border-radius: 6px; }
   .num { opacity: 0.6; font-size: 11px; }
   .error { color: var(--danger, #d33); }

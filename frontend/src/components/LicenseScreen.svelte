@@ -14,7 +14,7 @@
     <div class="dialog-title">Not Licensed</div>
     <div class="dialog-body inline">
       <input class="input" readonly aria-label="Machine address" value={mac} />
-      <button onclick={onCopy}>{#if copied}<Icon name="check" />Copied{:else}<Icon name="copy" />Copy{/if}</button>
+      <button class="copy-btn" onclick={onCopy}>{#if copied}<Icon name="check" />Copied{:else}<Icon name="copy" />Copy{/if}</button>
     </div>
   </div>
 </div>
