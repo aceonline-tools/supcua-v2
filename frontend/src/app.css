@@ -125,17 +125,18 @@ strong{font-weight:400}
 .editor-main .page-head{margin-bottom:8px}
 .indicator{white-space:nowrap;font-size:12px;line-height:16px;color:var(--danger)}
 .indicator.ok{color:var(--green)}
-.editor-grid{display:grid;grid-template-columns:minmax(210px,26fr) minmax(270px,34fr) minmax(190px,30fr);gap:8px}
-.editor-grid>.card{min-width:0;min-height:0}
-.editor-card{overflow-y:auto}
+.editor-grid{display:grid;grid-template-columns:minmax(232px,30fr) minmax(270px,34fr) minmax(170px,26fr);gap:8px}
+.editor-grid>*{min-width:0;min-height:0}
+.editor-col{display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+.editor-col>.card{flex:none}
 /* intrinsic measurement (editor-window contract §5.2): no viewport units, natural column widths, bounded actions height */
 html[data-measure],html[data-measure] body,html[data-measure] #app{height:auto}
 html[data-measure] body{overflow:visible}
 html[data-measure] .editor-main{height:auto;width:max-content}
-html[data-measure]:not([data-measure-fit]) .editor-grid{grid-template-columns:260px 340px 300px}
+html[data-measure]:not([data-measure-fit]) .editor-grid{grid-template-columns:300px 340px 260px}
 html[data-measure][data-measure-fit] .editor-main{width:var(--measure-w)}
 html[data-measure] .editor-main>.editor-grid{flex:none;grid-template-rows:auto}
-html[data-measure] .editor-card{overflow:visible}
+html[data-measure] .editor-col{overflow:visible}
 html[data-measure] .action-list{min-height:var(--actions-pref-h)}
 /* end intrinsic measurement */
 .editor-card{padding:8px 10px}
@@ -154,7 +155,7 @@ html[data-measure] .action-list{min-height:var(--actions-pref-h)}
 .builder .side{margin:0;width:44px;font-size:14px;line-height:20px}
 .builder button{padding:1px 5px;font-size:12px;line-height:18px}
 .builder .input{padding:1px 8px;width:auto}
-.builder .inline .input{flex:1;min-width:0}
+.builder .inline .input{flex:1;min-width:36px}
 .button-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
 .button-grid>button:has(>.icon){justify-content:flex-start;padding-left:10px}
 .action-list{padding:0;overflow:hidden;display:flex;flex-direction:column;align-self:stretch}
@@ -162,7 +163,7 @@ html[data-measure] .action-list{min-height:var(--actions-pref-h)}
 .action-list .list{flex:1 1 0;height:0;min-height:var(--row-h);overflow-y:auto}
 .action-row{display:flex;align-items:center;gap:10px;padding:2px 10px;min-height:var(--row-h);border-bottom:1px solid var(--line);font-size:14px;line-height:var(--lh);cursor:default}
 .num{font:12px/16px ui-monospace,Consolas,monospace;color:var(--muted);font-variant-numeric:tabular-nums}
-.action-tools{display:flex;gap:4px;padding:8px 10px}
+.action-tools{display:flex;flex-wrap:wrap;gap:4px;padding:8px 10px}
 .action-tools button{font-size:12px;padding:1px 10px}
 .editor-foot{display:flex;align-items:center;margin-top:8px}
 /* action drag reorder */

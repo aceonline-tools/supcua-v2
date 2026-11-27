@@ -57,6 +57,7 @@ describe('routing', () => {
     const methods = new Set(mock.calls.map((c) => c.method));
     for (const forbidden of ['scripts.list', 'scripts.get', 'settings.update']) expect(methods.has(forbidden)).toBe(false);
     expect(methods.has('editor.open')).toBe(true);
+    expect(calls(mock, 'editor.open')[0].params).toEqual({ id: null }); // the host requires the id key
   });
 });
 
@@ -182,6 +183,62 @@ describe('measure handshake', () => {
     const acks = calls(mock, 'editor.measureAck').map((c) => (c.params as { token: number }).token);
     expect(acks).toEqual([2]);
     expect(calls(mock, 'editor.measured').map((c) => (c.params as { token: number }).token)).toEqual([1, 2]);
+  });
+
+  it('a superseded request whose measured call REJECTS does not clear measure mode or ack for the newer token', async () => {
+    let rejectFirst!: (e: unknown) => void;
+    let n = 0;
+    mock.call = async (method: string, params: unknown) => {
+      mock.calls.push({ method, params });
+      if (method === 'editor.measured') {
+        if (n++ === 0) return new Promise((_, rej) => { rejectFirst = rej; });
+        return new Promise(() => {}); // the newer measurement is still pending
+      }
+      return {};
+    };
+    const m = make();
+    const first = m.request(1);
+    await vi.waitFor(() => expect(calls(mock, 'editor.measured')).toHaveLength(1));
+    const second = m.request(2);
+    await vi.waitFor(() => expect(calls(mock, 'editor.measured')).toHaveLength(2));
+    rejectFirst(new Error('host dropped the old token'));
+    await first;
+    expect(document.documentElement.dataset.measure).toBe('');
+    expect(m.active).toBe(true);
+    expect(calls(mock, 'editor.measureAck')).toHaveLength(0);
+    void second;
+  });
+
+  it('an abort during the readiness wait invalidates it: no measurement and no further ack', async () => {
+    let ready!: () => void;
+    root = document.createElement('div');
+    root.getBoundingClientRect = () => ({ top: 0, left: 0, right: 900, bottom: 500, width: 900, height: 500, x: 0, y: 0, toJSON() {} });
+    document.body.replaceChildren(root);
+    const m = new MeasureController(api, { root: () => root, ready: () => new Promise<void>((r) => { ready = r; }), frames: async () => {}, fonts: async () => {} });
+    const p = m.request(3);
+    await m.abort();
+    ready();
+    await p;
+    expect(calls(mock, 'editor.measured')).toHaveLength(0);
+    expect(calls(mock, 'editor.measureAck')).toHaveLength(1);
+    expect(document.documentElement.dataset.measure).toBeUndefined();
+  });
+
+  it('an abort during an in-flight measured RPC ignores its reply (no remeasure, no second ack)', async () => {
+    let reply!: (v: unknown) => void;
+    mock.call = async (method: string, params: unknown) => {
+      mock.calls.push({ method, params });
+      return method === 'editor.measured' ? new Promise((r) => { reply = r; }) : {};
+    };
+    const m = make();
+    const p = m.request(4);
+    await vi.waitFor(() => expect(calls(mock, 'editor.measured')).toHaveLength(1));
+    await m.abort();
+    reply({ next: 'remeasure', token: 5, cssW: 700 });
+    await p;
+    expect(calls(mock, 'editor.measured')).toHaveLength(1);
+    expect(calls(mock, 'editor.measureAck')).toHaveLength(1);
+    expect(document.documentElement.style.getPropertyValue('--measure-w')).toBe('');
   });
 
   it('clamps reported sizes to the host range 1..8192', async () => {

@@ -31,10 +31,10 @@ describe('layout stability rules', () => {
   });
   it('the editor root never scrolls: the grid shrinks and the form columns and the list scroll themselves', () => {
     expect(css).toMatch(/\.editor-main>\.editor-grid\{flex:1 1 0;min-height:0;grid-template-rows:minmax\(0,1fr\)\}/);
-    expect(css).toMatch(/\.editor-card\{overflow-y:auto\}/);
+    expect(css).toMatch(/\.editor-col\{display:flex;flex-direction:column;gap:8px;overflow-y:auto\}/);
     expect(css).toMatch(/\.action-list \.list\{[^}]*overflow-y:auto/);
     expect(css).toMatch(/html\[data-measure\] \.editor-main>\.editor-grid\{flex:none/);
-    expect(css).toMatch(/html\[data-measure\] \.editor-card\{overflow:visible\}/);
+    expect(css).toMatch(/html\[data-measure\] \.editor-col\{overflow:visible\}/);
   });
   it('never changes box metrics on selection', () => {
     expect(css).not.toMatch(/\.(nav\.active|chosen|selected)\{[^}]*(font-weight|border-width|padding|margin)/);

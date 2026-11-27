@@ -1206,3 +1206,21 @@ func TestRequestCloseUsesTheSingleClosePath(t *testing.T) {
 		t.Fatalf("state %s", e.b.win.State())
 	}
 }
+
+func TestEditorOpenIsNewFollowsTheHostSelectedScript(t *testing.T) {
+	for _, c := range []struct {
+		name, open string
+		want       bool
+	}{{"existing", `{"id":"a"}`, false}, {"new", `{"id":null}`, true}} {
+		e := newEdRig(t, edScript("a"))
+		res := e.mustCall(t, "editor.openWindow", c.open)
+		e.gen = uint64(res["gen"].(float64))
+		e.b.win.WindowReady(e.gen)
+		e.mustCall(t, "editor.windowReady", ``)
+		got := e.mustCall(t, "editor.open", `{"id":null}`) // what the page sends: the host's pending id applies
+		isNew, _ := got["isNew"].(bool)
+		if isNew != c.want {
+			t.Errorf("%s: isNew = %v want %v", c.name, isNew, c.want)
+		}
+	}
+}

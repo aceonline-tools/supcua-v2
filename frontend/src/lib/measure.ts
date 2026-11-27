@@ -28,6 +28,7 @@ const twoFrames = () => new Promise<void>((res) => requestAnimationFrame(() => r
 // measurement, the measured reply says show or remeasure (new token + width), measureAbort ends it.
 export class MeasureController {
   private token = 0;
+  private epoch = 0;
   private measuring = false;
   last: MeasureMetrics | null = null;
 
@@ -51,7 +52,12 @@ export class MeasureController {
     };
   }
 
+  // Every request and every abort starts a new epoch. An operation acts (measures, reports, leaves, acks)
+  // only while its epoch is current, on success and error paths alike, so a superseded or aborted
+  // measurement can neither clear measure mode for a newer token nor ack an obsolete one.
   async request(token: number): Promise<void> {
+    const mine = ++this.epoch;
+    const live = () => mine === this.epoch;
     this.token = token;
     this.measuring = true;
     document.documentElement.dataset.measure = '';
@@ -62,28 +68,35 @@ export class MeasureController {
     } catch { /* measure what is there */ }
     let t = token;
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      if (t !== this.token) return;
+      if (!live()) return;
       const m = this.metrics();
-      if (!m) return this.leave(t);
+      if (!m) return this.finish(mine, t);
       this.last = m;
       let reply: { next: 'show' | 'remeasure'; token?: number; cssW?: number };
       try {
         reply = await this.api.call('editor.measured', { token: t, cssW: m.cssW, cssH: m.cssH, dpr: m.dpr });
       } catch {
-        return this.leave(t);
+        return this.finish(mine, t);
       }
-      if (t !== this.token) return;
-      if (reply.next !== 'remeasure' || reply.token === undefined || reply.cssW === undefined) return this.leave(t);
+      if (!live()) return;
+      if (reply.next !== 'remeasure' || reply.token === undefined || reply.cssW === undefined) return this.finish(mine, t);
       t = this.token = reply.token;
       document.documentElement.style.setProperty('--measure-w', `${reply.cssW}px`);
       document.documentElement.dataset.measureFit = '';
       await (this.env.frames ?? twoFrames)();
     }
-    return this.leave(this.token);
+    return this.finish(mine, t);
   }
 
   abort(): Promise<void> {
+    this.epoch++;
     return this.leave(this.token);
+  }
+
+  private async finish(mine: number, token: number): Promise<void> {
+    if (mine !== this.epoch) return;
+    this.epoch++;
+    await this.leave(token);
   }
 
   private async leave(token: number): Promise<void> {

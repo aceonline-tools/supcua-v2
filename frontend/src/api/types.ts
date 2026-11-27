@@ -225,7 +225,7 @@ export interface Methods {
   'scripts.delete': { params: { id: string }; result: { rev: number } };
   'editor.openWindow': { params: { id?: string }; result: { status: 'opening' | 'focused'; gen: number } };
   'editor.windowReady': { params: undefined; result: Record<string, never> };
-  'editor.open': { params: { id?: string | null }; result: EditorSession };
+  'editor.open': { params: { id: string | null }; result: EditorSession };
   'editor.measured': { params: { token: number; cssW: number; cssH: number; dpr: number }; result: MeasureReply };
   'editor.measureAck': { params: { token: number }; result: Record<string, never> };
   'editor.checkpoint': { params: { sessionId: string; revision: number; script: Script }; result: { applied: boolean; revision: number } };

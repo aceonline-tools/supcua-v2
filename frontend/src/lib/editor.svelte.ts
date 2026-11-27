@@ -99,7 +99,7 @@ export class EditorStore {
   async open(): Promise<boolean> {
     if (this.sessionId) return true;
     try {
-      const r = await this.api.call('editor.open', {});
+      const r = await this.api.call('editor.open', { id: null }); // the host's pending id decides which script
       this.sessionId = r.sessionId;
       this.script = r.script;
       this.catalog = r.catalog;

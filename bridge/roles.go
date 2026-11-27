@@ -14,8 +14,9 @@ type RoleLists struct {
 }
 
 // SelftestMainAllow lists the editor-only methods the Windows self-test harness (ui/selftest_windows.go)
-// still drives from the main page as a raw-RPC leak test. main.go passes it as the matrix's transitional
-// set only under -selftest; the shipped app allows main none of them.
+// drives from the main page as a raw-RPC leak test. A normal invocation grants main none of them;
+// the diagnostic -selftest and -selftest-production runs widen the matrix with this list, in their
+// isolated temp data directory.
 func SelftestMainAllow() []string {
 	return []string{
 		"editor.open", "editor.save", "editor.describeActions", "editor.toJSON", "editor.fromJSON",

@@ -125,7 +125,6 @@ func (b *Bridge) editorOpen(p struct {
 	ID *string `json:"id"`
 }) (any, error) {
 	w := b.winCtl()
-	isNew := p.ID == nil
 	var gen uint64 // read before b.mu: the controller's lock is taken before b.mu elsewhere
 	if w != nil {  // a session opened by the editor window is for the script that window was opened for
 		if id, ok := w.pendingID(); ok {
@@ -133,6 +132,7 @@ func (b *Bridge) editorOpen(p struct {
 		}
 		gen = w.currentGen()
 	}
+	isNew := p.ID == nil // after the host's pending id replaced the page's: is the host opening a NEW script?
 	b.sessMu.Lock()
 	defer b.sessMu.Unlock()
 	b.mu.Lock()
