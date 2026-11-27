@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppStore, SettingResult } from '../lib/store.svelte';
   import type { OverlayStyleDTO } from '../api/types';
+  import Icon from './Icon.svelte';
   import TextSetting from './TextSetting.svelte';
   import { OVERLAY_LIMITS, STATUS_TEXT_FALLBACK, isHex, maxRadius, parseOverlayNumber } from '../lib/overlayStyle';
   let { store }: { store: AppStore } = $props();
@@ -32,7 +33,7 @@
 {#if st}
   <div class="ov-style" data-testid="overlay-style">
     <div class="setting-row sub"><div><strong>Style</strong><p>Changes apply to the running overlay immediately.</p></div>
-      <button onclick={() => store.resetOverlayStyle()}>Reset to defaults</button></div>
+      <button onclick={() => store.resetOverlayStyle()}><Icon name="rotate-ccw" />Reset to defaults</button></div>
     <div class="setting-row">
       <div><strong>Corner radius</strong><p>0 – {maxRadius(st.width, st.height)} px</p></div>
       <span class="ov-num"><TextSetting label="Corner radius" numeric value={st.radius} commit={(v) => commitNumber('radius', v)} /></span>

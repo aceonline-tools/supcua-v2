@@ -1,13 +1,15 @@
 <script lang="ts">
   import type { AppStore } from '../lib/store.svelte';
   import type { ThemeSetting } from '../api/types';
+  import Icon from './Icon.svelte';
+  import type { IconName } from '../lib/icons';
   import Toggle from './Toggle.svelte';
   import TextSetting from './TextSetting.svelte';
   import OverlayStyle from './OverlayStyle.svelte';
   let { store }: { store: AppStore } = $props();
 
-  const themes: { id: ThemeSetting; label: string }[] = [
-    { id: 'dark', label: 'Dark' }, { id: 'light', label: 'Light' }, { id: 'system', label: 'System' },
+  const themes: { id: ThemeSetting; label: string; icon: IconName }[] = [
+    { id: 'dark', label: 'Dark', icon: 'moon' }, { id: 'light', label: 'Light', icon: 'sun' }, { id: 'system', label: 'System', icon: 'monitor' },
   ];
   const cfg = $derived(store.settings);
   const aa = $derived(store.state?.auto_active);
@@ -23,7 +25,7 @@
     <div class="segments" role="radiogroup" aria-label="Theme">
       {#each themes as t (t.id)}
         <button role="radio" aria-checked={store.themeSetting === t.id} class:chosen={store.themeSetting === t.id}
-          onclick={() => store.setTheme(t.id)}>{t.label}</button>
+          onclick={() => store.setTheme(t.id)}><Icon name={t.icon} size={13} />{t.label}</button>
       {/each}
     </div>
   </div>

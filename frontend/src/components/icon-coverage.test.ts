@@ -6,11 +6,8 @@ const rel = (p: string) => (p.startsWith('./') ? 'components/' + p.slice(2) : p.
 const byFile = Object.fromEntries(Object.entries(sources).map(([p, src]) => [rel(p), src]));
 const files = Object.keys(byFile);
 
-// Files whose buttons intentionally carry no icon. Each needs a reason.
-const ALLOW: Record<string, string> = {
-  // TODO(phase 2): remove this entry once Settings.svelte buttons get icons.
-  'components/Settings.svelte': 'phase 1: Settings is done in phase 2',
-};
+// Files whose buttons intentionally carry no icon. Each needs a justification; none are needed today.
+const ALLOW: Record<string, string> = {};
 
 describe('every button has an icon (static source scan)', () => {
   for (const f of files) {
