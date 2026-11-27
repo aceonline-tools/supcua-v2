@@ -36,6 +36,11 @@ func cloneActions(actions []Action) []Action {
 		clonedAction.Actions = cloneActions(action.Actions)
 		clonedAction.ThenActions = cloneActions(action.ThenActions)
 		clonedAction.ElseActions = cloneActions(action.ElseActions)
+		clonedAction.Keys = cloneKeys(action.Keys)
+		if action.KeyDelayMs != nil {
+			delayCopy := *action.KeyDelayMs
+			clonedAction.KeyDelayMs = &delayCopy
+		}
 		if action.SearchRegion != nil {
 			regionCopy := *action.SearchRegion
 			clonedAction.SearchRegion = &regionCopy
@@ -43,4 +48,15 @@ func cloneActions(actions []Action) []Action {
 		clonedActions[index] = clonedAction
 	}
 	return clonedActions
+}
+
+func cloneKeys(keys []KeyStroke) []KeyStroke {
+	if keys == nil {
+		return nil
+	}
+	out := make([]KeyStroke, len(keys))
+	for i, k := range keys {
+		out[i] = KeyStroke{Key: k.Key, Mods: append([]string(nil), k.Mods...)}
+	}
+	return out
 }
