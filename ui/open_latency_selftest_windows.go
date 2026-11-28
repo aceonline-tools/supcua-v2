@@ -236,6 +236,7 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string, afterClic
 	stop := make(chan struct{})
 	var early atomic.Bool
 	go func() {
+		var fgSince time.Time
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			select {
@@ -244,8 +245,16 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string, afterClic
 			default:
 			}
 			if ed := s.UI.Editor(); ed != nil {
+				// Focus on the still-transparent window counts only when it is held (a reveal-time handoff
+				// is sub-millisecond); the staged maximise hands it straight back.
 				if hw := ed.HWND(); hw != 0 && !editorRevealed(hw) && win.GetForegroundWindow() == win.HWND(hw) {
-					early.Store(true)
+					if fgSince.IsZero() {
+						fgSince = time.Now()
+					} else if time.Since(fgSince) > 25*time.Millisecond {
+						early.Store(true)
+					}
+				} else {
+					fgSince = time.Time{}
 				}
 				if hw := ed.HWND(); hw != 0 && editorRevealed(hw) {
 					v := vis{t: time.Now(), h: hw}

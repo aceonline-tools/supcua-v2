@@ -321,8 +321,14 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 			dx, dy := workOffset(w.hwnd)
 			wp := win.WINDOWPLACEMENT{ShowCmd: win.SW_SHOWMAXIMIZED, RcNormalPosition: win.RECT{Left: int32(l) - dx, Top: int32(t) - dy, Right: int32(r) - dx, Bottom: int32(b) - dy}}
 			wp.Length = uint32(unsafe.Sizeof(wp))
+			prev := win.GetForegroundWindow()
 			if !win.SetWindowPlacement(w.hwnd, &wp) {
 				win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
+			}
+			// Maximising activates whatever the extended styles say; hand the focus straight back, the
+			// reveal activates the window for real.
+			if prev != 0 && prev != w.hwnd && win.GetForegroundWindow() == w.hwnd {
+				win.SetForegroundWindow(prev)
 			}
 		}
 	}
