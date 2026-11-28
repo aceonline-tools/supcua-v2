@@ -93,6 +93,11 @@ func (s *SelfTest) processPickerSuite(h ProductionHooks, step func(string, bool,
 		return
 	}
 
+	mainWnd := win.HWND(s.UI.HWND())
+	if !step(name("main window is the foreground window before picking (GetForegroundWindow)"), activate(mainWnd), "foreground="+foregroundTitle()) {
+		return
+	}
+
 	t0 := time.Now()
 	direct := winlist.List(winlist.SystemSource{}, winlist.Self(), winlist.Budget, nil)
 	elapsed := time.Since(t0)
@@ -164,15 +169,13 @@ if(!row)return "norow";var exe=row.querySelector('.picker-exe').textContent;row.
 	rt := str("pp-rtt", `(async function(){var t=performance.now();var r=await __st.call('processes.list');return JSON.stringify({ms:Math.round(performance.now()-t),rows:r.rows.length,truncated:r.truncated,keys:Object.keys(r.rows[0]||{}).join(",")})})()`, 5*time.Second)
 	step(name("processes.list RPC round trip returns names and titles only"), strings.Contains(rt, `\"keys\":\"exe,title\"`) || strings.Contains(rt, `"keys":"exe,title"`), "rpc="+rt)
 
-	if h.GlobalActive() {
-		step(name("global active is off before the foreground check"), false, "already active")
+	if !step(name("global active is off while another process holds the foreground"), waitFor(4*time.Second, func() bool { return !h.GlobalActive() }), "") {
 		return
 	}
 	if !step(name("helper window is the foreground window (GetForegroundWindow)"), activate(helperWnd), "foreground="+foregroundTitle()) {
 		return
 	}
 	step(name("auto-active turns on while the picked process is in the foreground"), waitFor(6*time.Second, h.GlobalActive), "")
-	mainWnd := win.HWND(s.UI.HWND())
 	if !step(name("main window regains the foreground (GetForegroundWindow)"), activate(mainWnd), "foreground="+foregroundTitle()) {
 		return
 	}
