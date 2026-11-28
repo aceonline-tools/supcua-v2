@@ -17,7 +17,7 @@ type noInput struct {
 func (noInput) UnlockAll() {}
 
 // overlaySink mimics the production subscriber in main.go: every published snapshot becomes a
-// status-change repaint request (OverlayController.Refresh -> render(false)).
+// status-change repaint request (OverlayController.Refresh -> render()).
 type overlaySink struct{ got []layeredPresent }
 
 func (o *overlaySink) subscribe(c *app.Controller, st model.ResolvedOverlayStyle) {
