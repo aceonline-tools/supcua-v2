@@ -15,6 +15,15 @@
   const cfg = $derived(store.settings);
   const aa = $derived(store.state?.auto_active);
   const ov = $derived(store.state?.overlay);
+  const uc = $derived(store.updateCheck);
+  const errText = { offline: "Can't reach GitHub", rate_limited: 'GitHub rate limit reached', other: 'Update check failed' };
+  const updText = $derived(
+    uc.phase === 'checking' ? 'Checking…'
+    : uc.phase === 'up_to_date' ? `Up to date (${uc.current})`
+    : uc.phase === 'available' ? `Update available v${uc.tag}`
+    : uc.phase === 'applying' ? `Installing v${uc.tag}… ${uc.pct}%`
+    : uc.phase === 'error' ? errText[uc.kind]
+    : '');
 </script>
 
 <div class="page-head"><div><h1>Settings</h1><p>Appearance and game focus behavior.</p></div></div>
@@ -103,4 +112,20 @@
     <div><strong>{store.boot?.mode === 'main' ? 'Licensed' : 'Not licensed'}</strong>
       <p>Machine {store.boot?.macs[0] ?? '—'} · {store.boot?.version ?? ''} · WebView2 {store.boot?.runtimeVersion ?? '—'}</p></div>
   </div>
+  {#if store.boot?.mode === 'main'}
+    <div class="setting-row">
+      <div><strong>Version</strong><p>{store.boot?.version ?? ''}</p></div>
+      <div class="ctl upd-ctl">
+        <span class="upd-status" class:upd-err={uc.phase === 'error'} role="status" aria-live="polite" title={updText}>{updText}</span>
+        {#if uc.phase === 'available'}
+          <button type="button" class="primary upd-btn" aria-label="Install update" onclick={() => store.installCheckedUpdate()}><Icon name="download" size={14} />Install</button>
+        {:else if uc.phase === 'applying'}
+          <button type="button" class="upd-btn" aria-label="Installing update" disabled><Icon name="download" size={14} />Installing…</button>
+        {:else}
+          <button type="button" class="upd-btn" class:checking={uc.phase === 'checking'} aria-label="Check for updates" disabled={uc.phase === 'checking'}
+            onclick={() => store.checkForUpdates()}><Icon name="refresh-cw" size={14} />{uc.phase === 'checking' ? 'Checking…' : 'Check for updates'}</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
 </div>

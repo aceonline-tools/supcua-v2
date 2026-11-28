@@ -115,6 +115,15 @@ type Host interface {
 	SkipUpdate()
 }
 
+// UpdateCheckResult is the update.check reply. Status is "up_to_date", "available" or "error";
+// Error is "offline", "rate_limited" or "other".
+type UpdateCheckResult struct {
+	Status  string `json:"status"`
+	Current string `json:"current"`
+	Tag     string `json:"tag,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
 // Deps are the collaborators of a Bridge. Controller, Store and Config are required.
 type Deps struct {
 	Controller Controller
@@ -131,6 +140,9 @@ type Deps struct {
 	Host       Host
 	// CallerRole names the window a call came from ("main"|"editor"); set by the host transport.
 	CallerRole func(ctx context.Context) string
+	// UpdateCheck (optional) runs a release check: the new tag and download URL, or an error kind
+	// ("offline", "rate_limited", "other"). Wired to updater.CheckKind.
+	UpdateCheck func(current string) (tag, dlURL, errKind string)
 }
 
 var uiCallTimeout = 3 * time.Second
@@ -616,7 +628,7 @@ var mutating = []string{
 	"scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed", "settings.setSidebarCollapsed", "scripts.clone",
 	"scripts.delete", "scripts.retrySave", "editor.open", "editor.save", "editor.close", "editor.closeDecision", "editor.checkpoint",
 	"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.stop", "capture.mouse.stop",
-	"settings.update", "overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "app.closingReady",
+	"settings.update", "overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "update.check", "app.closingReady",
 }
 
 func (b *Bridge) fenceMutations(m map[string]Handler) {
@@ -737,6 +749,7 @@ func (b *Bridge) Methods() map[string]Handler {
 	reg(m, "autoactive.set", b.autoActiveSet)
 	regNoParams(m, "update.apply", b.updateApply)
 	regNoParams(m, "update.skip", b.updateSkip)
+	regNoParams(m, "update.check", b.updateCheck)
 	regNoParams(m, "app.closingReady", b.closingReadyHandler)
 	b.fenceMutations(m)
 	return m
@@ -835,6 +848,30 @@ func (b *Bridge) updateApply() (any, error) {
 		}
 	}()
 	return empty{}, nil
+}
+
+// updateCheck runs an on-demand release check. Concurrency is bounded by UpdateCheck itself
+// (updater.CheckUpdateShared joins in-flight checks, including the startup one). An available
+// update is recorded on the host exactly as the startup check does, so update.apply installs it;
+// no update.available event is emitted (the page shows the result inline, not the dialog).
+func (b *Bridge) updateCheck() (any, error) {
+	if b.d.Host == nil || b.d.UpdateCheck == nil {
+		return nil, newErr(CodeInternal)
+	}
+	current := b.d.Host.BootInfo().Version
+	tag, dl, kind := b.d.UpdateCheck(current)
+	if kind != "" {
+		return UpdateCheckResult{Status: "error", Current: current, Error: kind}, nil
+	}
+	if tag == "" {
+		return UpdateCheckResult{Status: "up_to_date", Current: current}, nil
+	}
+	setter, ok := b.d.Host.(interface{ SetUpdate(string) })
+	if dl == "" || !ok {
+		return UpdateCheckResult{Status: "error", Current: current, Error: "other"}, nil
+	}
+	setter.SetUpdate(dl)
+	return UpdateCheckResult{Status: "available", Current: current, Tag: tag}, nil
 }
 
 func (b *Bridge) updateSkip() (any, error) {

@@ -221,6 +221,7 @@ await __st.sleep(400);return __st.count('state')-b})()`, 15*time.Second)
 		s.editorLifecycle()
 		s.realEditorSuite()
 		s.settingsHotkeySuite()
+		s.updateCheckSuite()
 	}
 
 	trayDone := make(chan bool, 1)

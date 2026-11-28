@@ -122,3 +122,31 @@ func TestSettingsCaptureIsMainOnlyAndRoutedToMain(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateCheckIsMainOnlyAndFenced(t *testing.T) {
+	r := Roles()
+	for _, n := range r.Both {
+		if n == "update.check" {
+			t.Fatal("update.check must not be callable by the editor window")
+		}
+	}
+	for _, n := range r.EditorOnly {
+		if n == "update.check" {
+			t.Fatal("update.check is not editor-only")
+		}
+	}
+	found := false
+	for _, n := range r.MainOnly {
+		found = found || n == "update.check"
+	}
+	if !found {
+		t.Fatal("update.check missing from MainOnly")
+	}
+	inMutating := false
+	for _, n := range mutating {
+		inMutating = inMutating || n == "update.check"
+	}
+	if !inMutating {
+		t.Fatal("update.check must be fenced like the other update methods")
+	}
+}

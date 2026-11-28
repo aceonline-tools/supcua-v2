@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -524,4 +525,70 @@ func batchCommand(dir string) *exec.Cmd {
 	cmd := exec.Command("cmd", "/c", "start", "/b", "cmd", "/c", batchName)
 	cmd.Dir = dir
 	return cmd
+}
+
+type checkFlight struct {
+	done     chan struct{}
+	tag, url string
+	err      error
+}
+
+var (
+	flightMu sync.Mutex
+	flight   *checkFlight
+)
+
+// CheckUpdateShared is CheckUpdate with single-flight: callers arriving while a check is in
+// flight (startup vs manual, repeated clicks) join it and share its result instead of issuing a
+// second request.
+func CheckUpdateShared(currentVersion string) (latestVersion, dlURL string, err error) {
+	flightMu.Lock()
+	if f := flight; f != nil {
+		flightMu.Unlock()
+		<-f.done
+		return f.tag, f.url, f.err
+	}
+	f := &checkFlight{done: make(chan struct{})}
+	flight = f
+	flightMu.Unlock()
+
+	defer func() {
+		flightMu.Lock()
+		flight = nil
+		flightMu.Unlock()
+		close(f.done)
+	}()
+	f.tag, f.url, f.err = CheckUpdate(currentVersion)
+	return f.tag, f.url, f.err
+}
+
+// Error kinds reported by ErrorKind.
+const (
+	KindOffline     = "offline"
+	KindRateLimited = "rate_limited"
+	KindOther       = "other"
+)
+
+// ErrorKind classifies a CheckUpdate error for display.
+func ErrorKind(err error) string {
+	var ne net.Error
+	var ue *url.Error
+	switch {
+	case errors.Is(err, ErrRateLimited):
+		return KindRateLimited
+	case errors.As(err, &ne), errors.As(err, &ue):
+		return KindOffline
+	}
+	return KindOther
+}
+
+// CheckKind is the single-flight check for the page: an empty kind means success (empty tag =
+// no update); otherwise kind is one of the Kind* values. The error is logged here.
+func CheckKind(currentVersion string) (tag, dlURL, kind string) {
+	tag, dlURL, err := CheckUpdateShared(currentVersion)
+	if err != nil {
+		log.Printf("update check error: %v", err)
+		return "", "", ErrorKind(err)
+	}
+	return tag, dlURL, ""
 }

@@ -3,7 +3,7 @@ import { EditorStore } from './editor.svelte';
 import { OVERLAY_DEFAULTS } from './overlayStyle';
 import type { PageRole } from './role';
 import type {
-  BootState, GroupDTO, OverlayStyleDTO, ScriptSummary, SettingsDTO, SettingsPatch, StateDTO, ThemeSetting,
+  BootState, GroupDTO, UpdateCheckError, OverlayStyleDTO, ScriptSummary, SettingsDTO, SettingsPatch, StateDTO, ThemeSetting,
 } from '../api/types';
 
 export type Route = { name: 'scripts' } | { name: 'settings' };
@@ -14,6 +14,14 @@ export interface UpdateState {
   pct: number;
   failed: string;
 }
+
+export type UpdateCheckState =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'up_to_date'; current: string }
+  | { phase: 'available'; tag: string }
+  | { phase: 'applying'; tag: string; pct: number }
+  | { phase: 'error'; kind: UpdateCheckError };
 
 export type Row =
   | { kind: 'script'; script: ScriptSummary; grouped: boolean }
@@ -62,6 +70,7 @@ export class AppStore {
   error = $state('');
   systemDark = $state(true);
   update = $state<UpdateState | null>(null);
+  updateCheck = $state<UpdateCheckState>({ phase: 'idle' });
   private closingNotified = false;
   // Only the editor window has an EditorStore; the main window opens the editor with editor.openWindow.
   readonly editor!: EditorStore;
@@ -129,8 +138,14 @@ export class AppStore {
     if (this.role === 'main') this.disposers.push(
       this.api.on('scripts.changed', () => void this.loadScripts()),
       this.api.on('update.available', (e) => { this.update = { tag: e.tag, applying: false, pct: 0, failed: '' }; }),
-      this.api.on('update.progress', (e) => { if (this.update) this.update.pct = e.pct; }),
-      this.api.on('update.failed', (e) => { if (this.update) { this.update.applying = false; this.update.failed = e.message; } }),
+      this.api.on('update.progress', (e) => {
+        if (this.update) this.update.pct = e.pct;
+        if (this.updateCheck.phase === 'applying') this.updateCheck = { ...this.updateCheck, pct: e.pct };
+      }),
+      this.api.on('update.failed', (e) => {
+        if (this.update) { this.update.applying = false; this.update.failed = e.message; }
+        if (this.updateCheck.phase === 'applying') this.updateCheck = { phase: 'error', kind: 'other' };
+      }),
       this.api.on('save.failed', (e) => { this.unsaved[e.scriptId] = e.message; }),
       this.api.on('nav.goto', (e) => {
         if (e.route === 'settings') this.route = { name: 'settings' };
@@ -223,6 +238,32 @@ export class AppStore {
       await this.api.call('update.apply');
     } catch {
       this.update = { ...this.update, applying: false, failed: 'Update failed.' };
+    }
+  }
+
+  /** On-demand release check for Settings; the backend is single-flight, this only avoids a pointless call. */
+  async checkForUpdates(): Promise<void> {
+    if (this.updateCheck.phase === 'checking' || this.updateCheck.phase === 'applying') return;
+    this.updateCheck = { phase: 'checking' };
+    try {
+      const r = await this.api.call('update.check');
+      if (r.status === 'up_to_date') this.updateCheck = { phase: 'up_to_date', current: r.current };
+      else if (r.status === 'available' && r.tag) this.updateCheck = { phase: 'available', tag: r.tag };
+      else this.updateCheck = { phase: 'error', kind: r.error ?? 'other' };
+    } catch {
+      this.updateCheck = { phase: 'error', kind: 'other' };
+    }
+  }
+
+  /** Installs the update found by checkForUpdates through the same update.apply path as the startup prompt. */
+  async installCheckedUpdate(): Promise<void> {
+    const c = this.updateCheck;
+    if (c.phase !== 'available') return;
+    this.updateCheck = { phase: 'applying', tag: c.tag, pct: 0 };
+    try {
+      await this.api.call('update.apply');
+    } catch {
+      this.updateCheck = { phase: 'error', kind: 'other' };
     }
   }
 

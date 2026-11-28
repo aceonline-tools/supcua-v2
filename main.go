@@ -568,6 +568,7 @@ func main() {
 			}
 			return ""
 		},
+		UpdateCheck: updater.CheckKind,
 	}, late)
 
 	initialScripts := br.InitialScripts()
@@ -757,7 +758,7 @@ func main() {
 
 	if policy.CheckForUpdates {
 		go func() {
-			latestTag, dlURL, err := updater.CheckUpdate(version.Version)
+			latestTag, dlURL, err := updater.CheckUpdateShared(version.Version)
 			if err != nil {
 				log.Printf("update check error: %v", err)
 				return

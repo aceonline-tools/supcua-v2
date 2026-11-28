@@ -39,3 +39,7 @@ On first run, for each tag: `git archive <tag> frontend` into `sim/.cache/<tag>/
 ## Editor window (version `current`)
 
 The branch head's editor is a second host window. In the `current` version (and the static build) the shell owns ONE `MockHub` (`src/api/mockHub.ts`) wrapping the shared `MockBackend`; each iframe gets its own role/gen-bound Transport over `postMessage` (`src/api/simTransport.ts`, enabled by `?sim=1`). `editor.openWindow` makes the shell create a second simulated window, run the measure handshake (`editorBounds` in `src/sizing.ts`, a port of `bridge/bounds.go`), dim and block main until `editor.windowClosed`, and remember the editor's bounds per scaling for the session. The X button sends the close request so the page's guard runs. Tags v1.2.1/v1.2.3/v1.3.0 keep their in-main editor and a single window. `SIM_TAGS=none npm run sim` serves only `current` (no git/npm ci); `sim/e2e/check.mjs` is the Playwright check (see its header).
+
+## Check for updates (Settings)
+
+`?updcheck=available|offline|rate_limited|other` sets what the mock `update.check` answers (default: up to date) and `?upddelay=<ms>` delays it so the "Checking…" state can be captured. `sim/e2e/update-check.mjs <baseUrl> <shotsDir>` (Playwright) screenshots idle, checking, up to date, update available and the error states in the FHD simulator and fails if the Version row or its controls change size between states.

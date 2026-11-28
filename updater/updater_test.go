@@ -787,3 +787,94 @@ func TestBatchCommand_RelativeConstantScript(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckUpdateShared_SingleFlight(t *testing.T) {
+	var hits int32
+	release := make(chan struct{})
+	fakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		<-release
+		serveJSON(releaseJSON("v1.0.29", false, false, goodAsset))(w, r)
+	})
+	const n = 12
+	type res struct {
+		v, u string
+		err  error
+	}
+	out := make(chan res, n)
+	for i := 0; i < n; i++ {
+		go func() { v, u, err := CheckUpdateShared("1.0.0"); out <- res{v, u, err} }()
+	}
+	for atomic.LoadInt32(&hits) == 0 {
+		runtime.Gosched()
+	}
+	time.Sleep(50 * time.Millisecond) // let the other callers join the flight
+	close(release)
+	for i := 0; i < n; i++ {
+		if r := <-out; r.err != nil || r.v != "1.0.29" || r.u == "" {
+			t.Fatalf("result %d: %+v", i, r)
+		}
+	}
+	if h := atomic.LoadInt32(&hits); h != 1 {
+		t.Fatalf("hits = %d, want 1", h)
+	}
+	if _, _, err := CheckUpdateShared("1.0.0"); err != nil || atomic.LoadInt32(&hits) != 2 {
+		t.Fatalf("a later check must start a new request: err=%v hits=%d", err, hits)
+	}
+}
+
+func TestCheckKind(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		wantTag string
+		kind    string
+	}{
+		{"update", serveJSON(releaseJSON("v1.0.29", false, false, goodAsset)), "1.0.29", ""},
+		{"up to date", serveJSON(releaseJSON("v1.0.0", false, false, goodAsset)), "", ""},
+		{"pre-release ignored", serveJSON(releaseJSON("v9.0.0", false, true, goodAsset)), "", ""},
+		{"draft ignored", serveJSON(releaseJSON("v9.0.0", true, false, goodAsset)), "", ""},
+		{"non-strict tag ignored", serveJSON(releaseJSON("v9.0.0-rc1", false, false, goodAsset)), "", ""},
+		{"rate limited 403", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.WriteHeader(403)
+		}, "", KindRateLimited},
+		{"rate limited 429", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(429) }, "", KindRateLimited},
+		{"server error", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }, "", KindOther},
+		{"not found", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }, "", KindOther},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fakeAPI(t, c.handler)
+			tag, u, kind := CheckKind("1.0.0")
+			if tag != c.wantTag || kind != c.kind || (tag != "") != (u != "") {
+				t.Fatalf("got %q %q %q", tag, u, kind)
+			}
+		})
+	}
+}
+
+func TestCheckKind_Offline(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	base := srv.URL
+	srv.Close()
+	old := apiBase
+	apiBase = base
+	t.Cleanup(func() { apiBase = old })
+	if _, _, kind := CheckKind("1.0.0"); kind != KindOffline {
+		t.Fatalf("kind = %q", kind)
+	}
+}
+
+func TestSetAPIBaseForSelftestRefusesNonLoopback(t *testing.T) {
+	old := apiBase
+	t.Cleanup(func() { apiBase = old })
+	for _, bad := range []string{"https://api.github.com", "http://example.com", "http://127.0.0.1.evil.com", "http://127.0.0.1:1/x", "", "ftp://127.0.0.1"} {
+		if SetAPIBaseForSelftest(bad) == nil || apiBase != old {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if err := SetAPIBaseForSelftest("http://127.0.0.1:5555"); err != nil || apiBase != "http://127.0.0.1:5555" {
+		t.Fatalf("loopback refused: %v", err)
+	}
+}

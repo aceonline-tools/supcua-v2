@@ -41,7 +41,7 @@ func Roles() RoleLists {
 			"scripts.list", "scripts.get", "scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed",
 			"scripts.clone", "scripts.delete", "scripts.retrySave",
 			"settings.update", "settings.setSidebarCollapsed", "settings.capture.start", "settings.capture.stop",
-			"overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip",
+			"overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "update.check",
 			"editor.openWindow",
 		},
 		// The selftest-only gen-0 route's close (the leak check's main-page cycles): no production caller.

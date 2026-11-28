@@ -257,6 +257,7 @@ type fakeHost struct {
 	updateErr error
 	progress  []int
 	release   chan struct{}
+	updateURL string
 }
 
 func (h *fakeHost) Hide() { h.mu.Lock(); h.hidden++; h.mu.Unlock() }
@@ -288,6 +289,11 @@ func (h *fakeHost) ApplyUpdate(progress func(int)) error {
 	return h.updateErr
 }
 func (h *fakeHost) SkipUpdate() {}
+func (h *fakeHost) SetUpdate(u string) {
+	h.mu.Lock()
+	h.updateURL = u
+	h.mu.Unlock()
+}
 
 type fakeBackend struct {
 	mu      sync.Mutex
