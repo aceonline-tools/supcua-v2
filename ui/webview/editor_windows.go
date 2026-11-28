@@ -323,6 +323,7 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 				if win.GetMonitorInfo(mon, &mi) {
 					var fr win.RECT
 					procAdjustWindowRectExForDpi.Call(uintptr(unsafe.Pointer(&fr)), uintptr(win.WS_OVERLAPPEDWINDOW), 0, 0, uintptr(windowDPI(w.hwnd)))
+					w.normalRect, w.hasNormal = win.RECT{Left: int32(l), Top: int32(t), Right: int32(r), Bottom: int32(b)}, true
 					bx, by := -fr.Left, fr.Bottom // the invisible resize border a maximised window hides
 					win.SetWindowPos(w.hwnd, 0, mi.RcWork.Left-bx, mi.RcWork.Top-by, mi.RcWork.Right-mi.RcWork.Left+2*bx, mi.RcWork.Bottom-mi.RcWork.Top+2*by,
 						win.SWP_NOZORDER|win.SWP_NOACTIVATE)
@@ -352,7 +353,20 @@ func (u *UI) ShowEditorWindow(gen uint64) bool {
 	case win.IsIconic(w.hwnd):
 		win.ShowWindow(w.hwnd, win.SW_RESTORE)
 	case wasStaged && w.wantMax && !w.shownOnce:
-		win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
+		// Maximise and install the intended NORMAL rectangle as the restore position in one call: while
+		// staged the window sits at the maximised rectangle, which must never become the restore size.
+		wp := win.WINDOWPLACEMENT{ShowCmd: win.SW_SHOWMAXIMIZED}
+		wp.Length = uint32(unsafe.Sizeof(wp))
+		if w.hasNormal {
+			dx, dy := workOffset(w.hwnd)
+			wp.RcNormalPosition = win.RECT{Left: w.normalRect.Left - dx, Top: w.normalRect.Top - dy, Right: w.normalRect.Right - dx, Bottom: w.normalRect.Bottom - dy}
+		} else if !win.GetWindowPlacement(w.hwnd, &wp) {
+			wp.ShowCmd = win.SW_SHOWMAXIMIZED
+		}
+		wp.ShowCmd = win.SW_SHOWMAXIMIZED
+		if !win.SetWindowPlacement(w.hwnd, &wp) {
+			win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
+		}
 	case !win.IsWindowVisible(w.hwnd) && w.wantMax && !w.shownOnce:
 		win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
 	case !win.IsWindowVisible(w.hwnd):
@@ -375,7 +389,22 @@ func (u *UI) EditorWindowBounds(gen uint64) (l, t, r, b int, maximized, ok bool)
 		return
 	}
 	n := wp.RcNormalPosition
-	return int(n.Left), int(n.Top), int(n.Right), int(n.Bottom), wp.ShowCmd == win.SW_SHOWMAXIMIZED, true
+	if w.staged && w.hasNormal { // still at the staging rectangle: the intended normal one is the truth
+		return int(w.normalRect.Left), int(w.normalRect.Top), int(w.normalRect.Right), int(w.normalRect.Bottom), w.wantMax, true
+	}
+	dx, dy := workOffset(w.hwnd) // WINDOWPLACEMENT is in workspace coordinates, the config in screen coordinates
+	return int(n.Left) + int(dx), int(n.Top) + int(dy), int(n.Right) + int(dx), int(n.Bottom) + int(dy), wp.ShowCmd == win.SW_SHOWMAXIMIZED, true
+}
+
+// workOffset is the difference between screen and workspace coordinates on the window's monitor
+// (the taskbar's share of the monitor's top-left).
+func workOffset(h win.HWND) (dx, dy int32) {
+	mon := win.MonitorFromWindow(h, win.MONITOR_DEFAULTTONEAREST)
+	mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
+	if mon == 0 || !win.GetMonitorInfo(mon, &mi) {
+		return 0, 0
+	}
+	return mi.RcWork.Left - mi.RcMonitor.Left, mi.RcWork.Top - mi.RcMonitor.Top
 }
 
 // EmitEditor pushes an event to the editor window of generation gen (dropped when it is gone).

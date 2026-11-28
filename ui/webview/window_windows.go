@@ -46,6 +46,8 @@ type Window struct {
 	preparing       bool           // PrepareEditorWindow is moving the hidden window: ignore DPI changes
 	wantMax         bool           // show maximised on first show
 	shownOnce       bool
+	normalRect      win.RECT // staged+maximised: the intended restore rectangle (screen coordinates)
+	hasNormal       bool
 	staged          bool // shown but fully transparent until revealed (editor)
 }
 

@@ -430,10 +430,36 @@ func (s *SelfTest) stagingEdgeCases(scriptName string, step func(string, bool, s
 		ok := tr.err == nil && tr.Usable > 0 && !tr.EarlyFocus && tr.BlankFrames == 0 && tr.FirstW == tr.ClientW && tr.FirstH == tr.ClientH && (want == nil || want(tr))
 		step("staging: "+name, ok, fmt.Sprintf("err=%v earlyFocus=%v blank=%d first=%dx%d usable=%dx%d visible=%.0fms", tr.err, tr.EarlyFocus, tr.BlankFrames, tr.FirstW, tr.FirstH, tr.ClientW, tr.ClientH, ms(tr.Visible)))
 	}
-	// remembered maximised: maximise once, close (the host remembers it), reopen.
+	// remembered maximised: maximise once, close, reopen (maximised), close while maximised, reopen
+	// (maximised), restore: the restored size must be the ORIGINAL normal one, not the staging rectangle.
+	rect := func() (r win.RECT, ok bool) {
+		if ed := s.UI.Editor(); ed != nil {
+			ok = win.GetWindowRect(win.HWND(ed.HWND()), &r)
+		}
+		return
+	}
+	near := func(a, b win.RECT) bool {
+		d := func(x, y int32) bool { return x-y <= 2 && y-x <= 2 }
+		return d(a.Left, b.Left) && d(a.Top, b.Top) && d(a.Right, b.Right) && d(a.Bottom, b.Bottom)
+	}
+	isMax := func() bool {
+		ed := s.UI.Editor()
+		if ed == nil {
+			return false
+		}
+		var wp win.WINDOWPLACEMENT
+		wp.Length = uint32(unsafe.Sizeof(wp))
+		return win.GetWindowPlacement(win.HWND(ed.HWND()), &wp) && wp.ShowCmd == win.SW_SHOWMAXIMIZED
+	}
+	reopen := func(shot string) openTrial {
+		s.closeEditorAndWait()
+		time.Sleep(1500 * time.Millisecond)
+		return s.openByClick("dblclick", scriptName, shot, nil)
+	}
 	tr := s.openByClick("dblclick", scriptName, "", nil)
-	if tr.err != nil {
-		step("staging: remembered maximised (setup open)", false, tr.err.Error())
+	r0, ok0 := rect()
+	if tr.err != nil || !ok0 {
+		step("staging: remembered maximised (setup open)", false, fmt.Sprint(tr.err))
 		s.closeEditorAndWait()
 		return
 	}
@@ -441,20 +467,21 @@ func (s *SelfTest) stagingEdgeCases(scriptName string, step func(string, bool, s
 		win.ShowWindow(win.HWND(ed.HWND()), win.SW_MAXIMIZE)
 		time.Sleep(600 * time.Millisecond)
 	}
-	s.closeEditorAndWait()
-	time.Sleep(1500 * time.Millisecond)
-	tr = s.openByClick("dblclick", scriptName, "staging-maximized-first-frame", nil)
-	maxed := false
-	if ed := s.UI.Editor(); ed != nil {
-		var wp win.WINDOWPLACEMENT
-		wp.Length = uint32(unsafe.Sizeof(wp))
-		maxed = win.GetWindowPlacement(win.HWND(ed.HWND()), &wp) && wp.ShowCmd == win.SW_SHOWMAXIMIZED
-	}
-	check("remembered maximised opens maximised, never activated while transparent", tr, func(openTrial) bool { return maxed })
+	tr = reopen("staging-maximized-first-frame")
+	check("remembered maximised opens maximised, never activated while transparent", tr, func(openTrial) bool { return isMax() })
+	tr = reopen("") // closed while maximised: what is persisted must still be the normal rectangle
+	check("reopened maximised again after closing while maximised", tr, func(openTrial) bool { return isMax() })
 	if ed := s.UI.Editor(); ed != nil {
 		win.ShowWindow(win.HWND(ed.HWND()), win.SW_RESTORE)
 		time.Sleep(600 * time.Millisecond)
 	}
+	r1, ok1 := rect()
+	step("staging: restoring a remembered-maximised open returns the original normal bounds (+-2px)", ok1 && !isMax() && near(r0, r1),
+		fmt.Sprintf("original=%v restored=%v", r0, r1))
+	tr = reopen("")
+	r2, ok2 := rect()
+	step("staging: bounds persisted after close are the normal ones (+-2px, not maximised)", tr.err == nil && ok2 && !isMax() && near(r0, r2),
+		fmt.Sprintf("original=%v reopened=%v err=%v", r0, r2, tr.err))
 	s.closeEditorAndWait()
 	time.Sleep(1500 * time.Millisecond)
 
