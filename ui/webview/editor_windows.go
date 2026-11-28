@@ -318,10 +318,15 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 			// Every way of maximising a window activates it. While transparent the window is instead
 			// laid out at exactly the rectangle Windows gives a maximised window on this monitor, and
 			// the real maximise runs at the reveal (same geometry, so no visible resize).
-			var mmi win.MINMAXINFO
-			win.SendMessage(w.hwnd, win.WM_GETMINMAXINFO, 0, uintptr(unsafe.Pointer(&mmi)))
-			if mmi.PtMaxSize.X > 0 && mmi.PtMaxSize.Y > 0 {
-				win.SetWindowPos(w.hwnd, 0, mmi.PtMaxPosition.X, mmi.PtMaxPosition.Y, mmi.PtMaxSize.X, mmi.PtMaxSize.Y, win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+			if mon := win.MonitorFromWindow(w.hwnd, win.MONITOR_DEFAULTTONEAREST); mon != 0 {
+				mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
+				if win.GetMonitorInfo(mon, &mi) {
+					var fr win.RECT
+					procAdjustWindowRectExForDpi.Call(uintptr(unsafe.Pointer(&fr)), uintptr(win.WS_OVERLAPPEDWINDOW), 0, 0, uintptr(windowDPI(w.hwnd)))
+					bx, by := -fr.Left, fr.Bottom // the invisible resize border a maximised window hides
+					win.SetWindowPos(w.hwnd, 0, mi.RcWork.Left-bx, mi.RcWork.Top-by, mi.RcWork.Right-mi.RcWork.Left+2*bx, mi.RcWork.Bottom-mi.RcWork.Top+2*by,
+						win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+				}
 			}
 		}
 	}
