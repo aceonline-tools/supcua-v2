@@ -229,6 +229,7 @@ jobs:
             Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
             $o = "$dir/stdout-prod.txt"; $e = "$dir/stderr-prod.txt"
             $env:SUPCUA_EDITOR_SHOTS = Join-Path $PWD "out/editor-window-shots/$v-production"
+            $env:SUPCUA_OVERLAY_SHOTS = Join-Path $PWD "out/overlay-shots/$v-production"
             $p = Start-Process -FilePath (Join-Path $dir "supcua-v2.exe") -ArgumentList "-selftest-production","-fixture",$fixture,"-label",$v `
                  -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
             if (-not $p.WaitForExit(240000)) { $p.Kill($true); Write-Host "::error::$v selftest-production TIMEOUT"; $fail = 1 }

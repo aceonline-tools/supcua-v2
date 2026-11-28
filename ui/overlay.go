@@ -21,9 +21,6 @@ var (
 	user32DLL            = syscall.NewLazyDLL("user32.dll")
 	procUpdateLayeredWin = user32DLL.NewProc("UpdateLayeredWindow")
 	procGdiFlush         = syscall.NewLazyDLL("gdi32.dll").NewProc("GdiFlush")
-	colorGreenActive     = [3]uint8{0x00, 0xFF, 0x00}
-	colorRedInactive     = [3]uint8{0xFF, 0x00, 0x00}
-	colorGrayIdle        = [3]uint8{0x80, 0x80, 0x80}
 )
 
 const (
@@ -140,7 +137,7 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 		return nil, err
 	}
 
-	if err := overlayWindow.render(true); err != nil {
+	if err := overlayWindow.render(overlayWindow.positionX, overlayWindow.positionY); err != nil {
 		overlayLog.Failure("render", "initial render failed: %v", err)
 		overlayCurrent.Store(nil)
 		win.DestroyWindow(overlayWindow.windowHandle)
@@ -158,31 +155,24 @@ func (overlayWindow *OverlayWindow) paint() {
 	var paintStruct win.PAINTSTRUCT
 	win.BeginPaint(overlayWindow.windowHandle, &paintStruct)
 	win.EndPaint(overlayWindow.windowHandle, &paintStruct)
-	if err := overlayWindow.render(false); err != nil {
+	x, y := overlayWindow.screenPosition()
+	if err := overlayWindow.render(x, y); err != nil {
 		overlayLog.Failure("render", "render failed (paint): %v", err)
 	}
 }
 
 func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
-	if !overlayWindow.appController.IsGlobalActive() {
-		return "DISABLE", colorRedInactive
-	}
-	if name := overlayWindow.appController.GetRunningScriptName(); name != "" {
-		return "RUN: " + sanitizeStatusText(name), colorGreenActive
-	}
-	return "IDLE", colorGrayIdle
+	return overlayStatus(overlayWindow.appController.Snapshot())
 }
 
 // render draws the overlay into a 32-bit premultiplied DIB and pushes it with UpdateLayeredWindow.
 // GDI draws the glyphs (same system font as before) as a coverage mask; composeOverlay paints the
-// anti-aliased rounded background and the solid text. withGeometry also moves/resizes the window.
-func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
+// anti-aliased rounded background and the solid text. Position and size are always passed (see presentFor).
+func (overlayWindow *OverlayWindow) render(x, y int) error {
 	st := overlayWindow.style
 	w, h := st.Width, st.Height
-	text, rgb := overlayWindow.statusText()
-	if st.TextColor != "" {
-		rgb[0], rgb[1], rgb[2] = parseHex(st.TextColor)
-	}
+	req := presentFor(overlayWindow.appController.Snapshot(), st, x, y)
+	text, rgb := req.Text, req.RGB
 	overlayWindow.lastText, overlayWindow.lastRGB = text, rgb
 	overlayLog.Shown(text, rgb, overlayWindow.appController.IsGlobalActive())
 	overlayWindow.paints.Add(1)
@@ -242,18 +232,30 @@ func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
 
 	blend := blendFunction{BlendOp: acSrcOver, SourceConstantAlpha: byte(st.Opacity*255 + 0.5), AlphaFormat: acSrcAlpha}
 	origin := win.POINT{}
-	size := win.SIZE{CX: int32(w), CY: int32(h)}
-	dst := win.POINT{X: int32(overlayWindow.positionX), Y: int32(overlayWindow.positionY)}
-	var dstPtr, sizePtr uintptr
-	if withGeometry {
-		dstPtr, sizePtr = uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&size))
-	}
-	ok, _, callErr := procUpdateLayeredWin.Call(uintptr(overlayWindow.windowHandle), 0, dstPtr, sizePtr,
-		uintptr(memDC), uintptr(unsafe.Pointer(&origin)), 0, uintptr(unsafe.Pointer(&blend)), ulwAlpha)
+	size := win.SIZE{CX: int32(req.Size[0]), CY: int32(req.Size[1])}
+	dst := win.POINT{X: int32(req.Dst[0]), Y: int32(req.Dst[1])}
+	return updateLayered(overlayWindow.windowHandle, memDC, &dst, &size, &origin, &blend)
+}
+
+// updateLayered is the single UpdateLayeredWindow call site; tests replace it to see exactly what
+// a repaint hands over (a nil dst or size is what the stale-screen bug passed).
+var updateLayered = func(hwnd win.HWND, memDC win.HDC, dst *win.POINT, size *win.SIZE, origin *win.POINT, blend *blendFunction) error {
+	ok, _, callErr := procUpdateLayeredWin.Call(uintptr(hwnd), 0, uintptr(unsafe.Pointer(dst)), uintptr(unsafe.Pointer(size)),
+		uintptr(memDC), uintptr(unsafe.Pointer(origin)), 0, uintptr(unsafe.Pointer(blend)), ulwAlpha)
 	if ok == 0 {
 		return fmt.Errorf("overlay: UpdateLayeredWindow failed: %v", callErr)
 	}
 	return nil
+}
+
+// screenPosition is the window's current on-screen top-left, read at render time. The WM_MOVE
+// copy is cut to 16 bits, so it is only the fallback when the rectangle cannot be read.
+func (overlayWindow *OverlayWindow) screenPosition() (int, int) {
+	var r win.RECT
+	if overlayWindow.windowHandle != 0 && win.GetWindowRect(overlayWindow.windowHandle, &r) {
+		return int(r.Left), int(r.Top)
+	}
+	return overlayWindow.positionX, overlayWindow.positionY
 }
 
 // ApplyStyle applies a new style and position live. The position is moved onto a real monitor
@@ -263,10 +265,10 @@ func (overlayWindow *OverlayWindow) ApplyStyle(style model.ResolvedOverlayStyle,
 	overlayWindow.style = style
 	x, y = ClampToMonitors(x, y, style.Width, style.Height)
 	overlayWindow.positionX, overlayWindow.positionY = x, y
-	if err := overlayWindow.render(true); err != nil {
+	if err := overlayWindow.render(overlayWindow.positionX, overlayWindow.positionY); err != nil {
 		overlayLog.Failure("apply-style", "apply style failed, keeping the previous style: %v", err)
 		overlayWindow.style, overlayWindow.positionX, overlayWindow.positionY = prevStyle, prevX, prevY
-		if rerr := overlayWindow.render(true); rerr != nil {
+		if rerr := overlayWindow.render(overlayWindow.positionX, overlayWindow.positionY); rerr != nil {
 			overlayLog.Failure("render", "render failed (style rollback): %v", rerr)
 		}
 		return prevX, prevY, err
@@ -359,7 +361,8 @@ func (overlayWindow *OverlayWindow) Style() model.ResolvedOverlayStyle { return 
 
 // Refresh triggers a repaint of the overlay.
 func (overlayWindow *OverlayWindow) Refresh() {
-	if err := overlayWindow.render(false); err != nil {
+	x, y := overlayWindow.screenPosition()
+	if err := overlayWindow.render(x, y); err != nil {
 		overlayLog.Failure("render", "render failed (refresh): %v", err)
 	}
 }
