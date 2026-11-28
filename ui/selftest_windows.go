@@ -259,6 +259,13 @@ type ProductionHooks struct {
 	AutoActiveEnabled bool   // the LOADED config's auto_active_enabled
 	ExpectRow         string // a known script name in the list
 	OverlayHotkey     model.Hotkey
+
+	// Latency measurement (RCtrl): Register adds a hotkey with production-equivalent dispatch.
+	Register func(model.Hotkey, func(epoch uint64)) (int, error)
+	Unregister func(int)
+	ToggleGlobal func(epoch uint64)
+	StopRunning  func(epoch uint64)
+	PhysicalRCtrl func(down bool) // runs the keyboard-lock hook proc for a physical RCtrl event
 }
 
 func waitFor(timeout time.Duration, cond func() bool) bool {
@@ -362,6 +369,7 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 		if fire(h.ProbeHotkey, "script toggle hotkey (SendInput) starts the script", func() bool { return h.RunningScriptID() == h.ProbeID }) {
 			fire(h.ProbeHotkey, "script toggle hotkey (SendInput) stops the script", func() bool { return h.RunningScriptID() == "" })
 		}
+		s.rctrlLatency(h, step)
 		if s.Host != nil {
 			s.prodEditorGate(h, step)
 		}

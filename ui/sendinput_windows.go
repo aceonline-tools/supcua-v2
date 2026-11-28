@@ -50,6 +50,23 @@ func modifierVK(name string) uint16 {
 	return 0
 }
 
+// SendKey sends one key event for vk (down or up), e.g. to hold RCtrl for a measured time.
+func SendKey(vk uint16, up bool) error {
+	flags := uint32(0)
+	if up {
+		flags |= keyEventKeyUp
+	}
+	if vk == 0x5B || vk == 0x5C || vk == 0xA3 {
+		flags |= keyEventExtended
+	}
+	in := kbInput{typ: inputKeyboard, vk: vk, flags: flags}
+	n, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+	if n != 1 {
+		return err
+	}
+	return nil
+}
+
 // SendHotkey synthesises the key chord with SendInput, exactly as a keyboard would deliver it.
 func SendHotkey(hk model.Hotkey) error {
 	key := uint16(hotkey.KeyNameToVirtualKeyCode(hk.Key))

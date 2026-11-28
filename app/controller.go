@@ -11,6 +11,7 @@ import (
 	"github.com/yanmad27/supcua-v2/app/status"
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
+	"github.com/yanmad27/supcua-v2/latency"
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
 )
@@ -72,6 +73,7 @@ func (appController *Controller) ToggleGlobalStatus() {
 	appController.globalActive = !appController.globalActive
 	nowActive := appController.globalActive
 	appController.stateMutex.Unlock()
+	latency.Mark(latency.State)
 
 	if !nowActive {
 		appController.StopRunningScript()
@@ -196,6 +198,7 @@ func (appController *Controller) ToggleGlobalFromHotkey(epoch uint64) {
 	appController.globalActive = !appController.globalActive
 	nowActive := appController.globalActive
 	appController.stateMutex.Unlock()
+	latency.Mark(latency.State)
 	if !nowActive {
 		appController.StopRunningScript()
 	}
@@ -285,6 +288,7 @@ func (appController *Controller) dequeueNext() {
 	appController.runningScriptID = ""
 	appController.runningScriptName = ""
 	appController.cancelRunningScript = nil
+	latency.Mark(latency.State)
 	if len(appController.scriptQueue) > 0 && appController.globalActive && !appController.editDialogOpen && appController.hotkeyRecording == 0 {
 		next, _ := appController.popQueueLocked()
 		if next.Enabled {
@@ -340,6 +344,7 @@ func (appController *Controller) StopRunningScriptFromHotkey(epoch uint64) {
 		appController.cancelRunningScript()
 	}
 	appController.stateMutex.Unlock()
+	latency.Mark(latency.State)
 	appController.publish()
 }
 

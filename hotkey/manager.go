@@ -13,6 +13,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/yanmad27/supcua-v2/latency"
 	"github.com/yanmad27/supcua-v2/model"
 )
 
@@ -316,6 +317,7 @@ func (m *Manager) ListenForHotkeys() {
 }
 
 func (m *Manager) fire(id int, epoch uint64, cb HotkeyCallback) {
+	latency.Mark(latency.Detect)
 	log.Printf("hotkey fired: id=%d", id)
 	cb(id, epoch)
 }

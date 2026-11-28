@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/yanmad27/supcua-v2/latency"
 	"golang.org/x/sys/windows"
 )
 
@@ -363,6 +364,7 @@ func keyboardHookProc(nCode int, wParam, lParam uintptr) uintptr {
 				isUp := wParam == wmKeyup || wParam == wmSyskeyup
 				if (isDown || isUp) && rctrlFilter.onKey(isDown) {
 					if fn := emergencyToggle; fn != nil {
+						latency.Mark(latency.Detect)
 						go fn()
 					}
 				}

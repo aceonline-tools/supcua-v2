@@ -13,6 +13,7 @@ import (
 	"github.com/lxn/win"
 
 	"github.com/yanmad27/supcua-v2/app"
+	"github.com/yanmad27/supcua-v2/latency"
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 )
@@ -234,7 +235,9 @@ func (overlayWindow *OverlayWindow) render(x, y int) error {
 	origin := win.POINT{}
 	size := win.SIZE{CX: int32(req.Size[0]), CY: int32(req.Size[1])}
 	dst := win.POINT{X: int32(req.Dst[0]), Y: int32(req.Dst[1])}
-	return updateLayered(overlayWindow.windowHandle, memDC, &dst, &size, &origin, &blend)
+	err = updateLayered(overlayWindow.windowHandle, memDC, &dst, &size, &origin, &blend)
+	latency.Mark(latency.Present)
+	return err
 }
 
 // updateLayered is the single UpdateLayeredWindow call site; tests replace it to see exactly what

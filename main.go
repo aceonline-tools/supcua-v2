@@ -25,6 +25,7 @@ import (
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	imagedetector "github.com/yanmad27/supcua-v2/image"
+	"github.com/yanmad27/supcua-v2/latency"
 	"github.com/yanmad27/supcua-v2/license"
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
@@ -722,11 +723,13 @@ func main() {
 	})
 	tray.AddAutoActiveProcessItem(func() { br.NavGoto("settings") })
 	appController.Subscribe(func(snap status.Snapshot) {
+		latency.Mark(latency.Publish)
 		ui.LogOverlayState(snap.GlobalActive, snap.RunningScriptName)
 		if scriptHotkeys != nil {
 			scriptHotkeys.Reconcile()
 		}
 		if ok, why := late.tryPost(func() {
+			latency.Mark(latency.Refresh)
 			overlayCtl.Refresh()
 			tray.UpdateTooltip()
 		}); !ok {
@@ -816,6 +819,13 @@ func main() {
 				GlobalHotkey: appConfig.GlobalHotkey, ProbeHotkey: probe, ProbeID: "fx-probe-1",
 				ExpectFixed: 2, AutoActiveEnabled: appConfig.AutoActiveEnabled, ExpectRow: "Fixture Farm",
 				OverlayHotkey: appConfig.OverlayHotkey,
+				Register: func(hk model.Hotkey, f func(uint64)) (int, error) {
+					return hotkeyManager.Register(hk, func(_ int, epoch uint64) { f(epoch) })
+				},
+				Unregister:   func(id int) { _ = hotkeyManager.Unregister(id) },
+				ToggleGlobal: appController.ToggleGlobalFromHotkey,
+				StopRunning:  appController.StopRunningScriptFromHotkey,
+				PhysicalRCtrl: executor.SimulatePhysicalRCtrl,
 			})
 		} else {
 			go selftest.Run()
