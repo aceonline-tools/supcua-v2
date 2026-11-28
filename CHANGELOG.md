@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.7.1...v1.8.0) (2026-11-28)
+
+
+### Features
+
+* check for updates from Settings ([df3b7ba](https://github.com/aceonline-tools/supcua-v2/commit/df3b7ba21b6d0b0aa75fa145f6e5b377ef7e09f6))
+
 ## [1.7.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.7.0...v1.7.1) (2026-11-28)
 
 
