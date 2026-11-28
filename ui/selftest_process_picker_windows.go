@@ -93,20 +93,29 @@ func (s *SelfTest) processPickerSuite(h ProductionHooks, step func(string, bool,
 		return
 	}
 
+	// The window can exist before it is shown and uncloaked: poll until it is enumerated, and only
+	// then take the foreground back (a late-shown helper would otherwise steal it).
+	var direct winlist.Result
+	var elapsed time.Duration
+	found := false
+	waitFor(10*time.Second, func() bool {
+		t0 := time.Now()
+		direct = winlist.List(winlist.SystemSource{}, winlist.Self(), winlist.Budget, nil)
+		elapsed = time.Since(t0)
+		found = false
+		for _, r := range direct.Rows {
+			found = found || (strings.EqualFold(r.Exe, helperExe) && r.Title == title)
+		}
+		return found
+	})
+	step(name("enumeration finds the helper (exe basename + title) within 250 ms"), found && elapsed <= winlist.Budget && !direct.Truncated,
+		fmt.Sprintf("enumeration_ms=%d rows=%d truncated=%v", elapsed.Milliseconds(), len(direct.Rows), direct.Truncated))
+	time.Sleep(500 * time.Millisecond)
+
 	mainWnd := win.HWND(s.UI.HWND())
 	if !step(name("main window is the foreground window before picking (GetForegroundWindow)"), activate(mainWnd), "foreground="+foregroundTitle()) {
 		return
 	}
-
-	t0 := time.Now()
-	direct := winlist.List(winlist.SystemSource{}, winlist.Self(), winlist.Budget, nil)
-	elapsed := time.Since(t0)
-	found := false
-	for _, r := range direct.Rows {
-		found = found || (strings.EqualFold(r.Exe, helperExe) && r.Title == title)
-	}
-	step(name("enumeration finds the helper (exe basename + title) within 250 ms"), found && elapsed <= winlist.Budget && !direct.Truncated,
-		fmt.Sprintf("enumeration_ms=%d rows=%d truncated=%v", elapsed.Milliseconds(), len(direct.Rows), direct.Truncated))
 
 	t1 := time.Now()
 	for i := 0; i < 5000; i++ {
