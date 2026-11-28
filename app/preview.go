@@ -37,6 +37,11 @@ func (appController *Controller) previewCleared(had bool) {
 	}
 }
 
+// One preview exists at a time: the latest begun wins and an earlier token becomes a no-op. A
+// commit never clears a preview by itself: a real state change drops it (OverlaySnapshot compares
+// the base), and whoever began it ends it by token (CancelPreview), so one hotkey's gated or
+// unchanged release cannot take another hotkey's preview away.
+
 // beginPreview shows `shown(base)` on the overlay if the gates are open now, under the same lock
 // the gates are checked with. It returns the token that cancels it, or 0 when nothing is shown.
 func (appController *Controller) beginPreview(epoch uint64, shown func(status.Snapshot) (status.Snapshot, bool)) uint64 {

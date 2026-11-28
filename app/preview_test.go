@@ -93,11 +93,12 @@ func TestPreview_RecordingStartingDropsItAndBlocksTheCommit(t *testing.T) {
 func TestPreview_GatedReleaseClearsItAndRepaints(t *testing.T) {
 	c, _, notified := previewCtl(t)
 	epoch := c.HotkeyEpoch()
-	c.BeginTogglePreview(epoch)
+	tok := c.BeginTogglePreview(epoch)
 	before := *notified
 	c.SetHotkeyRecording(true)
 	c.SetHotkeyRecording(false)
 	c.ToggleGlobalFromHotkey(epoch)
+	c.CancelPreview(tok) // the manager ends a gated release's preview by its token
 	if c.OverlaySnapshot() != c.Snapshot() || *notified <= before {
 		t.Fatalf("overlay not restored/repainted: %+v n=%d", c.OverlaySnapshot(), *notified)
 	}
@@ -140,4 +141,54 @@ func TestPreview_DroppedWhenTheStateChangesUnderneath(t *testing.T) {
 		t.Fatalf("toggle preview stuck: %+v", got)
 	}
 	time.Sleep(time.Millisecond)
+}
+
+// Two previews overlap (A: toggle, B: stop): the latest begun wins and A's token is a no-op.
+func overlap(t *testing.T) (c *Controller, a, b uint64, epoch uint64) {
+	c, sim, _ := previewCtl(t)
+	c.StartScript(infinite("s", false))
+	eventually(t, "s iterating", func() bool { return sim.count("run:s") >= 2 })
+	epoch = c.HotkeyEpoch()
+	a = c.BeginTogglePreview(epoch)
+	b = c.BeginStopPreview("s", epoch)
+	if a == 0 || b == 0 || a == b {
+		t.Fatalf("tokens a=%d b=%d", a, b)
+	}
+	return
+}
+
+func TestPreview_OverlapLatestWinsAndEarlierTokenIsNoOp(t *testing.T) {
+	c, a, b, _ := overlap(t)
+	if got := c.OverlaySnapshot(); !got.GlobalActive || got.RunningScriptName != "" {
+		t.Fatalf("latest (stop) preview should show: %+v", got)
+	}
+	c.CancelPreview(a) // A's gated/unchanged release
+	if got := c.OverlaySnapshot(); got.RunningScriptName != "" {
+		t.Fatalf("A's cancel removed B's preview: %+v", got)
+	}
+	c.CancelPreview(b)
+	if c.OverlaySnapshot() != c.Snapshot() {
+		t.Fatal("B's own cancel did not end it")
+	}
+}
+
+func TestPreview_OverlapAGatedReleaseKeepsB(t *testing.T) {
+	c, a, _, epoch := overlap(t)
+	c.ToggleGlobalFromHotkey(epoch + 1) // A's release is gated (stale epoch): no state change
+	c.CancelPreview(a)                  // what the poll does after A's action returned
+	if got := c.OverlaySnapshot(); got.RunningScriptName != "" || c.Snapshot().RunningScriptName == "" {
+		t.Fatalf("B's preview lost by A's gated release: overlay=%+v real=%+v", got, c.Snapshot())
+	}
+}
+
+func TestPreview_OverlapACommitDropsBOnlyBecauseTheStateChanged(t *testing.T) {
+	c, a, _, epoch := overlap(t)
+	c.ToggleGlobalFromHotkey(epoch) // A commits: global off, script stopped
+	c.CancelPreview(a)
+	if c.IsGlobalActive() {
+		t.Fatal("A did not commit")
+	}
+	if c.OverlaySnapshot() != c.Snapshot() {
+		t.Fatal("a preview computed from the old state outlived the commit")
+	}
 }

@@ -69,6 +69,7 @@ type Manager struct {
 
 	polls         pollSet
 	previewWanted atomic.Bool
+	previewRun    previewRunner
 
 	listenerTID atomic.Uint32
 
@@ -106,12 +107,17 @@ func (m *Manager) ListenerThreadID() uint32 { return m.listenerTID.Load() }
 
 // NewManager creates a hotkey Manager.
 func NewManager() *Manager {
-	return &Manager{
+	m := &Manager{
 		callbacks:    make(map[int]HotkeyCallback),
 		nextID:       1,
 		registerCh:   make(chan *regRequest, 32),
 		unregisterCh: make(chan unregRequest, 32),
 	}
+	m.previewRun.install = installPreviewHook(&m.polls.mask)
+	m.previewRun.handle = func(ev previewEvent) {
+		m.polls.key(ev.vk, ev.down, m.pollMute.muted(), m.stamp)
+	}
+	return m
 }
 
 func convertModifiersToFlags(modifierNames []string) uint32 {

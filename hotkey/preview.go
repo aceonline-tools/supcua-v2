@@ -53,11 +53,13 @@ type pollSet struct {
 	mu      sync.Mutex
 	keys    []pollKeyEntry
 	tracker keyTracker
+	mask    keyMask // registered vks: read by the hook callback without the lock
 }
 
 func (s *pollSet) add(e pollKeyEntry) {
 	s.mu.Lock()
 	s.keys = append(s.keys, e)
+	s.mask.set(e.vkCode, true)
 	s.mu.Unlock()
 }
 
@@ -67,7 +69,13 @@ func (s *pollSet) remove(id int) bool {
 	for i := range s.keys {
 		if s.keys[i].id == id {
 			s.cancelLocked(&s.keys[i])
+			vk := s.keys[i].vkCode
 			s.keys = append(s.keys[:i], s.keys[i+1:]...)
+			still := false
+			for _, k := range s.keys {
+				still = still || k.vkCode == vk
+			}
+			s.mask.set(vk, still)
 			return true
 		}
 	}

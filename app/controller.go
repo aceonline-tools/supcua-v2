@@ -208,10 +208,8 @@ func (appController *Controller) hotkeyAllowed(epoch uint64) bool {
 // recording is active (checked in the same critical section as the flip).
 func (appController *Controller) ToggleGlobalFromHotkey(epoch uint64) {
 	appController.stateMutex.Lock()
-	cleared := appController.clearPreviewLocked()
 	if !appController.hotkeyAllowedLocked(epoch) {
 		appController.stateMutex.Unlock()
-		appController.previewCleared(cleared)
 		return
 	}
 	appController.globalActive = !appController.globalActive
@@ -357,10 +355,8 @@ func (appController *Controller) StartScriptFromHotkey(script model.Script, epoc
 // emergency stop and the tray keep using the ungated StopRunningScript.
 func (appController *Controller) StopRunningScriptFromHotkey(epoch uint64) {
 	appController.stateMutex.Lock()
-	cleared := appController.clearPreviewLocked()
 	if !appController.hotkeyAllowedLocked(epoch) {
 		appController.stateMutex.Unlock()
-		appController.previewCleared(cleared)
 		return
 	}
 	appController.scriptQueue = nil

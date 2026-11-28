@@ -10,51 +10,49 @@ import (
 )
 
 var (
-	procSetWindowsHookEx = user32DLL.NewProc("SetWindowsHookExW")
-	procCallNextHookEx   = user32DLL.NewProc("CallNextHookEx")
-	procGetMessage       = user32DLL.NewProc("GetMessageW")
+	procSetWindowsHookEx    = user32DLL.NewProc("SetWindowsHookExW")
+	procUnhookWindowsHookEx = user32DLL.NewProc("UnhookWindowsHookEx")
+	procCallNextHookEx      = user32DLL.NewProc("CallNextHookEx")
+	procGetMessage          = user32DLL.NewProc("GetMessageW")
+	procPeekMessageHook     = user32DLL.NewProc("PeekMessageW")
+	procPostThreadMessage   = user32DLL.NewProc("PostThreadMessageW")
 
-	previewHookStarted atomic.Bool
-	previewManager     atomic.Pointer[Manager]
-	previewEvents      = make(chan previewEvent, 256)
-	acceptInjected     atomic.Bool
+	previewHookCB  = syscall.NewCallback(previewHookProc)
+	hookSink       atomic.Pointer[hookTarget]
+	acceptInjected atomic.Bool
 )
 
-type previewEvent struct {
-	vk   uint32
-	down bool
+type hookTarget struct {
+	mask *keyMask
+	emit func(previewEvent)
 }
 
 // SetAcceptInjected lets the preview hook treat SendInput keys as real ones. Self-test only: a
 // production hook ignores injected keys so a script's own key events never drive the overlay.
 func SetAcceptInjected(on bool) { acceptInjected.Store(on) }
 
-// StartPreview enables the event-driven key-down detection, installed with the first bare-modifier hotkey: a WH_KEYBOARD_LL hook on its own
-// thread (it never swallows a key and only does non-blocking work) and a worker that feeds the
-// polled hotkeys' previews. It costs nothing while no key is pressed. Call once.
+// StartPreview enables the event-driven key-down detection, installed with the first bare-modifier
+// hotkey: a WH_KEYBOARD_LL hook on its own thread that never swallows a key and only enqueues
+// registered keys. It costs nothing while no key is pressed.
 func (m *Manager) StartPreview() { m.previewWanted.Store(true) }
 
-// ensurePreviewHook installs the hook the first time a bare-modifier hotkey is registered.
+// StopPreview unhooks and ends the worker (app shutdown). A later registration does not restart it.
+func (m *Manager) StopPreview() {
+	m.previewWanted.Store(false)
+	m.previewRun.stop()
+}
+
+// ensurePreviewHook installs the hook the first time a bare-modifier hotkey is registered, and again
+// if it died.
 func (m *Manager) ensurePreviewHook() {
-	if !m.previewWanted.Load() || !previewHookStarted.CompareAndSwap(false, true) {
-		return
+	if m.previewWanted.Load() {
+		_ = m.previewRun.start()
 	}
-	previewManager.Store(m)
-	go previewWorker()
-	go runPreviewHook()
 }
 
 // SetPreview attaches a preview to the polled hotkey registered as id. It reports false for a
 // hotkey that is not a polled bare modifier.
 func (m *Manager) SetPreview(id int, p Preview) bool { return m.polls.setPreview(id, p) }
-
-func previewWorker() {
-	for ev := range previewEvents {
-		if m := previewManager.Load(); m != nil {
-			m.polls.key(ev.vk, ev.down, m.pollMute.muted(), m.stamp)
-		}
-	}
-}
 
 type kbdHook struct {
 	vkCode, scanCode, flags, time uint32
@@ -65,39 +63,66 @@ const llkhfInjected = 0x10
 
 func previewHookProc(nCode int, wParam, lParam uintptr) uintptr {
 	if nCode >= 0 {
-		kb := *(**kbdHook)(unsafe.Pointer(&lParam))
-		if kb.flags&llkhfInjected == 0 || acceptInjected.Load() {
-			var down bool
+		if t := hookSink.Load(); t != nil {
+			kb := *(**kbdHook)(unsafe.Pointer(&lParam))
 			switch wParam {
 			case 0x100, 0x104:
-				down = true
+				queueKey(t.mask, t.emit, kb.vkCode, true, kb.flags&llkhfInjected != 0, acceptInjected.Load())
 			case 0x101, 0x105:
-			default:
-				goto next
-			}
-			select {
-			case previewEvents <- previewEvent{kb.vkCode, down}:
-			default: // full: the poll still ends any preview whose key is up
+				queueKey(t.mask, t.emit, kb.vkCode, false, kb.flags&llkhfInjected != 0, acceptInjected.Load())
 			}
 		}
 	}
-next:
 	r, _, _ := procCallNextHookEx.Call(0, uintptr(nCode), wParam, lParam)
 	return r
 }
 
-func runPreviewHook() {
-	runtime.LockOSThread()
-	h, _, _ := procSetWindowsHookEx.Call(13, syscall.NewCallback(previewHookProc), 0, 0)
-	if h == 0 {
-		previewHookStarted.Store(false)
-		return
-	}
-	var msg [48]byte
-	for {
-		r, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0)
-		if int32(r) <= 0 {
-			return
+// installPreviewHook runs the hook on its own locked thread. The returned stop posts WM_QUIT,
+// waits for the thread to unhook and exit. dead is called if the thread ends on its own.
+func installPreviewHook(mask *keyMask) func(emit func(previewEvent), dead func()) (func(), error) {
+	return func(emit func(previewEvent), dead func()) (func(), error) {
+		type ready struct {
+			tid uint32
+			err error
 		}
+		rc := make(chan ready, 1)
+		exited := make(chan struct{})
+		var stopping atomic.Bool
+		go func() {
+			runtime.LockOSThread()
+			defer close(exited)
+			var msg [48]byte
+			procPeekMessageHook.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0, 0) // creates the thread's queue
+			t := &hookTarget{mask: mask, emit: emit}
+			hookSink.Store(t)
+			h, _, err := procSetWindowsHookEx.Call(13, previewHookCB, 0, 0)
+			if h == 0 {
+				hookSink.CompareAndSwap(t, nil)
+				rc <- ready{err: err}
+				return
+			}
+			rc <- ready{tid: currentThreadID()}
+			for {
+				r, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0)
+				if int32(r) <= 0 {
+					break
+				}
+			}
+			procUnhookWindowsHookEx.Call(h)
+			hookSink.CompareAndSwap(t, nil)
+			if !stopping.Load() {
+				dead()
+			}
+		}()
+		res := <-rc
+		if res.err != nil {
+			<-exited
+			return nil, res.err
+		}
+		return func() {
+			stopping.Store(true)
+			procPostThreadMessage.Call(uintptr(res.tid), 0x0012, 0, 0)
+			<-exited
+		}, nil
 	}
 }

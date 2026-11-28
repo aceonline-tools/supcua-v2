@@ -479,6 +479,7 @@ func main() {
 					scriptHotkeys.Stop()
 				}
 				hotkeyManager.UnregisterAll()
+				hotkeyManager.StopPreview()
 				close(unregistered)
 			}()
 			select {
