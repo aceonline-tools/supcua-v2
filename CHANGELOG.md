@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.6.0...v1.7.0) (2026-11-28)
+
+
+### Features
+
+* record hotkeys in Settings with a Capture button ([faed4bf](https://github.com/aceonline-tools/supcua-v2/commit/faed4bf7fd4344287405652b5490692d4170d1f7))
+
 ## [1.6.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.5.2...v1.6.0) (2026-11-27)
 
 
