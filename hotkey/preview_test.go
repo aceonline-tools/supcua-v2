@@ -2,7 +2,7 @@ package hotkey
 
 import "testing"
 
-const vkR, vkC, vkShift = 0xA3, 0x43, 0xA0
+const vkR, vkC, vkW = 0xA3, 0x43, 0x57
 
 type fakePreview struct {
 	begun, cancelled []uint64
@@ -34,7 +34,7 @@ func (r *rig) isDown(vk uint32) bool { return r.held[vk] }
 // hook is a key event as the hook delivers it (the OS key state is updated first).
 func (r *rig) hook(vk uint32, down, muted bool) {
 	r.held[vk] = down
-	r.set.key(vk, down, muted, r.isDown, func() uint64 { return 7 })
+	r.set.key(vk, down, muted, func() uint64 { return 7 })
 }
 
 func (r *rig) tick(muted bool) {
@@ -61,37 +61,36 @@ func TestPreview_LoneDownBeginsThenReleaseCommits(t *testing.T) {
 	}
 }
 
-func TestPreview_ComboCancelsAndSuppressesAction(t *testing.T) {
+// Firing rules are those of v1.8.0: a release fires whatever other keys did meanwhile.
+func TestPreview_ComboStillFiresAndKeepsThePreview(t *testing.T) {
 	r := newRig()
 	r.hook(vkR, true, false)
 	r.tick(false)
 	r.hook(vkC, true, false)
-	if len(r.fp.cancelled) != 1 || r.fp.cancelled[0] != 1 {
-		t.Fatalf("combo did not revert the preview: %v", r.fp.cancelled)
-	}
 	r.hook(vkC, false, false)
+	if len(r.fp.cancelled) != 0 {
+		t.Fatalf("another key reverted the preview: %v", r.fp.cancelled)
+	}
 	r.hook(vkR, false, false)
 	r.tick(false)
-	if len(r.fire) != 0 {
-		t.Fatalf("RCtrl+C fired the action: %+v", r.fire)
-	}
-	r.hook(vkR, true, false) // the next lone press works again
-	if len(r.fp.begun) != 2 {
-		t.Fatal("taint leaked into the next press")
+	if len(r.fire) != 1 || r.fire[0].token != 1 {
+		t.Fatalf("RCtrl+C release must fire as on v1.8.0: %+v", r.fire)
 	}
 }
 
-func TestPreview_ModifierHeldBeforeShowsNothingAndDoesNotFire(t *testing.T) {
+func TestPreview_KeyHeldBeforeStillPreviewsAndFires(t *testing.T) {
 	r := newRig()
-	r.hook(vkShift, true, false)
+	r.hook(vkW, true, false) // moving in the game
+	r.tick(false)
 	r.hook(vkR, true, false)
-	if len(r.fp.begun) != 0 {
-		t.Fatalf("preview with a modifier held before: %v", r.fp.begun)
+	if len(r.fp.begun) != 1 {
+		t.Fatalf("no preview with W held: %v", r.fp.begun)
 	}
+	r.tick(false)
 	r.hook(vkR, false, false)
 	r.tick(false)
-	if len(r.fire) != 0 {
-		t.Fatal("fired with a modifier held before")
+	if len(r.fire) != 1 || r.fire[0].token != 1 {
+		t.Fatalf("RCtrl tap with W held must fire: %+v", r.fire)
 	}
 }
 
@@ -135,13 +134,14 @@ func TestPreview_ReleaseWithoutCommitEndsIt(t *testing.T) {
 	}
 }
 
-func TestPreview_DroppedReleaseOfOtherKeyDoesNotMakeComboForever(t *testing.T) {
+func TestPreview_DroppedReleaseDoesNotSwallowTheNextPress(t *testing.T) {
 	r := newRig()
-	r.hook(vkC, true, false)
-	r.held[vkC] = false // the hook never saw C's release (focus loss, secure desktop)
 	r.hook(vkR, true, false)
-	if len(r.fp.begun) != 1 {
-		t.Fatalf("stale tracked key blocked the preview: %v", r.fp.begun)
+	r.held[vkR] = false // the hook never saw the release
+	r.tick(false)
+	r.hook(vkR, true, false)
+	if len(r.fp.begun) != 2 {
+		t.Fatalf("next press after a dropped release showed no preview: %v", r.fp.begun)
 	}
 }
 

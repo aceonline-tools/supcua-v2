@@ -174,7 +174,7 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 	id, err := h.Register(rctrl, h.ToggleGlobal, h.PreviewToggle)
 	if step("latency: register rctrl global hotkey", err == nil, fmt.Sprint(err)) {
 		run("(a) global hotkey RCtrl DISABLE<->IDLE", keyDown, keyUp, toggleTo)
-		s.rctrlCombo(h, step, x, y, w, hh)
+		s.rctrlHeldKey(h, step, x, y, w, hh)
 		h.Unregister(id)
 		if !h.GlobalActive() {
 			_ = SendHotkey(h.GlobalHotkey)
@@ -209,26 +209,32 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 	step("latency: global active restored", waitFor(4*time.Second, h.GlobalActive), "")
 }
 
-// rctrlCombo checks the real path for RCtrl+C: the overlay previews on RCtrl down, returns to the
-// real state when C goes down, and the release does not toggle the global state.
-func (s *SelfTest) rctrlCombo(h ProductionHooks, step func(string, bool, string) bool, x, y, w, hh int) {
+// rctrlHeldKey checks the real path with W held (a player moving): the RCtrl tap previews DISABLE at
+// key-down and still toggles the global state on release, exactly as without W. It then toggles back.
+func (s *SelfTest) rctrlHeldKey(h ProductionHooks, step func(string, bool, string) bool, x, y, w, hh int) {
 	if !waitFor(4*time.Second, h.GlobalActive) {
-		step("latency: combo precondition (global active)", false, "")
+		step("latency: held-key precondition (global active)", false, "")
 		return
 	}
 	showing := func(rgb [3]uint8) bool {
 		px, err := captureScreen(x, y, w, hh)
 		return err == nil && screenHue(overlayObs{screen: px}, rgb) >= 10
 	}
+	const vkW = 0x57
+	defer SendKey(vkW, true)
 	defer SendKey(vkRCtrl, true)
+	_ = SendKey(vkW, false)
+	time.Sleep(100 * time.Millisecond)
 	_ = SendKey(vkRCtrl, false)
 	previewed := waitFor(time.Second, func() bool { return showing(colorRedInactive) })
-	_ = SendKey(0x43, false)
-	_ = SendKey(0x43, true)
-	reverted := waitFor(time.Second, func() bool { return showing(colorGrayIdle) })
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	_ = SendKey(vkRCtrl, true)
-	time.Sleep(500 * time.Millisecond)
-	step("latency: RCtrl+C previews DISABLE, reverts to IDLE and does not toggle", previewed && reverted && h.GlobalActive(),
-		fmt.Sprintf("previewed=%v reverted=%v globalActive=%v", previewed, reverted, h.GlobalActive()))
+	toggled := waitFor(2*time.Second, func() bool { return !h.GlobalActive() })
+	stays := showing(colorRedInactive)
+	_ = SendKey(vkW, true)
+	time.Sleep(200 * time.Millisecond)
+	_ = SendHotkey(h.GlobalHotkey)
+	waitFor(4*time.Second, h.GlobalActive)
+	step("latency: RCtrl tap with W held previews DISABLE and still toggles on release", previewed && toggled && stays,
+		fmt.Sprintf("previewed=%v toggled=%v stillDisabledOnScreen=%v", previewed, toggled, stays))
 }

@@ -10,48 +10,25 @@ type Preview struct {
 	Cancel func(token uint64)
 }
 
-type keyKind int
-
-const (
-	keyNone  keyKind = iota
-	keyLone          // pressed while no other key was down
-	keyCombo         // pressed while another key was down
-)
-
-// keyTracker follows which keys are down from the keyboard hook. A key the hook reports down but
-// the OS no longer holds (a dropped release) is pruned with isDown, so it cannot make later presses
-// look like combos.
+// keyTracker filters key auto-repeat: the hook reports a held key down repeatedly, and only the
+// first report is a down-edge. The poll clears a key once the OS reports it up, so a dropped
+// release cannot swallow the next press.
 type keyTracker struct{ down [256]bool }
 
-func (t *keyTracker) onKey(vk uint32, down bool, isDown func(uint32) bool) keyKind {
+func (t *keyTracker) downEdge(vk uint32, down bool) bool {
 	if vk >= 256 {
-		return keyNone
+		return false
 	}
 	if !down {
 		t.down[vk] = false
-		return keyNone
+		return false
 	}
 	if t.down[vk] {
-		return keyNone // auto-repeat
-	}
-	others := 0
-	for k := range t.down {
-		if t.down[k] && uint32(k) != vk {
-			if isDown(uint32(k)) {
-				others++
-			} else {
-				t.down[k] = false
-			}
-		}
+		return false
 	}
 	t.down[vk] = true
-	if others == 0 {
-		return keyLone
-	}
-	return keyCombo
+	return true
 }
-
-func (t *keyTracker) isDown(vk uint32) bool { return vk < 256 && t.down[vk] }
 
 type pollKeyEntry struct {
 	id       int
@@ -71,8 +48,7 @@ type pollFire struct {
 }
 
 // pollSet is the polled bare-modifier hotkeys plus the hook-fed key tracker. The poll stays the
-// authority for the release action; the hook only starts and cancels previews and taints presses
-// that turned into combos.
+// authority for the release action; the hook only starts previews.
 type pollSet struct {
 	mu      sync.Mutex
 	keys    []pollKeyEntry
@@ -125,6 +101,9 @@ func (s *pollSet) tick(isDown func(uint32) bool, muted bool, fire func(pollFire)
 	for i := range s.keys {
 		e := &s.keys[i]
 		down := isDown(e.vkCode)
+		if !down {
+			s.tracker.down[e.vkCode&0xFF] = false
+		}
 		if e.state.step(down, muted) {
 			f := pollFire{e.id, e.callback, e.preview, e.token}
 			e.token = 0
@@ -137,30 +116,19 @@ func (s *pollSet) tick(isDown func(uint32) bool, muted bool, fire func(pollFire)
 	}
 }
 
-// key handles one hook key event. A lone press of a registered key begins its preview when the
-// poll mute is open; a press that makes a combo taints every held registered key (its release will
-// not fire) and cancels its preview.
-func (s *pollSet) key(vk uint32, down, muted bool, isDown func(uint32) bool, stamp func() uint64) {
+// key handles one hook key event. The down-edge of a registered key begins its preview whenever
+// the release will fire: the poll mute is open and the key is not suppressed. Other keys going
+// down change nothing: the release fires exactly as it always did.
+func (s *pollSet) key(vk uint32, down, muted bool, stamp func() uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	switch s.tracker.onKey(vk, down, isDown) {
-	case keyLone:
-		if muted {
-			return
-		}
-		for i := range s.keys {
-			e := &s.keys[i]
-			if e.vkCode == vk && e.preview != nil && e.token == 0 && !e.state.suppressed && !e.state.tainted {
-				e.token = e.preview.Begin(stamp())
-			}
-		}
-	case keyCombo:
-		for i := range s.keys {
-			e := &s.keys[i]
-			if s.tracker.isDown(e.vkCode) {
-				e.state.tainted = true
-				s.cancelLocked(e)
-			}
+	if !s.tracker.downEdge(vk, down) || muted {
+		return
+	}
+	for i := range s.keys {
+		e := &s.keys[i]
+		if e.vkCode == vk && e.preview != nil && e.token == 0 && !e.state.suppressed {
+			e.token = e.preview.Begin(stamp())
 		}
 	}
 }

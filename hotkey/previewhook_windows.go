@@ -51,7 +51,7 @@ func (m *Manager) SetPreview(id int, p Preview) bool { return m.polls.setPreview
 func previewWorker() {
 	for ev := range previewEvents {
 		if m := previewManager.Load(); m != nil {
-			m.polls.key(ev.vk, ev.down, m.pollMute.muted(), keyIsDown, m.stamp)
+			m.polls.key(ev.vk, ev.down, m.pollMute.muted(), m.stamp)
 		}
 	}
 }
