@@ -379,6 +379,10 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 				step(fmt.Sprintf("open latency: %s #%d never showed a blank frame", kind, i), false, tr.Frame.String())
 				okAll = false
 			}
+			if m, merr := s.edMetrics(); merr != nil || m.M == nil || !m.noScroll() || m.maxBlank() > 24 {
+				step(fmt.Sprintf("open latency: %s #%d fits its content at the opened size (no scroll, <=24px blank per column)", kind, i), false, fmt.Sprint(merr, " ", m))
+				okAll = false
+			}
 			if i == 0 {
 				first = tr
 			} else {
@@ -392,6 +396,9 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 		}
 		vm, vx := medMax(vis)
 		um, ux := medMax(use)
+		// CI-tolerant bounds (shared runner, BitBlt + eval polling floor ~90 ms in "usable"): the stall this
+		// guards against was 5000 ms, so these catch any return of it with margin.
+		okAll = okAll && vm <= 400 && vx <= 800 && um <= 500 && ux <= 900
 		step("open latency: "+kind, okAll, fmt.Sprintf("first visible=%.0fms usable=%.0fms | repeat n=%d visible med=%.0f max=%.0f usable med=%.0f max=%.0f ms | blank frames=%d",
 			ms(first.Visible), ms(first.Usable), len(vis), vm, vx, um, ux, blank))
 	}
