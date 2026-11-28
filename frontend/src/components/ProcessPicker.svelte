@@ -89,7 +89,7 @@
         {:else if phase === 'error'}
           <p class="picker-msg err" role="alert">Couldn't read the process list. You can still type a name.</p>
         {:else if rows.length === 0}
-          <p class="picker-msg" role="status">No windows found.</p>
+          <p class="picker-msg" role="status">{truncated ? 'List incomplete. Refresh or type a name.' : 'No windows found.'}</p>
         {:else if shown.length === 0}
           <p class="picker-msg" role="status">No matches.</p>
         {:else}

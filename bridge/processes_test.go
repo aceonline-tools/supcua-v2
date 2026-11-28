@@ -1,12 +1,14 @@
 package bridge
 
 import (
+	"encoding/json"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/yanmad27/supcua-v2/ui/webview/rpc"
 	"github.com/yanmad27/supcua-v2/winlist"
 )
 
@@ -99,5 +101,68 @@ func TestProcessesListHungRunIsBoundedAndSingle(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if after := runtime.NumGoroutine(); after > before+2 {
 		t.Fatalf("goroutines %d -> %d", before, after)
+	}
+}
+
+func TestProcessesListDoesNotBlockTheRPCWorker(t *testing.T) {
+	block := &atomic.Bool{}
+	block.Store(true)
+	l := &hangLister{src: hangSource{gate: make(chan struct{}), block: block}}
+	t.Cleanup(func() { block.Store(false); close(l.src.gate) })
+	b := &Bridge{d: Deps{Windows: l, NewDeferred: func() (any, func(any, error)) {
+		d := rpc.NewDeferred()
+		return d, d.Resolve
+	}}}
+	d := rpc.New(map[string]rpc.Handler{
+		"processes.list": func(json.RawMessage) (any, error) { return b.processesList() },
+		"ping":           func(json.RawMessage) (any, error) { return "pong", nil },
+	}, 8)
+	d.Start()
+	t.Cleanup(d.Close)
+	out := make(chan string, 8)
+	caller := rpc.Caller{Role: rpc.RoleMain, Gen: 1}
+	d.Submit(`{"id":1,"method":"processes.list"}`, caller, func(b []byte) { out <- string(b) })
+	start := time.Now()
+	d.Submit(`{"id":2,"method":"ping"}`, caller, func(b []byte) { out <- string(b) })
+	select {
+	case got := <-out:
+		if got != `{"id":2,"ok":true,"result":"pong"}` || time.Since(start) > 50*time.Millisecond {
+			t.Fatalf("got %s after %v", got, time.Since(start))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ping was blocked behind processes.list")
+	}
+	select {
+	case <-out:
+	case <-time.After(time.Second):
+		t.Fatal("processes.list never answered")
+	}
+}
+
+type panicLister struct{ calls atomic.Int32 }
+
+func (p *panicLister) Collect(c *winlist.Collector) {
+	if p.calls.Add(1) == 1 {
+		panic("boom")
+	}
+	winlist.Collect(hangSource{gate: make(chan struct{}), block: &atomic.Bool{}}, 0, winlist.Budget, nil, c)
+}
+
+func TestProcessesListPanicIsIncompleteAndNotRemembered(t *testing.T) {
+	l := &panicLister{}
+	b := newProcBridge(l)
+	res, _ := request(b)
+	if !res.Truncated {
+		t.Fatalf("panicked run reported complete: %+v", res)
+	}
+	b.procFlight.mu.Lock()
+	last := b.procFlight.last
+	b.procFlight.mu.Unlock()
+	if last != nil {
+		t.Fatal("panicked run installed as last completed result")
+	}
+	res, _ = request(b)
+	if res.Truncated || len(res.Rows) != 3 {
+		t.Fatalf("fresh run: %+v", res)
 	}
 }

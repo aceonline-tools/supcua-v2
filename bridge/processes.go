@@ -3,6 +3,7 @@ package bridge
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/winlist"
@@ -27,6 +28,7 @@ type processRun struct {
 	col     *winlist.Collector
 	started time.Time
 	done    chan struct{}
+	failed  atomic.Bool // the enumeration panicked: its rows are incomplete
 }
 
 // processFlight keeps at most one native enumeration in flight. A run that outlives the response
@@ -51,10 +53,17 @@ func (b *Bridge) acquireProcessRun() *processRun {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("bridge: processes.list panicked: %v", r)
+				run.failed.Store(true)
 			}
 			res := run.col.Snapshot()
+			if run.failed.Load() {
+				res.Truncated = true
+			}
 			f.mu.Lock()
-			f.last, f.cur = &res, nil
+			if !run.failed.Load() {
+				f.last = &res
+			}
+			f.cur = nil
 			f.mu.Unlock()
 			close(run.done)
 			log.Printf("processes.list: rows=%d truncated=%v elapsed_ms=%d", len(res.Rows), res.Truncated, time.Since(run.started).Milliseconds())
@@ -74,10 +83,16 @@ func (b *Bridge) answerProcesses(run *processRun) winlist.Result {
 		}
 		t.Stop()
 	}
-	res := run.col.Snapshot()
+	// done is observed BEFORE the snapshot: a finished run's snapshot is final.
+	var res winlist.Result
 	select {
 	case <-run.done:
+		res = run.col.Snapshot()
+		if run.failed.Load() {
+			res.Truncated = true
+		}
 	default:
+		res = run.col.Snapshot()
 		res.Truncated = true
 		if len(res.Rows) == 0 {
 			b.procFlight.mu.Lock()
@@ -104,6 +119,6 @@ func (b *Bridge) processesList() (any, error) {
 		return b.answerProcesses(run), nil
 	}
 	reply, resolve := b.d.NewDeferred()
-	go resolve(b.answerProcesses(run), nil)
+	go func() { resolve(b.answerProcesses(run), nil) }()
 	return reply, nil
 }

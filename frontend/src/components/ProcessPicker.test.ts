@@ -48,6 +48,13 @@ describe('process picker', () => {
     expect(body().textContent).toContain('No windows found.');
   });
 
+  it('says the list is incomplete when it is empty and truncated', async () => {
+    (store.api as unknown as { call: unknown }).call = async () => ({ rows: [], truncated: true });
+    await open();
+    expect(body().textContent).toContain('List incomplete. Refresh or type a name.');
+    expect(body().textContent).not.toContain('No windows found.');
+  });
+
   it('shows the error state in the box and keeps the text field usable', async () => {
     await setup('procs=error');
     await open();
