@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +32,8 @@ const (
 
 // Overridable in tests.
 var (
+	baseMu     sync.Mutex // guards apiBase and stubbed against the self-test override
+	stubbed    bool
 	apiBase    = "https://api.github.com"
 	repo       = "aceonline-tools/supcua-v2"
 	checkTO    = 10 * time.Second
@@ -124,7 +127,7 @@ func rateLimited(resp *http.Response) bool {
 // reported for: draft/pre-release, non-semver tag, or a version that is not
 // newer. A 404 returns ErrNoRelease. Single request, no retries.
 func CheckUpdate(currentVersion string) (latestVersion, dlURL string, err error) {
-	req, err := http.NewRequest(http.MethodGet, apiBase+"/repos/"+repo+"/releases/latest", nil)
+	req, err := http.NewRequest(http.MethodGet, currentBase()+"/repos/"+repo+"/releases/latest", nil)
 	if err != nil {
 		return "", "", fmt.Errorf("build request: %w", err)
 	}
@@ -524,4 +527,86 @@ func batchCommand(dir string) *exec.Cmd {
 	cmd := exec.Command("cmd", "/c", "start", "/b", "cmd", "/c", batchName)
 	cmd.Dir = dir
 	return cmd
+}
+
+func currentBase() string {
+	baseMu.Lock()
+	defer baseMu.Unlock()
+	return apiBase
+}
+
+// doCheck is CheckUpdate; tests replace it.
+var doCheck = CheckUpdate
+
+type checkFlight struct {
+	done     chan struct{}
+	tag, url string
+	err      error
+}
+
+var (
+	flightMu sync.Mutex
+	flight   *checkFlight
+)
+
+// CheckUpdateShared is CheckUpdate with single-flight: callers arriving while a check is in
+// flight (startup vs manual, repeated clicks) join it and share its result instead of issuing a
+// second request.
+func CheckUpdateShared(currentVersion string) (latestVersion, dlURL string, err error) {
+	flightMu.Lock()
+	if f := flight; f != nil {
+		flightMu.Unlock()
+		<-f.done
+		return f.tag, f.url, f.err
+	}
+	f := &checkFlight{done: make(chan struct{})}
+	flight = f
+	flightMu.Unlock()
+
+	defer func() {
+		flightMu.Lock()
+		flight = nil
+		flightMu.Unlock()
+		close(f.done)
+	}()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				f.tag, f.url, f.err = "", "", fmt.Errorf("update check panicked: %v", r)
+			}
+		}()
+		f.tag, f.url, f.err = doCheck(currentVersion)
+	}()
+	return f.tag, f.url, f.err
+}
+
+// Error kinds reported by ErrorKind.
+const (
+	KindOffline     = "offline"
+	KindRateLimited = "rate_limited"
+	KindOther       = "other"
+)
+
+// ErrorKind classifies a CheckUpdate error for display.
+func ErrorKind(err error) string {
+	var ne net.Error
+	var ue *url.Error
+	switch {
+	case errors.Is(err, ErrRateLimited):
+		return KindRateLimited
+	case errors.As(err, &ne), errors.As(err, &ue):
+		return KindOffline
+	}
+	return KindOther
+}
+
+// CheckKind is the single-flight check for the page: an empty kind means success (empty tag =
+// no update); otherwise kind is one of the Kind* values. The error is logged here.
+func CheckKind(currentVersion string) (tag, dlURL, kind string) {
+	tag, dlURL, err := CheckUpdateShared(currentVersion)
+	if err != nil {
+		log.Printf("update check error: %v", err)
+		return "", "", ErrorKind(err)
+	}
+	return tag, dlURL, ""
 }

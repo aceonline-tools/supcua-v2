@@ -4,6 +4,7 @@ import { OVERLAY_DEFAULTS, clampOverlayStyle, validateOverlayStyle } from '../li
 import type {
   Action, ActionSpec, BootState, GroupDTO, HotkeyConflict, ParamSpec, RunMode, Script, ScriptList,
   ScriptSummary, SettingsDTO, StateDTO, OverlayStyleDTO,
+  UpdateCheckResult,
 } from './types';
 
 export interface MockSeed {
@@ -13,6 +14,9 @@ export interface MockSeed {
   boot: BootState;
   collapsed: string[];
   updateTag?: string;
+  /** What update.check answers (default: up to date) and after how long. */
+  updateCheck?: Omit<UpdateCheckResult, 'current'>;
+  updateCheckDelayMs?: number;
 }
 
 const s = (id: string, name: string, group: string, hotkey: string, run: RunMode, enabled = true): ScriptSummary => ({
@@ -52,6 +56,11 @@ export function seedFromQuery(search: string): MockSeed {
   if (theme === 'light' || theme === 'dark' || theme === 'system') { seed.state.theme = theme; seed.settings.theme = theme; }
   if (q.get('mock') === 'license') seed.boot.mode = 'notLicensed';
   if (q.get('mock') === 'update') seed.updateTag = 'v1.0.29';
+  const uc = q.get('updcheck');
+  if (uc === 'available') seed.updateCheck = { status: 'available', tag: '1.0.29' };
+  else if (uc === 'offline' || uc === 'rate_limited' || uc === 'other') seed.updateCheck = { status: 'error', error: uc };
+  const ud = Number(q.get('upddelay'));
+  if (Number.isFinite(ud) && ud > 0) seed.updateCheckDelayMs = Math.min(ud, 60000);
   return seed;
 }
 
@@ -220,6 +229,7 @@ export class MockBackend implements Transport {
   async call(method: string, params: unknown): Promise<unknown> {
     this.calls.push({ method, params: structuredClone(params) });
     await Promise.resolve();
+    if (method === 'update.check' && this.seed.updateCheckDelayMs) await new Promise((r) => setTimeout(r, this.seed.updateCheckDelayMs));
     return structuredClone(this.handle(method, (params ?? {}) as Record<string, any>));
   }
 
@@ -435,6 +445,11 @@ export class MockBackend implements Transport {
         return {};
       }
       case 'clipboard.write': case 'update.apply': case 'update.skip': return {};
+      case 'update.check': {
+        const cur = st.boot.version;
+        const sc = st.updateCheck ?? { status: 'up_to_date' as const };
+        return { ...sc, current: cur };
+      }
       case 'settings.get': return { ...st.settings, collapsed_groups: st.collapsed };
       case 'settings.update': {
         const patch = p.patch as Partial<SettingsDTO>;

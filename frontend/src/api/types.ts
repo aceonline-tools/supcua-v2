@@ -92,6 +92,14 @@ export interface SettingsDTO {
 
 export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed' | 'overlay_style'>>;
 
+export type UpdateCheckError = 'offline' | 'rate_limited' | 'other' | 'stale';
+export interface UpdateCheckResult {
+  status: 'up_to_date' | 'available' | 'error';
+  current: string;
+  tag?: string;
+  error?: UpdateCheckError;
+}
+
 export interface SettingsUpdateResult {
   applied: string[];
   restartRequired: string[];
@@ -245,8 +253,9 @@ export interface Methods {
   'capture.mouse.start': { params: { sessionId: string }; result: CaptureStarted };
   'capture.mouse.stop': { params: { sessionId: string }; result: Record<string, never> };
   'clipboard.write': { params: { text: string }; result: Record<string, never> };
-  'update.apply': { params: undefined; result: Record<string, never> };
-  'update.skip': { params: undefined; result: Record<string, never> };
+  'update.apply': { params: { version?: string }; result: Record<string, never> };
+  'update.skip': { params: { version?: string }; result: Record<string, never> };
+  'update.check': { params: undefined; result: UpdateCheckResult };
   'scripts.retrySave': { params: { id: string }; result: Record<string, never> };
   'settings.get': { params: undefined; result: SettingsDTO };
   'settings.update': { params: { patch: SettingsPatch }; result: SettingsUpdateResult };

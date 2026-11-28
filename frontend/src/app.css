@@ -75,7 +75,7 @@ strong{font-weight:400}
 .cb:checked:after{content:'✓';font-size:12px;color:var(--on-accent);line-height:1}
 .cb:indeterminate:after{content:'';width:9px;height:2px;background:var(--on-accent)}
 .table-foot span{white-space:nowrap}
-.table-foot .sel{width:260px;text-align:right}
+.table-foot .sel{width:220px;text-align:right}
 .table-foot{margin-top:6px;display:flex;gap:16px;font-size:12px;line-height:16px;color:var(--muted)}
 .empty{padding:24px;text-align:center}
 .empty p{color:var(--muted);margin:4px 0 10px}
@@ -89,6 +89,13 @@ strong{font-weight:400}
 .setting-row+.setting-row{border-top:1px solid var(--line)}
 .setting-row p{font-size:12px;line-height:16px;color:var(--muted);margin:0}
 .setting-row .ctl{display:flex;align-items:center;gap:8px}
+.upd-ctl{flex:none}
+.upd-status{display:block;width:200px;text-align:right;font-size:12px;line-height:16px;height:16px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upd-status.upd-err{color:var(--danger)}
+.upd-btn{flex:none;width:160px}
+.upd-btn.checking .icon{animation:upd-spin 1s linear infinite}
+@keyframes upd-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.upd-btn.checking .icon{animation:none}}
 .tag{font-size:11px;line-height:14px;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 5px;margin-left:8px}
 .tag.pending{color:var(--accent);border-color:var(--accent)}
 .segments{display:flex;border:1px solid var(--line);padding:1px;border-radius:var(--radius);gap:2px}

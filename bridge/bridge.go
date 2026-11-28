@@ -17,6 +17,7 @@ import (
 	"github.com/yanmad27/supcua-v2/app/status"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	"github.com/yanmad27/supcua-v2/model"
+	"github.com/yanmad27/supcua-v2/updater"
 )
 
 // Handler is one API method. Registered as an alias so the host needs no named type.
@@ -111,8 +112,19 @@ type Host interface {
 	WriteClipboard(text string) error
 	BootInfo() BootState
 	RebindHotkey(kind string, hk model.Hotkey) error
-	ApplyUpdate(progress func(pct int)) error
-	SkipUpdate()
+	// ApplyUpdate installs the current offer; a non-empty version must match it (else ErrStaleOffer).
+	ApplyUpdate(version string, progress func(pct int)) error
+	// SkipUpdate clears the offer only while it is still the given version (empty: unconditionally).
+	SkipUpdate(version string)
+}
+
+// UpdateCheckResult is the update.check reply. Status is "up_to_date", "available" or "error";
+// Error is "offline", "rate_limited" or "other".
+type UpdateCheckResult struct {
+	Status  string `json:"status"`
+	Current string `json:"current"`
+	Tag     string `json:"tag,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // Deps are the collaborators of a Bridge. Controller, Store and Config are required.
@@ -131,6 +143,14 @@ type Deps struct {
 	Host       Host
 	// CallerRole names the window a call came from ("main"|"editor"); set by the host transport.
 	CallerRole func(ctx context.Context) string
+	// UpdateCheck (optional) runs a release check: the new tag and download URL, or an error kind
+	// ("offline", "rate_limited", "other"). Wired to updater.CheckKind.
+	UpdateCheck func(current string) (tag, dlURL, errKind string)
+	// NewDeferred (optional) returns a handler result that the host's dispatcher completes later
+	// through resolve, so a slow handler does not hold the single RPC worker. Wired to rpc.NewDeferred.
+	NewDeferred func() (reply any, resolve func(out any, err error))
+	// Offers (required with UpdateCheck) is the offer store shared with the startup check and the host.
+	Offers *updater.OfferStore
 }
 
 var uiCallTimeout = 3 * time.Second
@@ -616,7 +636,7 @@ var mutating = []string{
 	"scripts.setEnabled", "scripts.setGroupEnabled", "scripts.setGroupCollapsed", "settings.setSidebarCollapsed", "scripts.clone",
 	"scripts.delete", "scripts.retrySave", "editor.open", "editor.save", "editor.close", "editor.closeDecision", "editor.checkpoint",
 	"capture.hotkey.start", "capture.key.start", "capture.mouse.start", "capture.stop", "capture.mouse.stop",
-	"settings.update", "overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "app.closingReady",
+	"settings.update", "overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "update.check", "app.closingReady",
 }
 
 func (b *Bridge) fenceMutations(m map[string]Handler) {
@@ -735,8 +755,9 @@ func (b *Bridge) Methods() map[string]Handler {
 	reg(m, "overlay.setStyle", b.overlaySetStyle, "radius", "background", "text_color", "background_opacity", "opacity", "width", "height", "x", "y")
 	regNoParams(m, "overlay.resetStyle", b.overlayResetStyle)
 	reg(m, "autoactive.set", b.autoActiveSet)
-	regNoParams(m, "update.apply", b.updateApply)
-	regNoParams(m, "update.skip", b.updateSkip)
+	reg(m, "update.apply", b.updateApply, "version")
+	reg(m, "update.skip", b.updateSkip, "version")
+	regNoParams(m, "update.check", b.updateCheck)
 	regNoParams(m, "app.closingReady", b.closingReadyHandler)
 	b.fenceMutations(m)
 	return m
@@ -817,7 +838,10 @@ func (b *Bridge) clipboardWrite(p struct {
 	return empty{}, nil
 }
 
-func (b *Bridge) updateApply() (any, error) {
+func (b *Bridge) updateApply(p updateParams) (any, error) {
+	if p.Version == "" {
+		return nil, badRequest()
+	}
 	if b.d.Host == nil {
 		return nil, newErr(CodeUpdateFailed)
 	}
@@ -826,20 +850,81 @@ func (b *Bridge) updateApply() (any, error) {
 	}
 	go func() {
 		defer b.updating.Store(false)
-		err := b.d.Host.ApplyUpdate(func(pct int) {
+		err := b.d.Host.ApplyUpdate(p.Version, func(pct int) {
 			b.emit(EvUpdateProgress, updateProgressEvent{Pct: max(0, min(100, pct))})
 		})
 		if err != nil {
 			log.Printf("bridge: update failed: %v", err)
-			b.emit(EvUpdateFailed, updateFailedEvent{Message: messages[CodeUpdateFailed]})
+			msg := messages[CodeUpdateFailed]
+			if errors.Is(err, updater.ErrStaleOffer) {
+				msg = UpdateStaleMessage
+			}
+			b.emit(EvUpdateFailed, updateFailedEvent{Message: msg})
 		}
 	}()
 	return empty{}, nil
 }
 
-func (b *Bridge) updateSkip() (any, error) {
+// updateCheck runs an on-demand release check. Concurrency is bounded by UpdateCheck itself
+// (updater.CheckUpdateShared joins in-flight checks, including the startup one). An available
+// update is recorded on the host exactly as the startup check does, so update.apply installs it;
+// no update.available event is emitted (the page shows the result inline, not the dialog).
+//
+// The network round trip (up to the updater's 10 s timeout) must not hold the single RPC worker,
+// which every other page call shares, so the reply is deferred and resolved from its own goroutine.
+func (b *Bridge) updateCheck() (any, error) {
+	if b.d.Host == nil || b.d.UpdateCheck == nil || b.d.Offers == nil {
+		return nil, newErr(CodeInternal)
+	}
+	if b.d.NewDeferred == nil {
+		return b.checkUpdate()
+	}
+	reply, resolve := b.d.NewDeferred()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("bridge: update check panicked: %v", r)
+				resolve(nil, newErr(CodeInternal))
+			}
+		}()
+		resolve(b.checkUpdate())
+	}()
+	return reply, nil
+}
+
+func (b *Bridge) checkUpdate() (any, error) {
+	current := b.d.Host.BootInfo().Version
+	seq := b.d.Offers.Begin()
+	tag, dl, kind := b.d.UpdateCheck(current)
+	if kind != "" {
+		return UpdateCheckResult{Status: "error", Current: current, Error: kind}, nil
+	}
+	if tag != "" && dl == "" {
+		return UpdateCheckResult{Status: "error", Current: current, Error: "other"}, nil
+	}
+	offer := updater.Offer{Version: tag, URL: dl}
+	if !b.d.Offers.Publish(seq, offer) {
+		offer = b.d.Offers.Current() // a check that started later already published: report that one
+	}
+	if offer.Version == "" {
+		return UpdateCheckResult{Status: "up_to_date", Current: current}, nil
+	}
+	return UpdateCheckResult{Status: "available", Current: current, Tag: offer.Version}, nil
+}
+
+// UpdateStaleMessage is the update.failed text when the offer changed after the page showed it.
+const UpdateStaleMessage = "A newer update was found. Check again."
+
+type updateParams struct {
+	Version string `json:"version"`
+}
+
+func (b *Bridge) updateSkip(p updateParams) (any, error) {
+	if p.Version == "" {
+		return nil, badRequest()
+	}
 	if b.d.Host != nil {
-		b.d.Host.SkipUpdate()
+		b.d.Host.SkipUpdate(p.Version)
 	}
 	return empty{}, nil
 }

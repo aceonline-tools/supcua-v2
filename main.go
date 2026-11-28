@@ -259,7 +259,22 @@ func main() {
 
 	title := "supcua-v2 v" + version.Version
 	late := &lateUI{}
-	host := &ui.Host{Mode: "main", Macs: macs, Version: version.Version, RuntimeVersion: runtimeVersion, ExePath: executablePath}
+	offers := &updater.OfferStore{}
+	// The update check is wired only where the policy allows the network: production, or the self-test
+	// whose stub must be installed first (it never reaches api.github.com).
+	var updateCheck func(string) (string, string, string)
+	switch {
+	case policy.CheckForUpdates:
+		updateCheck = updater.CheckKind
+	case policy.UpdateCheckStub:
+		updateCheck = func(cur string) (string, string, string) {
+			if !updater.BaseIsSelftestStub() {
+				return "", "", updater.KindOther
+			}
+			return updater.CheckKind(cur)
+		}
+	}
+	host := &ui.Host{Offers: offers, Mode: "main", Macs: macs, Version: version.Version, RuntimeVersion: runtimeVersion, ExePath: executablePath}
 
 	if !licensed {
 		host.Mode = "notLicensed"
@@ -568,6 +583,9 @@ func main() {
 			}
 			return ""
 		},
+		UpdateCheck: updateCheck,
+		Offers:      offers,
+		NewDeferred: func() (any, func(any, error)) { d := rpc.NewDeferred(); return d, d.Resolve },
 	}, late)
 
 	initialScripts := br.InitialScripts()
@@ -757,12 +775,14 @@ func main() {
 
 	if policy.CheckForUpdates {
 		go func() {
-			latestTag, dlURL, err := updater.CheckUpdate(version.Version)
+			seq := offers.Begin()
+			latestTag, dlURL, err := updater.CheckUpdateShared(version.Version)
 			if err != nil {
 				log.Printf("update check error: %v", err)
 				return
 			}
 			if latestTag == "" {
+				offers.Publish(seq, updater.Offer{})
 				return
 			}
 			if dlURL == "" {
@@ -770,9 +790,15 @@ func main() {
 				return
 			}
 			log.Printf("update available: %s", latestTag)
-			host.SetUpdate(dlURL)
+			if !offers.Publish(seq, updater.Offer{Version: latestTag, URL: dlURL}) {
+				log.Printf("update %s superseded by a newer check; not offering it", latestTag)
+				return
+			}
 			<-webUI.Loaded()
-			time.Sleep(2 * time.Second) // let the page subscribe before the event
+			time.Sleep(2 * time.Second)                // let the page subscribe before the event
+			if offers.Current().Version != latestTag { // a newer check replaced it, or it was skipped
+				return
+			}
 			br.NotifyUpdateAvailable(latestTag)
 		}()
 	}

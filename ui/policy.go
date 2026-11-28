@@ -7,6 +7,7 @@ type Policy struct {
 	CheckLicense    bool // production: licence gate before any UI
 	RegisterHotkeys bool // global/overlay/script hotkeys (the only way scripts start)
 	CheckForUpdates bool
+	UpdateCheckStub bool // self-test only: update.check is wired, and refuses unless the loopback stub is installed
 	StartAutoActive bool
 	UseUserData     bool // real config.json and scripts directory
 	SelfTestMethods bool // register the __selftest.* driver channel
@@ -16,7 +17,7 @@ type Policy struct {
 // NewPolicy returns the production policy, or the restricted self-test policy.
 func NewPolicy(selftest bool) Policy {
 	if selftest {
-		return Policy{SelfTestMethods: true, ExitWhenDone: true}
+		return Policy{SelfTestMethods: true, ExitWhenDone: true, UpdateCheckStub: true}
 	}
 	return Policy{CheckLicense: true, RegisterHotkeys: true, CheckForUpdates: true, StartAutoActive: true, UseUserData: true}
 }
