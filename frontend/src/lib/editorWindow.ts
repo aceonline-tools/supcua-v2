@@ -19,13 +19,13 @@ declare global {
 
 // Boots the editor-only page: attach to the host-chosen session, then answer the host's measurement
 // handshake. Subscriptions are made before any call so no host event is missed.
-export function startEditorWindow(api: Client, store: AppStore, init: Promise<unknown>): { measure: MeasureController; opened: Promise<boolean> } {
+export function startEditorWindow(api: Client, store: AppStore, init: Promise<unknown>, gate: Promise<void> = Promise.resolve()): { measure: MeasureController; opened: Promise<boolean> } {
   applyScrollbarMetrics();
   const mark = (n: string) => performance.mark(`eo:${n}`);
   // windowReady, the session attach and the store's initial loads are independent: none waits for another.
-  const ready = api.call('editor.windowReady').catch(() => ({})).then(() => mark('ready-sent'));
+  const ready = gate.then(() => api.call('editor.windowReady')).catch(() => ({})).then(() => mark('ready-sent'));
   const initDone = init.then(() => { mark('init'); });
-  const opened = Promise.all([ready, initDone, store.editor.open()])
+  const opened = Promise.all([ready, initDone, gate.then(() => store.editor.open())])
     .then(async ([, , ok]) => { await tick(); mark('session'); return ok; });
   const measure = new MeasureController(api, { root: () => document.getElementById('editor-root'), ready: async () => { await opened; await tick(); }, paint: async () => { await store.editor.captureReady.catch(() => {}); await afterPaint(); } });
   api.on('editor.measureRequest', (e) => { performance.mark('eo:measure-request'); void measure.request(e.token); });

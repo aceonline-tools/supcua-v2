@@ -44,11 +44,62 @@ func (u *UI) Editor() *Window { return u.editorWin.Load() }
 // asynchronously and setup finishes on the UI thread (OnReady, or OnFailed on any error or on the
 // startup timeout, after the window has been rolled back). UI thread only. One editor at a time.
 func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
+	return u.createEditor(o, false)
+}
+
+// PrewarmEditorWindow (EXPERIMENT) creates the spare editor page ahead of time: parked transparent,
+// click-through and unowned by the editor state, booted but idle until CreateEditorWindow adopts it.
+func (u *UI) PrewarmEditorWindow(o EditorOptions) {
+	if u.spare != nil || u.editor != nil || u.closed.Load() {
+		return
+	}
+	if _, err := u.createEditor(o, true); err != nil {
+		log.Printf("webview: prewarm: %v", err)
+	}
+}
+
+// SetPrewarm (EXPERIMENT) registers the function that re-arms the spare after an editor closed.
+func (u *UI) SetPrewarm(fn func()) { u.rearm = fn }
+
+func (u *UI) adoptSpare() *Window {
+	w := u.spare
+	if w == nil || w.gone.Load() || w.hwnd == 0 {
+		return nil
+	}
+	t := w.navDoneAt.Load()
+	if t == 0 || time.Since(time.Unix(0, t)) < 300*time.Millisecond {
+		return nil
+	}
+	u.spare = nil
+	u.editor = w
+	u.editorWin.Store(w)
+	u.editorGen.Store(w.gen)
+	for _, d := range []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond} {
+		time.AfterFunc(d, func() {
+			u.Post(func() {
+				if u.editor == w && !w.gone.Load() {
+					if b, err := rpc.EncodeEvent("editor.activate", struct{}{}); err == nil {
+						w.postFrame(b, false)
+					}
+				}
+			})
+		})
+	}
+	otrace.At("adopted-spare")
+	return w
+}
+
+func (u *UI) createEditor(o EditorOptions, warm bool) (*Window, error) {
 	if u.closed.Load() || u.nav.quarantined || u.browser == nil {
 		return nil, errors.New("webview: host closed")
 	}
 	if u.editor != nil {
 		return nil, errors.New("webview: editor window already exists")
+	}
+	if !warm && o.Fixture == "" {
+		if w := u.adoptSpare(); w != nil {
+			return w, nil
+		}
 	}
 	title := o.Title
 	if title == "" {
@@ -89,9 +140,13 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		}
 	}
 	w.register()
-	u.editor = w
-	u.editorWin.Store(w)
-	u.editorGen.Store(w.gen)
+	if warm {
+		u.spare = w
+	} else {
+		u.editor = w
+		u.editorWin.Store(w)
+		u.editorGen.Store(w.gen)
+	}
 
 	var once sync.Once
 	// fail handles an asynchronous startup failure. With an owner (OnFailed) the window is only
@@ -100,6 +155,10 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 	fail := func(err error) {
 		once.Do(func() {
 			log.Printf("webview: editor window gen=%d startup failed: %v", w.gen, err)
+			if warm {
+				u.destroyEditor(w)
+				return
+			}
 			if o.OnFailed == nil {
 				u.destroyEditor(w)
 				return
@@ -118,6 +177,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 			log.Printf("webview: editor navigation failed (web error status %d)", status)
 		}
 		otrace.At("nav-completed")
+		w.navDoneAt.Store(time.Now().UnixNano())
 		w.nav.completed()
 	}
 	w.browser = b
@@ -132,7 +192,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		u.Post(func() {
 			timer.Stop()
 			otrace.At("controller-ready")
-			if w.gone.Load() || u.editor != w {
+			if w.gone.Load() || (u.editor != w && u.spare != w) {
 				return // rolled back or superseded while the controller was being created
 			}
 			if err != nil {
@@ -148,6 +208,9 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 				return
 			}
 			url := editorURL(w.gen)
+			if warm {
+				url = editorURL(w.gen) + warmQuery
+			}
 			if o.Fixture != "" {
 				url = serve.Origin + fixturePath
 			}
@@ -156,7 +219,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 				fail(fmt.Errorf("editor navigate: %w", err))
 				return
 			}
-			if o.OnReady != nil {
+			if o.OnReady != nil && !warm {
 				o.OnReady(w)
 			}
 		})
@@ -168,10 +231,17 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		once.Do(func() {})
 		w.invalidate()
 		u.editorGen.CompareAndSwap(w.gen, 0)
+		if warm {
+			u.destroyEditor(w)
+			return nil, err
+		}
 		return w, err
 	}
 	if o.Fixture == "" {
 		w.stageEditor()
+		if warm {
+			w.park()
+		}
 	}
 	return w, nil
 }
@@ -195,6 +265,20 @@ func (w *Window) stageEditor() {
 	win.ShowWindow(w.hwnd, win.SW_SHOWNA)
 }
 
+const wsExTransparent, wsExNoActivate = 0x20, 0x08000000
+
+// park makes the staged spare click-through and non-activating, so a transparent window sitting over
+// the desktop can never swallow a click or take focus. unpark runs when it is revealed.
+func (w *Window) park() {
+	ex := win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)
+	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex|wsExTransparent|wsExNoActivate)
+}
+
+func (w *Window) unpark() {
+	ex := win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)
+	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex&^(wsExTransparent|wsExNoActivate))
+}
+
 // EditorStaged reports whether the editor is shown-but-transparent and waits for ShowEditorWindow.
 func (u *UI) EditorStaged(gen uint64) bool {
 	w := u.editor
@@ -209,6 +293,10 @@ func (u *UI) destroyEditor(w *Window) {
 		return
 	}
 	first := w.beginTeardown()
+	wasReal := u.editor == w
+	if u.spare == w {
+		u.spare = nil
+	}
 	if u.editor == w {
 		u.editor = nil
 		u.editorWin.Store(nil)
@@ -236,6 +324,9 @@ func (u *UI) destroyEditor(w *Window) {
 	if w.hwnd != 0 {
 		win.DestroyWindow(w.hwnd)
 		w.hwnd = 0
+	}
+	if wasReal && u.rearm != nil && !u.closed.Load() {
+		time.AfterFunc(150*time.Millisecond, func() { u.Post(u.rearm) })
 	}
 }
 
@@ -315,6 +406,7 @@ func (u *UI) ShowEditorWindow(gen uint64) {
 	}
 	if w.staged {
 		w.staged = false
+		w.unpark()
 		procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 255, 2)
 	}
 	switch {

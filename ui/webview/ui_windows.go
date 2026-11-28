@@ -86,6 +86,8 @@ type UI struct {
 	loaded     chan struct{}
 
 	editor    *Window // UI thread only; nil when no editor window exists
+	spare     *Window // EXPERIMENT: the pre-warmed editor page, parked until adopted
+	rearm     func()
 	editorWin atomic.Pointer[Window]
 	editorGen atomic.Uint64 // generation of the live editor, 0 when none (dispatcher validity check)
 	genSeq    atomic.Uint64
@@ -229,6 +231,9 @@ func (u *UI) Quarantine() {
 	if u.disp != nil {
 		u.disp.Close()
 	}
+	if u.spare != nil {
+		u.destroyEditor(u.spare)
+	}
 	if u.editor != nil {
 		u.destroyEditor(u.editor)
 	}
@@ -361,6 +366,12 @@ func (u *UI) teardown() {
 	u.gone.Store(true)
 	if u.disp != nil {
 		u.disp.Close() // non-blocking: a handler may be waiting for this very thread
+	}
+	if u.spare != nil {
+		u.destroyEditor(u.spare)
+	}
+	if u.spare != nil {
+		u.destroyEditor(u.spare)
 	}
 	if u.editor != nil {
 		u.destroyEditor(u.editor) // the owned window goes before its owner

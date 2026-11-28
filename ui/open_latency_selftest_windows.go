@@ -347,6 +347,17 @@ func (s *SelfTest) closeEditorAndWait() bool {
 // click→usable plus the stage breakdown.
 func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string) bool) {
 	otrace.Enable()
+	prewarm := os.Getenv("SUPCUA_PREWARM") == "1"
+	time.Sleep(2 * time.Second)
+	idle := memLine("idle, no editor ever opened")
+	if prewarm && s.Host != nil {
+		s.Host.Prewarm()
+	}
+	time.Sleep(3 * time.Second)
+	armed := memLine(fmt.Sprintf("idle, prewarm=%v", prewarm))
+	fmt.Println(idle)
+	fmt.Println(armed)
+	step("open latency: memory", true, idle+" | "+armed)
 	const repeats = 5
 	for _, kind := range []string{"new", "dblclick", "edit"} {
 		var first openTrial
@@ -383,6 +394,11 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 				step(fmt.Sprintf("open latency: %s #%d fits its content at the opened size (no scroll, <=24px blank per column)", kind, i), false, fmt.Sprint(merr, " ", m))
 				okAll = false
 			}
+			if i == 1 && kind == "new" {
+				m := memLine("editor open")
+				fmt.Println(m)
+				step("open latency: memory (editor open)", true, m)
+			}
 			if i == 0 {
 				first = tr
 			} else {
@@ -392,7 +408,7 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 				step("open latency: close "+kind, false, "editor did not close")
 				return
 			}
-			time.Sleep(400 * time.Millisecond)
+			time.Sleep(1500 * time.Millisecond)
 		}
 		vm, vx := medMax(vis)
 		um, ux := medMax(use)

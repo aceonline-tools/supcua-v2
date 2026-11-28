@@ -46,7 +46,8 @@ type Window struct {
 	preparing       bool           // PrepareEditorWindow is moving the hidden window: ignore DPI changes
 	wantMax         bool           // show maximised on first show
 	shownOnce       bool
-	staged          bool // shown but fully transparent until revealed (editor)
+	navDoneAt       atomic.Int64 // EXPERIMENT: unix nanos of the first completed navigation
+	staged          bool         // shown but fully transparent until revealed (editor)
 }
 
 var (

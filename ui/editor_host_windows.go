@@ -47,7 +47,7 @@ func (h *EditorHost) EnableMain(enabled bool) {
 
 func (h *EditorHost) RevealMain() { h.rec("revealMain"); h.U.Window.Show() }
 
-func (h *EditorHost) CreateEditor() (uint64, error) {
+func (h *EditorHost) options() webview.EditorOptions {
 	ev := h.Events()
 	o := webview.EditorOptions{
 		Title:   "Script editor",
@@ -72,6 +72,17 @@ func (h *EditorHost) CreateEditor() (uint64, error) {
 	if h.Fixture != nil {
 		o.Fixture = h.Fixture()
 	}
+	return o
+}
+
+// Prewarm (EXPERIMENT) boots a spare editor page now and again after every editor close.
+func (h *EditorHost) Prewarm() {
+	h.U.SetPrewarm(func() { h.U.PrewarmEditorWindow(h.options()) })
+	h.U.Post(func() { h.U.PrewarmEditorWindow(h.options()) })
+}
+
+func (h *EditorHost) CreateEditor() (uint64, error) {
+	o := h.options()
 	w, err := h.U.CreateEditorWindow(o)
 	var gen uint64
 	if w != nil {

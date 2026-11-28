@@ -284,6 +284,7 @@ export interface Events {
   'editor.reset': { reason: string; session_id: string };
   'editor.closeRequested': { gen: number; sessionId?: string; reason: 'user' | 'app-closing' | 'owner-closing' };
   'editor.measureRequest': { token: number };
+  'editor.activate': Record<string, never>;
   'editor.measureAbort': { reason: 'fallback' | 'dpi' | 'timeout' };
   'editor.windowFailed': { gen: number; stage: string; message: string; recoveredPath?: string };
   'editor.windowClosed': { gen: number; saved: boolean; forced: boolean; recoveredPath?: string; reason?: string };

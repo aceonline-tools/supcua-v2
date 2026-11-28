@@ -24,6 +24,7 @@ const validators: Record<EventName, (v: Obj) => boolean> = {
   'editor.reset': (v) => str(v.reason) && str(v.session_id),
   'editor.closeRequested': (v) => int(v.gen) && oneOf(v.reason, ['user', 'app-closing', 'owner-closing']) && (v.sessionId === undefined || str(v.sessionId)),
   'editor.measureRequest': (v) => int(v.token),
+  'editor.activate': () => true,
   'editor.measureAbort': (v) => oneOf(v.reason, ['fallback', 'dpi', 'timeout']),
   'editor.windowFailed': (v) => int(v.gen) && str(v.stage) && str(v.message) && (v.recoveredPath === undefined || str(v.recoveredPath)),
   'editor.windowClosed': (v) => int(v.gen) && bool(v.saved) && bool(v.forced) && (v.recoveredPath === undefined || str(v.recoveredPath)),

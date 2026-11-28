@@ -12,6 +12,8 @@ import (
 const fixturePath = "/__selftest/editor-fixture.html"
 
 // editorURL is the one destination the editor window may navigate to (contract §2.1).
+const warmQuery = "&warm=1"
+
 func editorURL(gen uint64) string {
 	return fmt.Sprintf("%s/%s?window=editor&gen=%d", serve.Origin, serve.Index, gen)
 }
@@ -34,7 +36,7 @@ func editorNavAllowed(uri string, gen uint64, fixture bool) bool {
 	if fixture && sameDestination(uri, serve.Origin+fixturePath) {
 		return true
 	}
-	return sameDestination(uri, editorURL(gen))
+	return sameDestination(uri, editorURL(gen)) || sameDestination(uri, editorURL(gen)+warmQuery)
 }
 
 // The editor's compact-density minimum window size in CSS px (bridge.MinCssW × MinCssH).

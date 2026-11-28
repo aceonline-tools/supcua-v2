@@ -19,10 +19,13 @@ if (import.meta.env.DEV) {
 const { client, loads } = trackFirstCalls(raw, ['app.getBootState', 'state.get', 'scripts.list', 'settings.get', 'app.ready']);
 const role = pageRole();
 const store = new AppStore(client, role);
-const initial = store.init();
+// EXPERIMENT: a pre-warmed editor page (?warm=1) boots and mounts but stays idle until the host adopts it.
+const warm = role === 'editor' && new URLSearchParams(location.search).has('warm');
+const activated: Promise<void> = warm ? new Promise<void>((res) => { client.on('editor.activate', () => res()); }) : Promise.resolve();
+const initial = activated.then(() => store.init());
 let ready: Promise<unknown> = initial;
 if (role === 'editor') {
-  const win = startEditorWindow(client, store, initial);
+  const win = startEditorWindow(client, store, initial, activated);
   ready = win.opened;
   mount(EditorApp, { target: document.getElementById('app')!, props: { store } });
 } else {
