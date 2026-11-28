@@ -315,8 +315,14 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 		win.SetWindowPos(w.hwnd, 0, int32(l), int32(t), int32(r-l), int32(b-t), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 		w.wantMax = maximized
 		if w.staged && maximized && !w.shownOnce {
-			// ShowWindow(SW_SHOWMAXIMIZED) always activates, WS_EX_NOACTIVATE or not; the system command does not.
-			win.SendMessage(w.hwnd, win.WM_SYSCOMMAND, win.SC_MAXIMIZE, 0)
+			// Every way of maximising a window activates it. While transparent the window is instead
+			// laid out at exactly the rectangle Windows gives a maximised window on this monitor, and
+			// the real maximise runs at the reveal (same geometry, so no visible resize).
+			var mmi win.MINMAXINFO
+			win.SendMessage(w.hwnd, win.WM_GETMINMAXINFO, 0, uintptr(unsafe.Pointer(&mmi)))
+			if mmi.PtMaxSize.X > 0 && mmi.PtMaxSize.Y > 0 {
+				win.SetWindowPos(w.hwnd, 0, mmi.PtMaxPosition.X, mmi.PtMaxPosition.Y, mmi.PtMaxSize.X, mmi.PtMaxSize.Y, win.SWP_NOZORDER|win.SWP_NOACTIVATE)
+			}
 		}
 	}
 }
@@ -330,6 +336,7 @@ func (u *UI) ShowEditorWindow(gen uint64) bool {
 	if w == nil || w.gen != gen || w.hwnd == 0 {
 		return false
 	}
+	wasStaged := w.staged
 	if w.staged {
 		if !w.revealStaged() {
 			return false
@@ -339,6 +346,8 @@ func (u *UI) ShowEditorWindow(gen uint64) bool {
 	switch {
 	case win.IsIconic(w.hwnd):
 		win.ShowWindow(w.hwnd, win.SW_RESTORE)
+	case wasStaged && w.wantMax && !w.shownOnce:
+		win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
 	case !win.IsWindowVisible(w.hwnd) && w.wantMax && !w.shownOnce:
 		win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
 	case !win.IsWindowVisible(w.hwnd):
