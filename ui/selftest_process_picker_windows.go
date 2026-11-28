@@ -108,6 +108,12 @@ func (s *SelfTest) processPickerSuite(h ProductionHooks, step func(string, bool,
 	step(name("enumeration finds the helper (exe basename + title) within 250 ms"), found && elapsed <= winlist.Budget && !direct.Truncated,
 		fmt.Sprintf("enumeration_ms=%d rows=%d truncated=%v", elapsed.Milliseconds(), len(direct.Rows), direct.Truncated))
 
+	t1 := time.Now()
+	for i := 0; i < 5000; i++ {
+		winlist.List(winlist.SystemSource{}, winlist.Self(), winlist.Budget, nil)
+	}
+	step(name("5000 repeated enumerations succeed (no callback exhaustion)"), true, fmt.Sprintf("total_ms=%d", time.Since(t1).Milliseconds()))
+
 	str := func(tag, expr string, d time.Duration) string {
 		r, err := s.drive(tag, expr, d)
 		var out string

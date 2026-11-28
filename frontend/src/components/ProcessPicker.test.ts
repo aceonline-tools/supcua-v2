@@ -80,4 +80,34 @@ describe('process picker', () => {
     expect(body().textContent).toContain('List is partial');
     expect(body().querySelector('img,script')).toBeNull();
   });
+
+  it('returns focus to the trigger after Escape and after a pick', async () => {
+    await open();
+    host.querySelector('.picker-ctl')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    expect(document.activeElement).toBe(btn('Pick from running processes'));
+    await open();
+    body().querySelector<HTMLElement>('.picker-row')!.click();
+    await new Promise((r) => setTimeout(r, 20)); await tick();
+    expect(host.querySelector('.picker-pop')).toBeNull();
+    expect(document.activeElement).toBe(btn('Pick from running processes'));
+  });
+
+  it('a stale pick cannot close a reopened picker, repeat picks are ignored, old errors are not shown', async () => {
+    let calls = 0;
+    let finish: (v: { ok: boolean }) => void = () => {};
+    store.setAutoActive = () => { calls++; return new Promise((r) => { finish = r; }); };
+    await open();
+    const row = body().querySelector<HTMLElement>('.picker-row')!;
+    row.click(); row.click(); await tick();
+    expect(calls).toBe(1);
+    host.querySelector('.picker-ctl')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    await open();
+    finish({ ok: false });
+    await new Promise((r) => setTimeout(r, 10)); await tick();
+    expect(host.querySelector('.picker-pop')).not.toBeNull();
+    expect(body().textContent).not.toContain("Couldn't save");
+    finish({ ok: true });
+  });
 });

@@ -4,6 +4,7 @@ package winlist
 
 import (
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -15,7 +16,6 @@ var (
 	dwmapi                       = windows.NewLazySystemDLL("dwmapi.dll")
 	procEnumWindows              = user32.NewProc("EnumWindows")
 	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
-	procGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
 	procGetWindowTextW           = user32.NewProc("GetWindowTextW")
 	procGetWindowLongPtrW        = user32.NewProc("GetWindowLongPtrW")
 	procGetWindow                = user32.NewProc("GetWindow")
@@ -39,19 +39,45 @@ type SystemSource struct{}
 // Self is this process's id.
 func Self() uint32 { return uint32(os.Getpid()) }
 
-// Windows enumerates top-level windows via EnumWindows.
+var (
+	enumOnce sync.Once
+	enumCB   uintptr
+	enumMu   sync.Mutex
+	enumNext uintptr
+	enumReg  = map[uintptr]func(Window) bool{}
+)
+
+// enumProc is the single EnumWindows callback for the whole process: syscall.NewCallback slots
+// are never freed, so per-call state travels through lParam into enumReg instead.
+func enumProc(hwnd, lparam uintptr) uintptr {
+	enumMu.Lock()
+	fn := enumReg[lparam]
+	enumMu.Unlock()
+	if fn == nil || !fn(describe(hwnd)) {
+		return 0
+	}
+	return 1
+}
+
+// Windows enumerates top-level windows via EnumWindows. Only cheap attributes are read here; the
+// title is fetched later through Title, for windows that survive the filters.
 func (SystemSource) Windows(visit func(Window) bool) {
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		if !visit(describe(hwnd)) {
-			return 0
-		}
-		return 1
-	})
-	procEnumWindows.Call(cb, 0)
+	enumOnce.Do(func() { enumCB = syscall.NewCallback(enumProc) })
+	enumMu.Lock()
+	enumNext++
+	id := enumNext
+	enumReg[id] = visit
+	enumMu.Unlock()
+	defer func() {
+		enumMu.Lock()
+		delete(enumReg, id)
+		enumMu.Unlock()
+	}()
+	procEnumWindows.Call(enumCB, id)
 }
 
 func describe(hwnd uintptr) Window {
-	var w Window
+	w := Window{H: hwnd}
 	if v, _, _ := procIsWindowVisible.Call(hwnd); v == 0 {
 		return w
 	}
@@ -66,15 +92,17 @@ func describe(hwnd uintptr) Window {
 	if hr, _, _ := procDwmGetWindowAttribute.Call(hwnd, dwmwaCloaked, uintptr(unsafe.Pointer(&cloaked)), 4); hr == 0 && cloaked != 0 {
 		w.Cloaked = true
 	}
-	if n, _, _ := procGetWindowTextLengthW.Call(hwnd); n > 0 {
-		buf := make([]uint16, maxTitleUTF16)
-		l, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-		w.Title = syscall.UTF16ToString(buf[:l])
-	}
 	var pid uint32
 	procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
 	w.PID = pid
 	return w
+}
+
+// Title reads the window text. The caller has already excluded this process's own windows.
+func (SystemSource) Title(h uintptr) string {
+	buf := make([]uint16, maxTitleUTF16)
+	l, _, _ := procGetWindowTextW.Call(h, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf[:l])
 }
 
 // ExeName returns the executable base name using PROCESS_QUERY_LIMITED_INFORMATION only.

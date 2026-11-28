@@ -13,7 +13,10 @@
   let pickFailed = $state(false);
   let root = $state<HTMLElement>();
   let filterEl = $state<HTMLInputElement>();
+  let triggerEl = $state<HTMLButtonElement>();
   let seq = 0;
+  let session = 0;
+  let saving = false;
 
   const needle = $derived(filter.trim().toLowerCase());
   const shown = $derived(needle ? rows.filter((r) => r.exe.toLowerCase().includes(needle) || r.title.toLowerCase().includes(needle)) : rows);
@@ -36,18 +39,27 @@
   function toggle() {
     if (open) { close(); return; }
     open = true;
+    session++;
     filter = '';
     pickFailed = false;
     void load();
     queueMicrotask(() => filterEl?.focus());
   }
-  function close() { open = false; seq++; }
+  function close(refocus = false) {
+    open = false; seq++; session++;
+    if (refocus) triggerEl?.focus();
+  }
   async function pick(r: ProcessRow) {
-    const res = await store.setAutoActive({ processName: r.exe });
-    if (res.ok) close(); else pickFailed = true;
+    if (saving) return;
+    const mine = session;
+    saving = true;
+    let ok = false;
+    try { ok = (await store.setAutoActive({ processName: r.exe })).ok; } finally { saving = false; }
+    if (mine !== session || !open) return;
+    if (ok) close(true); else pickFailed = true;
   }
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && open) { e.stopPropagation(); close(); }
+    if (e.key === 'Escape' && open) { e.stopPropagation(); close(true); }
   }
   $effect(() => {
     if (!open) return;
@@ -60,7 +72,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="ctl picker-ctl" bind:this={root} {onkeydown}>
   <TextSetting label="Game process name" {value} commit={(v) => store.setAutoActive({ processName: String(v) })} />
-  <button type="button" class="picker-btn" aria-label="Pick from running processes" aria-haspopup="dialog" aria-expanded={open} onclick={toggle}>
+  <button type="button" class="picker-btn" bind:this={triggerEl} aria-label="Pick from running processes" aria-haspopup="dialog" aria-expanded={open} onclick={toggle}>
     <Icon name="list" size={14} />
   </button>
   {#if open}

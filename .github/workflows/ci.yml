@@ -246,7 +246,7 @@ jobs:
               Write-Host "$v process picker steps: $($picked | ConvertTo-Json -Compress)"
               $steps | ForEach-Object { Write-Host ("  [{0}] {1} {2}" -f $(if ($_.ok) { "ok" } else { "FAIL" }), $_.name, $_.detail) }
               $steps | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $results "$v-process-picker.json")
-              if ($steps.Count -lt 13 -or $picked.failed -gt 0) { Write-Host "::error::$v process picker selftest incomplete or failed"; $fail = 1 }
+              if ($steps.Count -lt 14 -or $picked.failed -gt 0) { Write-Host "::error::$v process picker selftest incomplete or failed"; $fail = 1 }
             }
             if (Test-Path -LiteralPath $log) {
               Copy-Item -LiteralPath $log (Join-Path $results "$v-prod.log") -Force

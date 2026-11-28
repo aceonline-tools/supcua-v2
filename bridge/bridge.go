@@ -168,11 +168,12 @@ func uiCallTimeoutForTest(d time.Duration) func() {
 
 // Bridge implements the API contract.
 type Bridge struct {
-	d       Deps
-	emitter Emitter
-	checker *hotkey.ConflictChecker
-	known   map[string]bool
-	capture *CaptureManager
+	procFlight processFlight
+	d          Deps
+	emitter    Emitter
+	checker    *hotkey.ConflictChecker
+	known      map[string]bool
+	capture    *CaptureManager
 
 	// fence: mutating handlers hold RLock; Shutdown takes Lock so no save is queued after the final flush.
 	fence    sync.RWMutex

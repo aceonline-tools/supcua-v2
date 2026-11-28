@@ -19,8 +19,8 @@ const (
 
 // Window is one top-level window as reported by a Source.
 type Window struct {
+	H          uintptr // opaque handle, only meaningful to the Source that produced it
 	PID        uint32
-	Title      string
 	Visible    bool
 	ToolWindow bool
 	Cloaked    bool
@@ -32,6 +32,8 @@ type Window struct {
 type Source interface {
 	// Windows calls visit for each top-level window until visit returns false.
 	Windows(visit func(Window) bool)
+	// Title returns the window title. It is only asked for windows that passed every cheap filter.
+	Title(h uintptr) string
 	// ExeName returns the executable base name; an error means the process is inaccessible or gone.
 	ExeName(pid uint32) (string, error)
 }
@@ -60,37 +62,46 @@ func List(src Source, selfPID uint32, budget time.Duration, clock func() time.Ti
 		clock = time.Now
 	}
 	deadline := clock().Add(budget)
+	truncated := false
+	// expired is checked before every native call; once it trips the run is partial.
+	expired := func() bool {
+		if !clock().Before(deadline) {
+			truncated = true
+		}
+		return truncated
+	}
 	exeCache := map[uint32]string{}
 	bad := map[uint32]bool{}
 	var entries []entry
-	truncated := false
 
 	src.Windows(func(w Window) bool {
-		if !clock().Before(deadline) {
-			truncated = true
+		if expired() {
 			return false
 		}
-		if !w.Visible || w.ToolWindow || w.Cloaked || (w.Owned && !w.AppWindow) {
+		if !w.Visible || w.ToolWindow || w.Cloaked || (w.Owned && !w.AppWindow) || w.PID == 0 || w.PID == selfPID || bad[w.PID] {
 			return true
 		}
-		title := strings.TrimSpace(w.Title)
-		if title == "" || w.PID == 0 || w.PID == selfPID || bad[w.PID] {
-			return true
+		title := strings.TrimSpace(src.Title(w.H))
+		if title == "" {
+			return !expired()
 		}
 		exe, ok := exeCache[w.PID]
 		if !ok {
+			if expired() {
+				return false
+			}
 			name, err := src.ExeName(w.PID)
 			if err != nil || strings.TrimSpace(name) == "" {
 				bad[w.PID] = true
-				return true
+				return !expired()
 			}
 			exe = baseName(name)
 			exeCache[w.PID] = exe
 		}
-		title = clip(title)
-		entries = append(entries, entry{Row{Exe: exe, Title: title}, w.PID})
-		return true
+		entries = append(entries, entry{Row{Exe: exe, Title: clip(title)}, w.PID})
+		return !expired()
 	})
+	expired()
 
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
