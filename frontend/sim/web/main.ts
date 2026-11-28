@@ -20,7 +20,7 @@ const taskbar = $('taskbar');
 const readout = $('readout');
 
 const q = new URLSearchParams(location.search);
-const simKnobs = ['updcheck', 'upddelay'].flatMap((k) => (q.has(k) ? [`${k}=${q.get(k)}`] : [])).join('&');
+const simKnobs = ['updcheck', 'upddelay', 'procs', 'procdelay'].flatMap((k) => (q.has(k) ? [`${k}=${q.get(k)}`] : [])).join('&');
 const STATIC_VERSION: VersionId = 'current';
 let version: VersionId = __SIM_STATIC__ ? STATIC_VERSION : (VERSIONS as readonly string[]).includes(q.get('v') ?? '') && __SIM_PORTS__[q.get('v') as string] ? (q.get('v') as VersionId) : 'current';
 let scaling: Scaling = (SCALINGS as readonly number[]).includes(Number(q.get('s'))) ? (Number(q.get('s')) as Scaling) : 100;

@@ -34,7 +34,7 @@ describe('Settings buttons all contain an svg icon', () => {
     const reset = Array.from(host.querySelectorAll('button')).find((b) => b.textContent?.includes('Reset to defaults'));
     expect(reset?.querySelector('svg')?.getAttribute('data-icon')).toBe('rotate-ccw');
     const { els, bare } = buttons(host);
-    expect(els.length).toBe(15);
+    expect(els.length).toBe(16);
     expect(bare).toEqual([]);
     const themes = Array.from(host.querySelectorAll('[role="radio"]')).map((b) => b.querySelector('svg')?.getAttribute('data-icon'));
     expect(themes).toEqual(['moon', 'sun', 'monitor']);
@@ -43,7 +43,7 @@ describe('Settings buttons all contain an svg icon', () => {
 
   it('settings with the sidebar collapsed', async () => {
     const { els, bare } = buttons(await settings(true));
-    expect(els.length).toBe(15);
+    expect(els.length).toBe(16);
     expect(bare).toEqual([]);
   });
 });

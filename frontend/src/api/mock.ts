@@ -4,7 +4,7 @@ import { OVERLAY_DEFAULTS, clampOverlayStyle, validateOverlayStyle } from '../li
 import type {
   Action, ActionSpec, BootState, GroupDTO, HotkeyConflict, ParamSpec, RunMode, Script, ScriptList,
   ScriptSummary, SettingsDTO, StateDTO, OverlayStyleDTO,
-  UpdateCheckResult,
+  UpdateCheckResult, ProcessListDTO,
 } from './types';
 
 export interface MockSeed {
@@ -17,6 +17,9 @@ export interface MockSeed {
   /** What update.check answers (default: up to date) and after how long. */
   updateCheck?: Omit<UpdateCheckResult, 'current'>;
   updateCheckDelayMs?: number;
+  /** What processes.list answers: rows (default sample), 'error' to fail, and an optional delay. */
+  processes?: ProcessListDTO | 'error';
+  processesDelayMs?: number;
 }
 
 const s = (id: string, name: string, group: string, hotkey: string, run: RunMode, enabled = true): ScriptSummary => ({
@@ -61,6 +64,12 @@ export function seedFromQuery(search: string): MockSeed {
   else if (uc === 'offline' || uc === 'rate_limited' || uc === 'other') seed.updateCheck = { status: 'error', error: uc };
   const ud = Number(q.get('upddelay'));
   if (Number.isFinite(ud) && ud > 0) seed.updateCheckDelayMs = Math.min(ud, 60000);
+  const pr = q.get('procs');
+  if (pr === 'empty') seed.processes = { rows: [], truncated: false };
+  else if (pr === 'error') seed.processes = 'error';
+  else if (pr === 'many') seed.processes = { rows: Array.from({ length: 60 }, (_, i) => ({ exe: `app${String(i).padStart(2, '0')}.exe`, title: `Window ${i} ${'very long title '.repeat(6)}` })), truncated: true };
+  const pd = Number(q.get('procdelay'));
+  if (Number.isFinite(pd) && pd > 0) seed.processesDelayMs = Math.min(pd, 60000);
   return seed;
 }
 
@@ -230,6 +239,7 @@ export class MockBackend implements Transport {
     this.calls.push({ method, params: structuredClone(params) });
     await Promise.resolve();
     if (method === 'update.check' && this.seed.updateCheckDelayMs) await new Promise((r) => setTimeout(r, this.seed.updateCheckDelayMs));
+    if (method === 'processes.list' && this.seed.processesDelayMs) await new Promise((r) => setTimeout(r, this.seed.processesDelayMs));
     return structuredClone(this.handle(method, (params ?? {}) as Record<string, any>));
   }
 
@@ -496,6 +506,11 @@ export class MockBackend implements Transport {
         st.state.overlay.x = OVERLAY_DEFAULTS.x; st.state.overlay.y = OVERLAY_DEFAULTS.y;
         this.emit('settings.changed', { fields: ['overlay_style'] });
         return st.settings.overlay_style;
+      }
+      case 'processes.list': {
+        const pl = this.seed.processes ?? { rows: [{ exe: 'ACEonline.exe', title: 'ACE Online' }, { exe: 'chrome.exe', title: 'supcua - Google Chrome' }, { exe: 'Notepad.exe', title: 'notes.txt - Notepad' }], truncated: false };
+        if (pl === 'error') throw new ApiError({ code: 'INTERNAL', message: 'Process list unavailable' });
+        return pl;
       }
       case 'autoactive.set': {
         if (typeof p.enabled === 'boolean') st.state.auto_active.enabled = p.enabled;
