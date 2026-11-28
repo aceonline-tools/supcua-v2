@@ -26,16 +26,17 @@ func overlayStatus(snap status.Snapshot) (string, [3]uint8) {
 type layeredPresent struct {
 	Text string
 	RGB  [3]uint8
-	Dst  [2]int
-	Size [2]int
+	Dst  [2]int32
+	Size [2]int32
 }
 
 // presentFor builds the repaint request for snap. Every repaint carries the position and size:
-// UpdateLayeredWindow with NULL pptDst/psize returns success but the screen keeps the previous frame.
+// in the tested environment (Windows runner, CI before/after evidence) a status repaint that passed
+// NULL pptDst/psize to UpdateLayeredWindow returned success while the screen kept the previous frame.
 func presentFor(snap status.Snapshot, st model.ResolvedOverlayStyle, x, y int) layeredPresent {
 	text, rgb := overlayStatus(snap)
 	if st.TextColor != "" {
 		rgb[0], rgb[1], rgb[2] = parseHex(st.TextColor)
 	}
-	return layeredPresent{Text: text, RGB: rgb, Dst: [2]int{x, y}, Size: [2]int{st.Width, st.Height}}
+	return layeredPresent{Text: text, RGB: rgb, Dst: [2]int32{int32(x), int32(y)}, Size: [2]int32{int32(st.Width), int32(st.Height)}}
 }

@@ -357,6 +357,13 @@ func (s *SelfTest) observeOverlay() (o overlayObs) {
 
 // screenHue counts on-screen pixels whose dominant channel matches rgb (R, G or B) by a margin;
 // for a grey target it counts neutral pixels clearly brighter than the dark background.
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func screenHue(o overlayObs, rgb [3]uint8) int {
 	n := 0
 	for i := 0; i+3 < len(o.screen); i += 4 {
@@ -414,8 +421,8 @@ func (s *SelfTest) overlayStatusE2E(res *webview.Result, h ProductionHooks, name
 			len(o.text) >= len(prefix) && o.text[:len(prefix)] == prefix && o.rgb == rgb && n >= 10,
 			fmt.Sprintf("text=%q rgb=%v want=%q/%v glyphPixels=%d", o.text, o.rgb, prefix, rgb, n))
 		sn := screenHue(o, rgb)
-		res.Step(fmt.Sprintf("overlay e2e [%s] %s on screen", name, label), o.screenOK && sn >= 10,
-			fmt.Sprintf("screenOK=%v %dx%d screenPixels(%v)=%d", o.screenOK, o.sw, o.sh, rgb, sn))
+		res.Step(fmt.Sprintf("overlay e2e [%s] %s on screen", name, label), o.screenOK && sn >= 10 && abs(sn-n)*5 <= n,
+			fmt.Sprintf("screenOK=%v %dx%d screenPixels(%v)=%d internalGlyphPixels=%d (must agree within 20%%: a stale frame has a different glyph count)", o.screenOK, o.sw, o.sh, rgb, sn, n))
 		if dir != "" && len(o.pix) > 0 {
 			savePNG(filepath.Join(dir, fmt.Sprintf("e2e-%s-%s.png", name, label)), o.pix, o.w, o.h, 4)
 		}
