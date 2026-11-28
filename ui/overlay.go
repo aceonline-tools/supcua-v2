@@ -21,9 +21,6 @@ var (
 	user32DLL            = syscall.NewLazyDLL("user32.dll")
 	procUpdateLayeredWin = user32DLL.NewProc("UpdateLayeredWindow")
 	procGdiFlush         = syscall.NewLazyDLL("gdi32.dll").NewProc("GdiFlush")
-	colorGreenActive     = [3]uint8{0x00, 0xFF, 0x00}
-	colorRedInactive     = [3]uint8{0xFF, 0x00, 0x00}
-	colorGrayIdle        = [3]uint8{0x80, 0x80, 0x80}
 )
 
 const (
@@ -164,13 +161,7 @@ func (overlayWindow *OverlayWindow) paint() {
 }
 
 func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
-	if !overlayWindow.appController.IsGlobalActive() {
-		return "DISABLE", colorRedInactive
-	}
-	if name := overlayWindow.appController.GetRunningScriptName(); name != "" {
-		return "RUN: " + sanitizeStatusText(name), colorGreenActive
-	}
-	return "IDLE", colorGrayIdle
+	return overlayStatus(overlayWindow.appController.Snapshot())
 }
 
 // render draws the overlay into a 32-bit premultiplied DIB and pushes it with UpdateLayeredWindow.
@@ -179,10 +170,8 @@ func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
 func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
 	st := overlayWindow.style
 	w, h := st.Width, st.Height
-	text, rgb := overlayWindow.statusText()
-	if st.TextColor != "" {
-		rgb[0], rgb[1], rgb[2] = parseHex(st.TextColor)
-	}
+	req := presentFor(overlayWindow.appController.Snapshot(), st, overlayWindow.positionX, overlayWindow.positionY, withGeometry)
+	text, rgb := req.Text, req.RGB
 	overlayWindow.lastText, overlayWindow.lastRGB = text, rgb
 	overlayLog.Shown(text, rgb, overlayWindow.appController.IsGlobalActive())
 	overlayWindow.paints.Add(1)
@@ -245,7 +234,7 @@ func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
 	size := win.SIZE{CX: int32(w), CY: int32(h)}
 	dst := win.POINT{X: int32(overlayWindow.positionX), Y: int32(overlayWindow.positionY)}
 	var dstPtr, sizePtr uintptr
-	if withGeometry {
+	if req.Dst != nil {
 		dstPtr, sizePtr = uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&size))
 	}
 	ok, _, callErr := procUpdateLayeredWin.Call(uintptr(overlayWindow.windowHandle), 0, dstPtr, sizePtr,
