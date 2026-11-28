@@ -42,10 +42,12 @@ func (s *SelfTest) updateCheckSuite() {
 	})}
 	go srv.Serve(ln)
 	defer srv.Close()
-	if err := updater.SetAPIBaseForSelftest("http://" + ln.Addr().String()); err != nil {
+	restore, err := updater.SelftestBase("http://" + ln.Addr().String())
+	if err != nil {
 		s.ucstep("point the updater at the stub", false, err.Error())
 		return
 	}
+	defer restore()
 
 	str := func(tag, expr string) string {
 		r, err := s.drive(tag, expr, 5*time.Second)

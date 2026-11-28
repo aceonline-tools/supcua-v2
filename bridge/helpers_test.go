@@ -9,6 +9,7 @@ import (
 
 	"github.com/yanmad27/supcua-v2/app"
 	"github.com/yanmad27/supcua-v2/model"
+	"github.com/yanmad27/supcua-v2/updater"
 )
 
 type event struct {
@@ -257,7 +258,7 @@ type fakeHost struct {
 	updateErr error
 	progress  []int
 	release   chan struct{}
-	updateURL string
+	applied   []string
 }
 
 func (h *fakeHost) Hide() { h.mu.Lock(); h.hidden++; h.mu.Unlock() }
@@ -281,19 +282,17 @@ func (h *fakeHost) RebindHotkey(kind string, hk model.Hotkey) error {
 	}
 	return nil
 }
-func (h *fakeHost) ApplyUpdate(progress func(int)) error {
+func (h *fakeHost) ApplyUpdate(version string, progress func(int)) error {
+	h.mu.Lock()
+	h.applied = append(h.applied, version)
+	h.mu.Unlock()
 	progress(40)
 	if h.release != nil {
 		<-h.release
 	}
 	return h.updateErr
 }
-func (h *fakeHost) SkipUpdate() {}
-func (h *fakeHost) SetUpdate(u string) {
-	h.mu.Lock()
-	h.updateURL = u
-	h.mu.Unlock()
-}
+func (h *fakeHost) SkipUpdate(string) {}
 
 type fakeBackend struct {
 	mu      sync.Mutex
@@ -348,7 +347,7 @@ func newRig(t *testing.T, scripts ...model.Script) *rig {
 	}
 	r.b = New(Deps{
 		Controller: r.ctl, Store: r.store, Config: r.cfg, Hotkeys: r.hk, AutoActive: r.auto, Locks: fakeLocks{mouse: true},
-		Overlay: r.ov, UI: syncUI{}, Capture: r.cap, Host: r.host,
+		Overlay: r.ov, UI: syncUI{}, Capture: r.cap, Host: r.host, Offers: &updater.OfferStore{},
 	}, r.em)
 	r.m = r.b.Methods()
 	return r

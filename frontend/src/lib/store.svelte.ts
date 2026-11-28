@@ -235,7 +235,7 @@ export class AppStore {
     if (!this.update) return;
     this.update = { ...this.update, applying: true, pct: 0, failed: '' };
     try {
-      await this.api.call('update.apply');
+      await this.api.call('update.apply', { version: this.update.tag });
     } catch {
       this.update = { ...this.update, applying: false, failed: 'Update failed.' };
     }
@@ -261,15 +261,16 @@ export class AppStore {
     if (c.phase !== 'available') return;
     this.updateCheck = { phase: 'applying', tag: c.tag, pct: 0 };
     try {
-      await this.api.call('update.apply');
+      await this.api.call('update.apply', { version: c.tag });
     } catch {
       this.updateCheck = { phase: 'error', kind: 'other' };
     }
   }
 
   async skipUpdate(): Promise<void> {
+    const version = this.update?.tag;
     this.update = null;
-    await this.api.call('update.skip').catch(() => {});
+    await this.api.call('update.skip', { version }).catch(() => {});
   }
 
   async setGlobalActive(active: boolean): Promise<void> {

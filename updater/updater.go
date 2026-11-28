@@ -32,6 +32,8 @@ const (
 
 // Overridable in tests.
 var (
+	baseMu     sync.Mutex // guards apiBase and stubbed against the self-test override
+	stubbed    bool
 	apiBase    = "https://api.github.com"
 	repo       = "aceonline-tools/supcua-v2"
 	checkTO    = 10 * time.Second
@@ -125,7 +127,7 @@ func rateLimited(resp *http.Response) bool {
 // reported for: draft/pre-release, non-semver tag, or a version that is not
 // newer. A 404 returns ErrNoRelease. Single request, no retries.
 func CheckUpdate(currentVersion string) (latestVersion, dlURL string, err error) {
-	req, err := http.NewRequest(http.MethodGet, apiBase+"/repos/"+repo+"/releases/latest", nil)
+	req, err := http.NewRequest(http.MethodGet, currentBase()+"/repos/"+repo+"/releases/latest", nil)
 	if err != nil {
 		return "", "", fmt.Errorf("build request: %w", err)
 	}
@@ -527,6 +529,15 @@ func batchCommand(dir string) *exec.Cmd {
 	return cmd
 }
 
+func currentBase() string {
+	baseMu.Lock()
+	defer baseMu.Unlock()
+	return apiBase
+}
+
+// doCheck is CheckUpdate; tests replace it.
+var doCheck = CheckUpdate
+
 type checkFlight struct {
 	done     chan struct{}
 	tag, url string
@@ -558,7 +569,14 @@ func CheckUpdateShared(currentVersion string) (latestVersion, dlURL string, err 
 		flightMu.Unlock()
 		close(f.done)
 	}()
-	f.tag, f.url, f.err = CheckUpdate(currentVersion)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				f.tag, f.url, f.err = "", "", fmt.Errorf("update check panicked: %v", r)
+			}
+		}()
+		f.tag, f.url, f.err = doCheck(currentVersion)
+	}()
 	return f.tag, f.url, f.err
 }
 

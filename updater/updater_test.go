@@ -866,15 +866,56 @@ func TestCheckKind_Offline(t *testing.T) {
 	}
 }
 
-func TestSetAPIBaseForSelftestRefusesNonLoopback(t *testing.T) {
-	old := apiBase
-	t.Cleanup(func() { apiBase = old })
-	for _, bad := range []string{"https://api.github.com", "http://example.com", "http://127.0.0.1.evil.com", "http://127.0.0.1:1/x", "", "ftp://127.0.0.1"} {
-		if SetAPIBaseForSelftest(bad) == nil || apiBase != old {
+func TestSelftestBase(t *testing.T) {
+	old := currentBase()
+	for _, bad := range []string{
+		"https://api.github.com", "http://example.com", "http://127.0.0.1.evil.com:1", "http://127.0.0.1:1/x", "", "ftp://127.0.0.1:1",
+		"http://127.0.0.1", "http://127.0.0.1:0", "http://u:p@127.0.0.1:5555", "http://127.0.0.1:5555?x=1", "http://127.0.0.1:5555#f", "http://127.0.0.1:99999",
+	} {
+		if restore, err := SelftestBase(bad); err == nil || currentBase() != old || BaseIsSelftestStub() {
+			if restore != nil {
+				restore()
+			}
 			t.Errorf("%q accepted", bad)
 		}
 	}
-	if err := SetAPIBaseForSelftest("http://127.0.0.1:5555"); err != nil || apiBase != "http://127.0.0.1:5555" {
+	restore, err := SelftestBase("http://127.0.0.1:5555")
+	if err != nil || currentBase() != "http://127.0.0.1:5555" || !BaseIsSelftestStub() {
 		t.Fatalf("loopback refused: %v", err)
+	}
+	restore()
+	if currentBase() != old || BaseIsSelftestStub() {
+		t.Fatalf("base not restored: %q stub=%v", currentBase(), BaseIsSelftestStub())
+	}
+}
+
+func TestCheckUpdateShared_PanicIsAnErrorForEveryJoiner(t *testing.T) {
+	release := make(chan struct{})
+	old := doCheck
+	var calls int32
+	doCheck = func(string) (string, string, error) { atomic.AddInt32(&calls, 1); <-release; panic("boom") }
+	t.Cleanup(func() { doCheck = old })
+	const n = 5
+	type res struct {
+		v, u string
+		err  error
+	}
+	out := make(chan res, n)
+	for i := 0; i < n; i++ {
+		go func() { v, u, err := CheckUpdateShared("1.0.0"); out <- res{v, u, err} }()
+	}
+	for atomic.LoadInt32(&calls) == 0 {
+		runtime.Gosched()
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for i := 0; i < n; i++ {
+		if r := <-out; r.err == nil || r.v != "" || r.u != "" {
+			t.Fatalf("joiner %d got %+v, want an error and no update", i, r)
+		}
+	}
+	doCheck = func(string) (string, string, error) { return "1.0.1", "u", nil }
+	if v, _, err := CheckUpdateShared("1.0.0"); err != nil || v != "1.0.1" {
+		t.Fatalf("flight not released after a panic: %q %v", v, err)
 	}
 }

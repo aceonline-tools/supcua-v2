@@ -44,3 +44,15 @@ func TestProductionSelfTestPolicyRunsTheProductionSequenceWithoutItsGates(t *tes
 		t.Fatalf("must not bypass licence, hit the network or touch user data: %+v", p)
 	}
 }
+
+func TestUpdateChecksAreGatedByPolicy(t *testing.T) {
+	if p := NewPolicy(true); p.CheckForUpdates || !p.UpdateCheckStub {
+		t.Errorf("self-test policy: CheckForUpdates=%v UpdateCheckStub=%v (the real GitHub API must stay unreachable; only the stub-guarded check is wired)", p.CheckForUpdates, p.UpdateCheckStub)
+	}
+	if p := NewProductionSelfTestPolicy(); p.CheckForUpdates || p.UpdateCheckStub {
+		t.Errorf("production self-test policy wires an update check: %+v", p)
+	}
+	if p := NewPolicy(false); !p.CheckForUpdates || p.UpdateCheckStub {
+		t.Errorf("production policy: %+v", p)
+	}
+}

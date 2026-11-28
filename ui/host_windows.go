@@ -5,7 +5,6 @@ package ui
 import (
 	"encoding/json"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/yanmad27/supcua-v2/bridge"
@@ -31,8 +30,8 @@ type Host struct {
 	// Rebind re-registers a fixed hotkey (global/overlay) and restores the previous one on failure.
 	Rebind func(kind string, hk model.Hotkey) error
 
-	mu        sync.Mutex
-	updateURL string
+	// Offers is the update offer shared with the bridge and the startup check.
+	Offers *updater.OfferStore
 }
 
 func (h *Host) Hide() { h.UI.Hide() }
@@ -67,24 +66,19 @@ func (h *Host) RebindHotkey(kind string, hk model.Hotkey) error {
 	return h.Rebind(kind, hk)
 }
 
-// SetUpdate records the download URL of an available update (empty clears it).
-func (h *Host) SetUpdate(dlURL string) {
-	h.mu.Lock()
-	h.updateURL = dlURL
-	h.mu.Unlock()
-}
-
 // ApplyUpdate downloads and verifies the new executable (allowlist, size, sha256, MZ), then
 // hands over to OnUpdateReady on the UI thread: the ordered shutdown (saves flushed) runs
 // BEFORE the replacement is launched. It never assumes a URL exists and returns the updater's
 // error for the bridge to report as UPDATE_FAILED.
-func (h *Host) ApplyUpdate(progress func(pct int)) error {
-	h.mu.Lock()
-	url := h.updateURL
-	h.mu.Unlock()
-	if url == "" {
-		return errors.New("no update available")
+func (h *Host) ApplyUpdate(version string, progress func(pct int)) error {
+	if h.Offers == nil {
+		return errors.New("update unavailable")
 	}
+	offer, err := h.Offers.Take(version)
+	if err != nil {
+		return err
+	}
+	url := offer.URL
 	if h.OnUpdateReady == nil {
 		return errors.New("update unavailable")
 	}
@@ -98,7 +92,11 @@ func (h *Host) ApplyUpdate(progress func(pct int)) error {
 	return nil
 }
 
-func (h *Host) SkipUpdate() { h.SetUpdate("") }
+func (h *Host) SkipUpdate(version string) {
+	if h.Offers != nil {
+		h.Offers.Clear(version)
+	}
+}
 
 // NotLicensedMethods is the whole API of the not-licensed screen: boot info (MAC list),
 // copy to clipboard and exit. Nothing else of the application is reachable in this mode.
