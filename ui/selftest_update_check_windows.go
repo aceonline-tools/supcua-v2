@@ -78,17 +78,16 @@ func (s *SelfTest) updateCheckSuite() {
 
 	// Scenario 1: stub serves v0.0.0; the build is 0.0.0-selftest, so it is up to date. While the
 	// click's request is in flight, two more RPC checks must join it (single-flight).
-	if !click() {
-		s.ucstep("click", false, "the button was not clickable")
-		return
-	}
-	waitFor(3*time.Second, func() bool { return status() == "Checking…" })
-	s.ucstep("checking state disables the button", buttonLabel() == "Check for updates|disabled", "button="+buttonLabel())
-	joined := str("uc-join", `(async function(){var r=await Promise.all([__st.call('update.check'),__st.call('update.check')]);return r.map(function(x){return x.status}).join(',')})()`)
+	// One page-side turn: click the real button, observe the checking state, then fire two more RPC
+	// checks while the first request is still held by the stub (driver round trips are too slow to
+	// do this step by step).
+	probe := str("uc-probe", `(async function(){var b=document.querySelector('.upd-ctl button[aria-label="Check for updates"]');if(!b||b.disabled)return "noclick";b.click();await new Promise(function(r){setTimeout(r,80)});var d=document.querySelector('.upd-ctl button.upd-btn');var during=(d.disabled?'disabled':'enabled')+'|'+document.querySelector('.upd-ctl .upd-status').textContent;var r=await Promise.all([__st.call('update.check'),__st.call('update.check')]);return during+'|'+r.map(function(x){return x.status}).join(',')})()`)
+	s.ucstep("click shows the checking state and disables the button", strings.HasPrefix(probe, "disabled|Checking…|"), fmt.Sprintf("probe=%q", probe))
+	joined := probe
 	var final string
 	waitFor(5*time.Second, func() bool { final = status(); return strings.HasPrefix(final, "Up to date (") })
 	s.ucstep(`stub v0.0.0 -> "Up to date (v…)"`, strings.HasPrefix(final, "Up to date (") && strings.HasSuffix(final, ")") && strings.Contains(final, "0.0.0-selftest"), fmt.Sprintf("status=%q", final))
-	s.ucstep("concurrent checks share one request (single-flight)", hits.Load() == 1 && joined == "up_to_date,up_to_date", fmt.Sprintf("stub hits=%d joined=%q", hits.Load(), joined))
+	s.ucstep("concurrent checks share one request (single-flight)", hits.Load() == 1 && strings.HasSuffix(joined, "|up_to_date,up_to_date"), fmt.Sprintf("stub hits=%d joined=%q", hits.Load(), joined))
 
 	// Scenario 2: stub serves v9.9.9 -> update available, offering Install (never clicked).
 	mu.Lock()
