@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -17,6 +18,8 @@ import (
 
 	"github.com/yanmad27/supcua-v2/otrace"
 )
+
+var user32dll = syscall.NewLazyDLL("user32.dll")
 
 type mouseInput struct {
 	typ   uint32
@@ -140,6 +143,19 @@ func analyzeFrame(pix []byte, w, h int) frameStats {
 	return st
 }
 
+var procGetLayeredWindowAttributes = user32dll.NewProc("GetLayeredWindowAttributes")
+
+// editorRevealed: visible and not the transparent staging state (alpha 255 or not layered).
+func editorRevealed(h uintptr) bool {
+	if !win.IsWindowVisible(win.HWND(h)) {
+		return false
+	}
+	var key, alpha uint32
+	var flags uint32
+	r, _, _ := procGetLayeredWindowAttributes.Call(h, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(&alpha)), uintptr(unsafe.Pointer(&flags)))
+	return r == 0 || alpha == 255
+}
+
 func captureClient(h uintptr) ([]byte, int, int, error) {
 	var cr win.RECT
 	if !win.GetClientRect(win.HWND(h), &cr) {
@@ -162,6 +178,8 @@ type openTrial struct {
 	Frame       frameStats
 	AnyBlank    bool
 	BlankFrames int
+	ClientW     int
+	ClientH     int
 	Stages      string
 	err         error
 }
@@ -221,7 +239,7 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial
 			default:
 			}
 			if ed := s.UI.Editor(); ed != nil {
-				if hw := ed.HWND(); hw != 0 && win.IsWindowVisible(win.HWND(hw)) {
+				if hw := ed.HWND(); hw != 0 && editorRevealed(hw) {
 					v := vis{t: time.Now(), h: hw}
 					if px, w, h, err := captureClient(hw); err == nil {
 						v.px, v.fr, v.ok = px, analyzeFrame(px, w, h), true
@@ -271,6 +289,7 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial
 					fr := analyzeFrame(px, w, h)
 					if !fr.Blank() {
 						tr.Usable = time.Since(t0)
+						tr.ClientW, tr.ClientH = w, h
 						break
 					}
 					tr.AnyBlank, tr.BlankFrames = true, tr.BlankFrames+1
@@ -352,6 +371,14 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 			fmt.Printf("open-latency %s #%d visible=%.0fms usable=%.0fms firstFrame=[%s] blankFrames=%d |%s\n",
 				kind, i, ms(tr.Visible), ms(tr.Usable), tr.Frame, tr.BlankFrames, tr.Stages)
 			blank += tr.BlankFrames
+			if !strings.Contains(tr.Stages, "page:measured-sent") || tr.Visible > 2*time.Second {
+				step(fmt.Sprintf("open latency: %s #%d used the measured natural size (no fallback)", kind, i), false, tr.Stages)
+				okAll = false
+			}
+			if tr.BlankFrames > 0 {
+				step(fmt.Sprintf("open latency: %s #%d never showed a blank frame", kind, i), false, tr.Frame.String())
+				okAll = false
+			}
 			if i == 0 {
 				first = tr
 			} else {

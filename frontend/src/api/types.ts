@@ -237,6 +237,7 @@ export interface Methods {
   'editor.open': { params: { id: string | null }; result: EditorSession };
   'editor.measured': { params: { token: number; cssW: number; cssH: number; dpr: number }; result: MeasureReply };
   'editor.measureAck': { params: { token: number }; result: Record<string, never> };
+  'editor.painted': { params: Record<string, never>; result: Record<string, never> };
   'editor.checkpoint': { params: { sessionId: string; revision: number; script: Script }; result: { applied: boolean; revision: number } };
   'editor.guardActive': { params: { sessionId: string }; result: { leaseMs: number } };
   'editor.closeDecision': { params: { sessionId: string; decision: CloseDecision }; result: Record<string, never> };

@@ -78,6 +78,7 @@ type fakeEdHost struct {
 	events      []string
 	payloads    map[string][]any
 	visible     bool
+	staged      bool
 	nextGen     uint64
 	createErr   error
 	metrics     EditorMetrics
@@ -137,7 +138,8 @@ func (h *fakeEdHost) PlaceEditor(_ uint64, r Rect, _ bool) {
 	h.bounds = r
 	h.mu.Unlock()
 }
-func (h *fakeEdHost) ShowEditor(uint64) { h.rec("show") }
+func (h *fakeEdHost) ShowEditor(uint64)        { h.rec("show") }
+func (h *fakeEdHost) EditorStaged(uint64) bool { return h.staged }
 func (h *fakeEdHost) EditorBounds(uint64) (Rect, bool, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1223,4 +1225,44 @@ func TestEditorOpenIsNewFollowsTheHostSelectedScript(t *testing.T) {
 			t.Errorf("%s: isNew = %v want %v", c.name, isNew, c.want)
 		}
 	}
+}
+
+func TestStagedWindowIsRevealedOnlyWhenThePageReportsPainted(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.h.staged = true
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`)
+	e.mustCall(t, "editor.windowReady", ``)
+	e.mustCall(t, "editor.measured", `{"token":1,"cssW":1000,"cssH":700,"dpr":1}`)
+	if !e.h.order("place") || e.h.order("place", "show") {
+		t.Fatalf("placed but not revealed before painted: %v", e.h.log)
+	}
+	e.mustCall(t, "editor.painted", ``)
+	e.mustCall(t, "editor.painted", ``)
+	if !e.h.order("place", "show") || e.h.countLog("show") != 1 {
+		t.Fatalf("revealed exactly once, after the placement: %v", e.h.log)
+	}
+}
+
+func TestStagedWindowIsRevealedAfterTheGraceWhenThePageNeverReportsPainted(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.h.staged = true
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`)
+	e.mustCall(t, "editor.windowReady", ``)
+	e.mustCall(t, "editor.measured", `{"token":1,"cssW":1000,"cssH":700,"dpr":1}`)
+	e.clk.Advance(revealGrace + time.Millisecond)
+	if !e.h.order("place", "show") {
+		t.Fatalf("%v", e.h.log)
+	}
+}
+
+func (h *fakeEdHost) countLog(s string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, l := range h.log {
+		if l == s {
+			n++
+		}
+	}
+	return n
 }

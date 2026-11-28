@@ -366,6 +366,7 @@ export class MockBackend implements Transport {
       }
       case 'editor.measured': return { next: 'show' };
       case 'editor.measureAck': return {};
+      case 'editor.painted': return {};
       case 'editor.checkpoint': {
         this.requireSession(p.sessionId);
         const applied = p.revision > Math.max(this.sessionRev, this.lastSaved);

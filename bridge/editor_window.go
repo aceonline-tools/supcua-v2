@@ -31,7 +31,9 @@ type EditorHost interface {
 	// the owner's), lets its DPI settle and returns that monitor's facts.
 	PrepareEditor(gen uint64, remembered model.EditorWindow) (EditorMetrics, error)
 	PlaceEditor(gen uint64, r Rect, maximized bool)
-	ShowEditor(gen uint64) // restore when iconic or hidden, then activate
+	ShowEditor(gen uint64) // restore when iconic or hidden, reveal a staged window, then activate
+	// EditorStaged: the window is shown but transparent; the page's `editor.painted` (or revealGrace) reveals it.
+	EditorStaged(gen uint64) bool
 	EditorBounds(gen uint64) (r Rect, maximized bool, ok bool)
 	// DestroyEditor invalidates the generation, posts the controller Close() and destroys the HWND.
 	// It never blocks (no COM call, no lock).
@@ -82,7 +84,8 @@ const (
 	measureRound    = 5 * time.Second
 	measureTotal    = 12 * time.Second
 	measureGrace    = time.Second
-	maxMeasureTries = 2 // extra rounds, shared by width remeasure and DPI change
+	revealGrace     = 400 * time.Millisecond // a staged window is revealed even if the page never reports painted
+	maxMeasureTries = 2                      // extra rounds, shared by width remeasure and DPI change
 	closeBase       = 10 * time.Second
 	closeLease      = 3 * time.Second
 	closeCeiling    = 60 * time.Second
@@ -124,6 +127,8 @@ type windowCtl struct {
 	graceT      Timer
 	closeT      Timer
 
+	revealT    Timer
+	revealed   bool
 	pendingOut *BoundsOut // fallback size waiting for the page's measureAck or the grace timer
 
 	activeScript atomic.Pointer[string] // the script of the active generation; set under Bridge.admitMu
@@ -200,7 +205,7 @@ func (c *windowCtl) State() string {
 }
 
 func (c *windowCtl) stopTimersLocked() {
-	for _, t := range []*Timer{&c.startupT, &c.roundT, &c.totalT, &c.graceT, &c.closeT} {
+	for _, t := range []*Timer{&c.startupT, &c.roundT, &c.totalT, &c.graceT, &c.closeT, &c.revealT} {
 		if *t != nil {
 			(*t).Stop()
 			*t = nil
@@ -251,6 +256,7 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 	c.activeScript.Store(id)
 	c.b.admitMu.Unlock()
 	c.shown, c.shutdown, c.token, c.tries = false, false, 0, 0
+	c.revealed = false
 	c.recoverBy = time.Time{}
 	c.destroyed, c.done = make(chan struct{}), make(chan struct{})
 	c.b.d.Controller.SetEditDialogOpen(true)
@@ -454,6 +460,40 @@ func (c *windowCtl) present(gen uint64, out BoundsOut) {
 	c.mu.Unlock()
 	c.h.PlaceEditor(gen, out.Outer, out.Maximized)
 	otrace.At("placed")
+	if !c.h.EditorStaged(gen) {
+		c.h.ShowEditor(gen)
+		otrace.At("shown")
+		return
+	}
+	c.mu.Lock()
+	if c.revealT == nil {
+		c.revealT = c.clk.AfterFunc(revealGrace, func() { c.postGen(gen, func() { c.reveal(gen) }) })
+	}
+	c.mu.Unlock()
+}
+
+// painted is editor.painted: the page painted its final layout at the placed size; reveal now.
+func (c *windowCtl) painted() {
+	c.mu.Lock()
+	gen, ok := c.gen, c.state == stOpen
+	c.mu.Unlock()
+	if ok {
+		c.reveal(gen)
+	}
+}
+
+func (c *windowCtl) reveal(gen uint64) {
+	c.mu.Lock()
+	if c.gen != gen || c.state != stOpen || c.revealed {
+		c.mu.Unlock()
+		return
+	}
+	c.revealed = true
+	if c.revealT != nil {
+		c.revealT.Stop()
+		c.revealT = nil
+	}
+	c.mu.Unlock()
 	c.h.ShowEditor(gen)
 	otrace.At("shown")
 }

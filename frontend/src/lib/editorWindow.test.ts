@@ -124,6 +124,20 @@ describe('measure handshake', () => {
   };
   beforeEach(() => { mock = new MockBackend(); api = createClient(mock); size = { w: 900.2, h: 500.4 }; });
 
+  it('measures without any animation frame (a hidden window never runs them) and reports painted after the ack', async () => {
+    root = document.createElement('div');
+    root.id = 'editor-root';
+    root.getBoundingClientRect = () => ({ top: 0, left: 0, right: 900, bottom: 500, width: 900, height: 500, x: 0, y: 0, toJSON() {} });
+    document.body.replaceChildren(root);
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+    const m = new MeasureController(api, { root: () => root, ready: async () => {}, fonts: async () => {}, paint: async () => {} });
+    await m.request(3);
+    expect(raf).not.toHaveBeenCalled();
+    raf.mockRestore();
+    const order = mock.calls.map((c) => c.method).filter((n) => ['editor.measured', 'editor.measureAck', 'editor.painted'].includes(n));
+    expect(order).toEqual(['editor.measured', 'editor.measureAck', 'editor.painted']);
+  });
+
   it('starts in measure mode, reports ceil CSS px once, and shows + acks on {next:show}', async () => {
     const m = make();
     expect(document.documentElement.dataset.measure).toBe('');

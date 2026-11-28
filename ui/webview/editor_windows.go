@@ -170,7 +170,35 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		u.editorGen.CompareAndSwap(w.gen, 0)
 		return w, err
 	}
+	if o.Fixture == "" {
+		w.stageEditor()
+	}
 	return w, nil
+}
+
+var procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
+
+const wsExLayered = 0x00080000
+
+// stageEditor makes the still-empty editor "shown" but fully transparent right after creation. A
+// hidden WebView2 host does not render (requestAnimationFrame never fires), so the page could not
+// paint before the window was revealed and its first visible frame was blank. Staged, the page
+// loads, lays out and paints while nothing is visible; ShowEditorWindow then reveals it. UI thread.
+func (w *Window) stageEditor() {
+	ex := win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)
+	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex|wsExLayered)
+	if r, _, _ := procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 0, 2); r == 0 {
+		win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex)
+		return
+	}
+	w.staged = true
+	win.ShowWindow(w.hwnd, win.SW_SHOWNA)
+}
+
+// EditorStaged reports whether the editor is shown-but-transparent and waits for ShowEditorWindow.
+func (u *UI) EditorStaged(gen uint64) bool {
+	w := u.editor
+	return w != nil && w.gen == gen && w.hwnd != 0 && w.staged
 }
 
 // destroyEditor closes the editor window: late replies are suppressed first (gone), the
@@ -273,6 +301,9 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 	if w := u.editor; w != nil && w.gen == gen && w.hwnd != 0 {
 		win.SetWindowPos(w.hwnd, 0, int32(l), int32(t), int32(r-l), int32(b-t), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 		w.wantMax = maximized
+		if w.staged && maximized && !w.shownOnce {
+			win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
+		}
 	}
 }
 
@@ -281,6 +312,10 @@ func (u *UI) ShowEditorWindow(gen uint64) {
 	w := u.editor
 	if w == nil || w.gen != gen || w.hwnd == 0 {
 		return
+	}
+	if w.staged {
+		w.staged = false
+		procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 255, 2)
 	}
 	switch {
 	case win.IsIconic(w.hwnd):
