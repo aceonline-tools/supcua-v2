@@ -16,7 +16,7 @@
   const aa = $derived(store.state?.auto_active);
   const ov = $derived(store.state?.overlay);
   const uc = $derived(store.updateCheck);
-  const errText = { offline: "Can't reach GitHub", rate_limited: 'GitHub rate limit reached', other: 'Update check failed' };
+  const errText = { offline: "Can't reach GitHub", rate_limited: 'GitHub rate limit reached', other: 'Update check failed', stale: 'A newer update was found. Check again.' };
   const updText = $derived(
     uc.phase === 'checking' ? 'Checking…'
     : uc.phase === 'up_to_date' ? `Up to date (${uc.current})`

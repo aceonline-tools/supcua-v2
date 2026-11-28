@@ -107,6 +107,18 @@ describe('Settings > Check for updates', () => {
     expect(btn(host).textContent).toContain('Check for updates');
   });
 
+  it('a refused stale Install shows a specific message', async () => {
+    const { host, backend } = await settings({ updateCheck: { status: 'available', tag: '1.0.29' } });
+    btn(host).click();
+    await tick(); await tick();
+    btn(host).click();
+    await tick();
+    backend.push('update.failed', { message: 'A newer update was found. Check again.' });
+    await tick();
+    expect(status(host)).toBe('A newer update was found. Check again.');
+    expect(host.querySelector('.upd-status.upd-err')).not.toBeNull();
+  });
+
   it('not licensed: no check row', async () => {
     const seed = defaultSeed();
     seed.boot.mode = 'notLicensed';

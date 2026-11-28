@@ -67,16 +67,19 @@ func TestOfferStalePromptCannotSkipOrInstallNewer(t *testing.T) {
 		t.Fatalf("install of the stale version: %v", err)
 	}
 	s.Clear(offerB.Version)
-	if _, err := s.Take(""); !errors.Is(err, ErrNoOffer) {
+	if _, err := s.Take(offerB.Version); !errors.Is(err, ErrNoOffer) {
 		t.Fatalf("after skipping B: %v", err)
 	}
 }
 
-func TestOfferClearWithoutVersionIsUnconditional(t *testing.T) {
+func TestOfferEmptyVersionIsRejected(t *testing.T) {
 	var s OfferStore
 	s.Publish(s.Begin(), offerA)
+	if _, err := s.Take(""); !errors.Is(err, ErrNoVersion) {
+		t.Fatalf("take with no version: %v", err)
+	}
 	s.Clear("")
-	if s.Current() != (Offer{}) {
-		t.Fatal("not cleared")
+	if s.Current() != offerA {
+		t.Fatal("Clear with no version dropped the offer")
 	}
 }

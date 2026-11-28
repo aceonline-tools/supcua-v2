@@ -6,6 +6,9 @@ import type {
   BootState, GroupDTO, UpdateCheckError, OverlayStyleDTO, ScriptSummary, SettingsDTO, SettingsPatch, StateDTO, ThemeSetting,
 } from '../api/types';
 
+/** bridge.UpdateStaleMessage: the offer changed after the page showed it. */
+const STALE_UPDATE_MESSAGE = 'A newer update was found. Check again.';
+
 export type Route = { name: 'scripts' } | { name: 'settings' };
 
 export interface UpdateState {
@@ -144,7 +147,7 @@ export class AppStore {
       }),
       this.api.on('update.failed', (e) => {
         if (this.update) { this.update.applying = false; this.update.failed = e.message; }
-        if (this.updateCheck.phase === 'applying') this.updateCheck = { phase: 'error', kind: 'other' };
+        if (this.updateCheck.phase === 'applying') this.updateCheck = { phase: 'error', kind: e.message === STALE_UPDATE_MESSAGE ? 'stale' : 'other' };
       }),
       this.api.on('save.failed', (e) => { this.unsaved[e.scriptId] = e.message; }),
       this.api.on('nav.goto', (e) => {
@@ -270,7 +273,7 @@ export class AppStore {
   async skipUpdate(): Promise<void> {
     const version = this.update?.tag;
     this.update = null;
-    await this.api.call('update.skip', { version }).catch(() => {});
+    if (version) await this.api.call('update.skip', { version }).catch(() => {});
   }
 
   async setGlobalActive(active: boolean): Promise<void> {

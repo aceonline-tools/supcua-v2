@@ -92,7 +92,7 @@ export interface SettingsDTO {
 
 export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed' | 'overlay_style'>>;
 
-export type UpdateCheckError = 'offline' | 'rate_limited' | 'other';
+export type UpdateCheckError = 'offline' | 'rate_limited' | 'other' | 'stale';
 export interface UpdateCheckResult {
   status: 'up_to_date' | 'available' | 'error';
   current: string;

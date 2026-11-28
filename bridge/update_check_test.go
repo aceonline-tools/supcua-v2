@@ -116,7 +116,25 @@ func TestUpdateApplyAndSkipCarryTheOfferedVersion(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	r.mustCall(t, "update.skip", `{"version":"2.0.1"}`)
-	r.mustCall(t, "update.skip", "")
+	for _, m := range []string{"update.apply", "update.skip"} {
+		for _, params := range []string{"", "{}", `{"version":""}`, `{"version":null}`} {
+			_, err := r.call(t, m, params)
+			wantCode(t, err, CodeBadRequest)
+		}
+	}
+}
+
+func TestUpdateApplyStaleOfferEmitsSpecificMessage(t *testing.T) {
+	r := newRig(t)
+	r.host.updateErr = updater.ErrStaleOffer
+	r.mustCall(t, "update.apply", `{"version":"2.0.0"}`)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(r.em.named(EvUpdateFailed)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := r.em.named(EvUpdateFailed); len(got) != 1 || got[0].payload.(updateFailedEvent).Message != UpdateStaleMessage {
+		t.Fatalf("events = %+v", got)
+	}
 }
 
 func TestUpdateCheckHandlerDoesNotHoldTheWorker(t *testing.T) {

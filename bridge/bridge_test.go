@@ -752,8 +752,8 @@ func TestUpdateApplyRunsOnceAndReportsProgressAndFailure(t *testing.T) {
 	r := newRig(t)
 	r.host.release = make(chan struct{})
 	r.host.updateErr = os_ErrInvalid()
-	r.mustCall(t, "update.apply", "")
-	_, err := r.call(t, "update.apply", "")
+	r.mustCall(t, "update.apply", `{"version":"2"}`)
+	_, err := r.call(t, "update.apply", `{"version":"2"}`)
 	wantCode(t, err, CodeBusy)
 	close(r.host.release)
 	deadline := time.Now().Add(2 * time.Second)
@@ -766,7 +766,7 @@ func TestUpdateApplyRunsOnceAndReportsProgressAndFailure(t *testing.T) {
 	if p := r.em.named(EvUpdateFailed)[0].payload.(updateFailedEvent).Message; p != "update failed" {
 		t.Errorf("update.failed must carry a fixed message, got %q", p)
 	}
-	r.mustCall(t, "update.skip", "")
+	r.mustCall(t, "update.skip", `{"version":"2"}`)
 	r.b.NotifyUpdateAvailable("v2")
 	if len(r.em.named(EvUpdateAvailable)) != 1 {
 		t.Error("update.available not emitted")

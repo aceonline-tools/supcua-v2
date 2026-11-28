@@ -870,7 +870,7 @@ func TestSelftestBase(t *testing.T) {
 	old := currentBase()
 	for _, bad := range []string{
 		"https://api.github.com", "http://example.com", "http://127.0.0.1.evil.com:1", "http://127.0.0.1:1/x", "", "ftp://127.0.0.1:1",
-		"http://127.0.0.1", "http://127.0.0.1:0", "http://u:p@127.0.0.1:5555", "http://127.0.0.1:5555?x=1", "http://127.0.0.1:5555#f", "http://127.0.0.1:99999",
+		"http://127.0.0.1", "http://127.0.0.1:0", "http://u:p@127.0.0.1:5555", "http://127.0.0.1:5555?x=1", "http://127.0.0.1:5555#f", "http://127.0.0.1:99999", "http://127.0.0.1:bad", "http://[::1", "%zz",
 	} {
 		if restore, err := SelftestBase(bad); err == nil || currentBase() != old || BaseIsSelftestStub() {
 			if restore != nil {

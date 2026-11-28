@@ -12,6 +12,7 @@ type Offer struct{ Version, URL string }
 var (
 	ErrNoOffer    = errors.New("no update available")
 	ErrStaleOffer = errors.New("the offered update changed")
+	ErrNoVersion  = errors.New("an update version is required")
 )
 
 // OfferStore holds the single current offer. Checks take a sequence number when they start and
@@ -50,26 +51,29 @@ func (s *OfferStore) Current() Offer {
 	return s.cur
 }
 
-// Take returns the offer to install. A non-empty expect must equal the current version, so an
+// Take returns the offer to install. expect is required and must equal the current version, so an
 // Install button cannot install a different release than the one it displayed.
 func (s *OfferStore) Take(expect string) (Offer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if expect == "" {
+		return Offer{}, ErrNoVersion
+	}
 	if s.cur.URL == "" {
 		return Offer{}, ErrNoOffer
 	}
-	if expect != "" && s.cur.Version != expect {
+	if s.cur.Version != expect {
 		return Offer{}, ErrStaleOffer
 	}
 	return s.cur, nil
 }
 
-// Clear drops the offer; a non-empty version clears it only if that version is still the current
-// one, so a stale prompt's Skip cannot remove a newer offer.
+// Clear drops the offer only if version (required; empty is ignored) is still the current one, so
+// a stale prompt's Skip cannot remove a newer offer.
 func (s *OfferStore) Clear(version string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if version == "" || s.cur.Version == version {
+	if version != "" && s.cur.Version == version {
 		s.cur = Offer{}
 	}
 }

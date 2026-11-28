@@ -13,8 +13,11 @@ import (
 // API cannot be replaced by it. No build tag: nothing in production code calls it.
 func SelftestBase(base string) (restore func(), err error) {
 	u, perr := url.Parse(base)
+	if perr != nil {
+		return nil, fmt.Errorf("selftest api base is not a URL: %q", base)
+	}
 	port, _ := strconv.Atoi(u.Port())
-	if perr != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.User != nil || u.Path != "" ||
+	if u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.User != nil || u.Path != "" ||
 		u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || port < 1 || port > 65535 {
 		return nil, fmt.Errorf("selftest api base must be http://127.0.0.1:<port>, got %q", base)
 	}

@@ -686,20 +686,6 @@ func reg[P any](m map[string]Handler, name string, fn func(P) (any, error), requ
 	}
 }
 
-// regOptional is reg for methods whose params object may be omitted entirely.
-func regOptional[P any](m map[string]Handler, name string, fn func(P) (any, error)) {
-	m[name] = func(raw json.RawMessage) (any, error) {
-		var p P
-		if t := bytes.TrimSpace(raw); len(t) > 0 && !bytes.Equal(t, []byte("null")) {
-			var err error
-			if p, err = decode[P](t); err != nil {
-				return nil, err
-			}
-		}
-		return fn(p)
-	}
-}
-
 func regNoParams(m map[string]Handler, name string, fn func() (any, error)) {
 	m[name] = func(raw json.RawMessage) (any, error) {
 		if t := bytes.TrimSpace(raw); len(t) > 0 && !bytes.Equal(t, []byte("null")) {
@@ -769,8 +755,8 @@ func (b *Bridge) Methods() map[string]Handler {
 	reg(m, "overlay.setStyle", b.overlaySetStyle, "radius", "background", "text_color", "background_opacity", "opacity", "width", "height", "x", "y")
 	regNoParams(m, "overlay.resetStyle", b.overlayResetStyle)
 	reg(m, "autoactive.set", b.autoActiveSet)
-	regOptional(m, "update.apply", b.updateApply)
-	regOptional(m, "update.skip", b.updateSkip)
+	reg(m, "update.apply", b.updateApply, "version")
+	reg(m, "update.skip", b.updateSkip, "version")
 	regNoParams(m, "update.check", b.updateCheck)
 	regNoParams(m, "app.closingReady", b.closingReadyHandler)
 	b.fenceMutations(m)
@@ -853,6 +839,9 @@ func (b *Bridge) clipboardWrite(p struct {
 }
 
 func (b *Bridge) updateApply(p updateParams) (any, error) {
+	if p.Version == "" {
+		return nil, badRequest()
+	}
 	if b.d.Host == nil {
 		return nil, newErr(CodeUpdateFailed)
 	}
@@ -866,7 +855,11 @@ func (b *Bridge) updateApply(p updateParams) (any, error) {
 		})
 		if err != nil {
 			log.Printf("bridge: update failed: %v", err)
-			b.emit(EvUpdateFailed, updateFailedEvent{Message: messages[CodeUpdateFailed]})
+			msg := messages[CodeUpdateFailed]
+			if errors.Is(err, updater.ErrStaleOffer) {
+				msg = UpdateStaleMessage
+			}
+			b.emit(EvUpdateFailed, updateFailedEvent{Message: msg})
 		}
 	}()
 	return empty{}, nil
@@ -919,11 +912,17 @@ func (b *Bridge) checkUpdate() (any, error) {
 	return UpdateCheckResult{Status: "available", Current: current, Tag: offer.Version}, nil
 }
 
+// UpdateStaleMessage is the update.failed text when the offer changed after the page showed it.
+const UpdateStaleMessage = "A newer update was found. Check again."
+
 type updateParams struct {
 	Version string `json:"version"`
 }
 
 func (b *Bridge) updateSkip(p updateParams) (any, error) {
+	if p.Version == "" {
+		return nil, badRequest()
+	}
 	if b.d.Host != nil {
 		b.d.Host.SkipUpdate(p.Version)
 	}
