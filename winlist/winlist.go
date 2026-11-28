@@ -5,6 +5,7 @@ package winlist
 import (
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,12 +31,13 @@ type Window struct {
 
 // Source enumerates top-level windows and resolves a process id to its executable base name.
 type Source interface {
-	// Windows calls visit for each top-level window until visit returns false.
-	Windows(visit func(Window) bool)
+	// Windows calls visit for each top-level window until visit returns false. expired reports the
+	// budget is spent: a Source checks it between native calls and stops once it is true.
+	Windows(visit func(Window) bool, expired func() bool)
 	// Title returns the window title. It is only asked for windows that passed every cheap filter.
 	Title(h uintptr) string
 	// ExeName returns the executable base name; an error means the process is inaccessible or gone.
-	ExeName(pid uint32) (string, error)
+	ExeName(pid uint32, expired func() bool) (string, error)
 }
 
 // Row is one picker entry. It carries no path, PID or handle.
@@ -55,24 +57,60 @@ type entry struct {
 	pid uint32
 }
 
-// List builds the picker rows from src, excluding selfPID. It stops enumerating once budget has
-// elapsed on clock and then reports Truncated with whatever it has.
+// Collector accumulates rows while an enumeration runs, so a snapshot can be taken at any time.
+type Collector struct {
+	mu        sync.Mutex
+	entries   []entry
+	truncated bool
+}
+
+// NewCollector returns an empty Collector.
+func NewCollector() *Collector { return &Collector{} }
+
+func (c *Collector) add(e entry) {
+	c.mu.Lock()
+	c.entries = append(c.entries, e)
+	c.mu.Unlock()
+}
+
+func (c *Collector) setTruncated() {
+	c.mu.Lock()
+	c.truncated = true
+	c.mu.Unlock()
+}
+
+// Snapshot returns the rows collected so far, deduplicated, sorted and capped. Truncated is set
+// when the run hit its budget or the cap; a caller answering before the run finished sets it too.
+func (c *Collector) Snapshot() Result {
+	c.mu.Lock()
+	entries := append([]entry(nil), c.entries...)
+	truncated := c.truncated
+	c.mu.Unlock()
+	return finish(entries, truncated)
+}
+
+// List runs one enumeration to completion (or to its budget) and returns the result.
 func List(src Source, selfPID uint32, budget time.Duration, clock func() time.Time) Result {
+	c := NewCollector()
+	Collect(src, selfPID, budget, clock, c)
+	return c.Snapshot()
+}
+
+// Collect enumerates src into c, excluding selfPID, and stops once budget has elapsed on clock.
+func Collect(src Source, selfPID uint32, budget time.Duration, clock func() time.Time, c *Collector) {
 	if clock == nil {
 		clock = time.Now
 	}
 	deadline := clock().Add(budget)
-	truncated := false
-	// expired is checked before every native call; once it trips the run is partial.
 	expired := func() bool {
 		if !clock().Before(deadline) {
-			truncated = true
+			c.setTruncated()
+			return true
 		}
-		return truncated
+		return false
 	}
 	exeCache := map[uint32]string{}
 	bad := map[uint32]bool{}
-	var entries []entry
 
 	src.Windows(func(w Window) bool {
 		if expired() {
@@ -90,7 +128,7 @@ func List(src Source, selfPID uint32, budget time.Duration, clock func() time.Ti
 			if expired() {
 				return false
 			}
-			name, err := src.ExeName(w.PID)
+			name, err := src.ExeName(w.PID, expired)
 			if err != nil || strings.TrimSpace(name) == "" {
 				bad[w.PID] = true
 				return !expired()
@@ -98,11 +136,13 @@ func List(src Source, selfPID uint32, budget time.Duration, clock func() time.Ti
 			exe = baseName(name)
 			exeCache[w.PID] = exe
 		}
-		entries = append(entries, entry{Row{Exe: exe, Title: clip(title)}, w.PID})
+		c.add(entry{Row{Exe: exe, Title: clip(title)}, w.PID})
 		return !expired()
-	})
+	}, expired)
 	expired()
+}
 
+func finish(entries []entry, truncated bool) Result {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
 		if ae, be := strings.ToLower(a.row.Exe), strings.ToLower(b.row.Exe); ae != be {

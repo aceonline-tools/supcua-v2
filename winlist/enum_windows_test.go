@@ -9,7 +9,7 @@ import "testing"
 func TestRepeatedEnumerationDoesNotExhaustCallbacks(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		n := 0
-		SystemSource{}.Windows(func(Window) bool { n++; return n < 8 })
+		SystemSource{}.Windows(func(Window) bool { n++; return n < 8 }, func() bool { return false })
 	}
 	enumMu.Lock()
 	left := len(enumReg)

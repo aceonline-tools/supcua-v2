@@ -26,7 +26,7 @@ func (f *fakeSrc) tick(d time.Duration) {
 	}
 }
 
-func (f *fakeSrc) Windows(visit func(Window) bool) {
+func (f *fakeSrc) Windows(visit func(Window) bool, _ func() bool) {
 	for i, w := range f.wins {
 		f.tick(f.slowWalk[i])
 		w.H = uintptr(i + 1)
@@ -41,7 +41,7 @@ func (f *fakeSrc) Title(h uintptr) string {
 	return f.wins[h-1].title
 }
 
-func (f *fakeSrc) ExeName(pid uint32) (string, error) {
+func (f *fakeSrc) ExeName(pid uint32, _ func() bool) (string, error) {
 	f.exeCalls++
 	f.tick(f.slowExe[f.exeCalls-1])
 	if n, ok := f.exes[pid]; ok {

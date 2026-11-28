@@ -44,16 +44,25 @@ var (
 	enumCB   uintptr
 	enumMu   sync.Mutex
 	enumNext uintptr
-	enumReg  = map[uintptr]func(Window) bool{}
+	enumReg  = map[uintptr]enumState{}
 )
+
+type enumState struct {
+	visit   func(Window) bool
+	expired func() bool
+}
 
 // enumProc is the single EnumWindows callback for the whole process: syscall.NewCallback slots
 // are never freed, so per-call state travels through lParam into enumReg instead.
 func enumProc(hwnd, lparam uintptr) uintptr {
 	enumMu.Lock()
-	fn := enumReg[lparam]
+	st, ok := enumReg[lparam]
 	enumMu.Unlock()
-	if fn == nil || !fn(describe(hwnd)) {
+	if !ok {
+		return 0
+	}
+	w, fine := describe(hwnd, st.expired)
+	if !fine || !st.visit(w) {
 		return 0
 	}
 	return 1
@@ -61,12 +70,12 @@ func enumProc(hwnd, lparam uintptr) uintptr {
 
 // Windows enumerates top-level windows via EnumWindows. Only cheap attributes are read here; the
 // title is fetched later through Title, for windows that survive the filters.
-func (SystemSource) Windows(visit func(Window) bool) {
+func (SystemSource) Windows(visit func(Window) bool, expired func() bool) {
 	enumOnce.Do(func() { enumCB = syscall.NewCallback(enumProc) })
 	enumMu.Lock()
 	enumNext++
 	id := enumNext
-	enumReg[id] = visit
+	enumReg[id] = enumState{visit, expired}
 	enumMu.Unlock()
 	defer func() {
 		enumMu.Lock()
@@ -76,26 +85,37 @@ func (SystemSource) Windows(visit func(Window) bool) {
 	procEnumWindows.Call(enumCB, id)
 }
 
-func describe(hwnd uintptr) Window {
+// describe reads the cheap window attributes, checking the budget between native calls; ok is
+// false when the budget ran out part-way.
+func describe(hwnd uintptr, expired func() bool) (Window, bool) {
 	w := Window{H: hwnd}
 	if v, _, _ := procIsWindowVisible.Call(hwnd); v == 0 {
-		return w
+		return w, true
 	}
 	w.Visible = true
+	if expired() {
+		return w, false
+	}
+	var pid uint32
+	procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	w.PID = pid
+	if expired() {
+		return w, false
+	}
 	ex, _, _ := procGetWindowLongPtrW.Call(hwnd, gwlExStyle)
 	w.ToolWindow = ex&wsExToolWindow != 0
 	w.AppWindow = ex&wsExAppWindow != 0
 	if o, _, _ := procGetWindow.Call(hwnd, gwOwner); o != 0 {
 		w.Owned = true
 	}
+	if expired() {
+		return w, false
+	}
 	var cloaked uint32
 	if hr, _, _ := procDwmGetWindowAttribute.Call(hwnd, dwmwaCloaked, uintptr(unsafe.Pointer(&cloaked)), 4); hr == 0 && cloaked != 0 {
 		w.Cloaked = true
 	}
-	var pid uint32
-	procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-	w.PID = pid
-	return w
+	return w, true
 }
 
 // Title reads the window text. The caller has already excluded this process's own windows.
@@ -106,7 +126,7 @@ func (SystemSource) Title(h uintptr) string {
 }
 
 // ExeName returns the executable base name using PROCESS_QUERY_LIMITED_INFORMATION only.
-func (SystemSource) ExeName(pid uint32) (string, error) {
+func (SystemSource) ExeName(pid uint32, expired func() bool) (string, error) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return "", err
@@ -119,7 +139,7 @@ func (SystemSource) ExeName(pid uint32) (string, error) {
 		if err == nil {
 			return baseName(syscall.UTF16ToString(buf[:n])), nil
 		}
-		if err != windows.ERROR_INSUFFICIENT_BUFFER || len(buf) >= maxImageNameUnit {
+		if err != windows.ERROR_INSUFFICIENT_BUFFER || len(buf) >= maxImageNameUnit || expired() {
 			return "", err
 		}
 		buf = make([]uint16, len(buf)*2)
