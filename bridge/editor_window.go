@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"github.com/yanmad27/supcua-v2/otrace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -228,6 +229,7 @@ func (c *windowCtl) postGen(gen uint64, f func()) {
 // only touches its own (detached) session and capture and releases the gate only when no editor
 // generation is active (cleanupDone).
 func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error) {
+	otrace.At("rpc-openWindow")
 	visible := c.h.MainVisible()
 	c.mu.Lock()
 	if c.state != stNone && c.state != stClosing {
@@ -255,6 +257,7 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 	c.mu.Unlock()
 	c.h.EnableMain(false)
 	gen, cerr := c.h.CreateEditor()
+	otrace.At("create-editor-returned")
 	if cerr != nil {
 		// A synchronous failure returns here and is rolled back here (never through the async
 		// callback): main is re-enabled and the gate restored BEFORE the half-made window is destroyed.
@@ -325,6 +328,7 @@ func (c *windowCtl) WindowFailed(gen uint64, stage, msg string) { c.failEditor(g
 
 // pageReady is editor.windowReady: start the measurement handshake.
 func (c *windowCtl) pageReady() error {
+	otrace.At("rpc-windowReady")
 	c.mu.Lock()
 	if c.state != stCreating && c.state != stLoading {
 		c.mu.Unlock()
@@ -353,7 +357,9 @@ func (c *windowCtl) pageReady() error {
 	c.armMeasureLocked(gen)
 	c.totalT = c.clk.AfterFunc(measureTotal, func() { c.postGen(gen, func() { c.fallback(gen, "timeout") }) })
 	c.mu.Unlock()
+	otrace.At("prepared")
 	c.h.EmitEditor(gen, evEditorMeasureRequest, measureRequestEvent{Token: tok})
+	otrace.At("measure-request-emitted")
 	return nil
 }
 
@@ -389,6 +395,7 @@ type measuredResult struct {
 
 // measured is editor.measured (UI thread): decide show or remeasure.
 func (c *windowCtl) measured(token uint64, cssW, cssH int) (measuredResult, error) {
+	otrace.At("rpc-measured")
 	c.mu.Lock()
 	if c.state != stMeasuring {
 		c.mu.Unlock()
@@ -446,7 +453,9 @@ func (c *windowCtl) present(gen uint64, out BoundsOut) {
 	}
 	c.mu.Unlock()
 	c.h.PlaceEditor(gen, out.Outer, out.Maximized)
+	otrace.At("placed")
 	c.h.ShowEditor(gen)
+	otrace.At("shown")
 }
 
 // fallback shows the window at the failure-only size and tells the page to leave measure mode.

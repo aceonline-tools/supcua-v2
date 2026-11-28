@@ -3,6 +3,7 @@ package webview
 import (
 	"errors"
 	"fmt"
+	"github.com/yanmad27/supcua-v2/otrace"
 	"log"
 	"sync"
 	"time"
@@ -53,6 +54,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 	if title == "" {
 		title = "Editor"
 	}
+	otrace.At("createwindow-begin")
 	hwnd, err := createHostWindow(title, Bounds{}, false, 0, 0, u.cfg.IconIDs, u.hwnd)
 	if err != nil {
 		return nil, err
@@ -107,6 +109,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 			o.OnFailed(w, err)
 		})
 	}
+	otrace.At("createwindow-done")
 	b := w.newBrowser(u.dataPath)
 	b.ProcessFailedCallback = func(kind int32) { w.onProcessFailed(kind) }
 	b.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
@@ -114,6 +117,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		if !success {
 			log.Printf("webview: editor navigation failed (web error status %d)", status)
 		}
+		otrace.At("nav-completed")
 		w.nav.completed()
 	}
 	w.browser = b
@@ -127,6 +131,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 	b.InitDoneCallback = func(err error) {
 		u.Post(func() {
 			timer.Stop()
+			otrace.At("controller-ready")
 			if w.gone.Load() || u.editor != w {
 				return // rolled back or superseded while the controller was being created
 			}
@@ -146,6 +151,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 			if o.Fixture != "" {
 				url = serve.Origin + fixturePath
 			}
+			otrace.At("navigate")
 			if err := w.browser.NavigateChecked(url); err != nil {
 				fail(fmt.Errorf("editor navigate: %w", err))
 				return

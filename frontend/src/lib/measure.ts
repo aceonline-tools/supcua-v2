@@ -97,6 +97,7 @@ export class MeasureController {
       this.last = m;
       let reply: { next: 'show' | 'remeasure'; token?: number; cssW?: number };
       try {
+        performance.mark('eo:measured-sent');
         reply = await this.api.call('editor.measured', { token: t, cssW: m.cssW, cssH: m.cssH, dpr: m.dpr });
       } catch {
         return this.finish(mine, t);

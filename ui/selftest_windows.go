@@ -373,6 +373,7 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 		}
 		s.rctrlLatency(h, step)
 		if s.Host != nil {
+			s.openLatency(h.ExpectRow, step)
 			s.prodEditorGate(h, step)
 		}
 		fire(h.GlobalHotkey, "global hotkey (SendInput) turns global active off", func() bool { return !h.GlobalActive() })
