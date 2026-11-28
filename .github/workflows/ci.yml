@@ -248,7 +248,7 @@ jobs:
             } else { Write-Host "::error::$v wrote no supcua-v2.log"; $fail = 1 }
           }
           exit $fail
-      - name: EXPERIMENT prewarm: production-sequence self-test (plain only)
+      - name: EXPERIMENT prewarm - production-sequence self-test (plain only)
         shell: pwsh
         run: |
           $fail = 0
