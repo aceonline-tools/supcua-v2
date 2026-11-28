@@ -31,10 +31,11 @@ type fixedHotkeys struct {
 	ids     map[string]int
 	cur     map[string]model.Hotkey
 	cb      map[string]hotkey.HotkeyCallback
+	pv      map[string]*hotkey.Preview
 }
 
 func newFixedHotkeys(mgr hotkeyRegistry, on bool) *fixedHotkeys {
-	return &fixedHotkeys{mgr: mgr, on: on, pending: on, ids: map[string]int{}, cur: map[string]model.Hotkey{}, cb: map[string]hotkey.HotkeyCallback{}}
+	return &fixedHotkeys{mgr: mgr, on: on, pending: on, ids: map[string]int{}, cur: map[string]model.Hotkey{}, cb: map[string]hotkey.HotkeyCallback{}, pv: map[string]*hotkey.Preview{}}
 }
 
 func (f *fixedHotkeys) registerLocked(kind string) {
@@ -48,6 +49,18 @@ func (f *fixedHotkeys) registerLocked(kind string) {
 		return
 	}
 	f.ids[kind] = id
+	if pv := f.pv[kind]; pv != nil {
+		if b, ok := f.mgr.(previewBinder); ok {
+			b.SetPreview(id, *pv)
+		}
+	}
+}
+
+// setPreview attaches a key-down overlay preview to kind's hotkey (used when it is a bare modifier).
+func (f *fixedHotkeys) setPreview(kind string, p hotkey.Preview) {
+	f.mu.Lock()
+	f.pv[kind] = &p
+	f.mu.Unlock()
 }
 
 func (f *fixedHotkeys) add(kind string, hk model.Hotkey, cb hotkey.HotkeyCallback) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/lxn/win"
 
+	"github.com/yanmad27/supcua-v2/hotkey"
 	"github.com/yanmad27/supcua-v2/latency"
 	"github.com/yanmad27/supcua-v2/model"
 )
@@ -97,7 +98,7 @@ func medMax(v []float64) (med, max float64) {
 	return c[len(c)/2], c[len(c)-1]
 }
 
-func summarize(trials []latTrial) (okN int, line string) {
+func summarize(trials []latTrial) (okN int, line string, med, max float64) {
 	var fd, fu []float64
 	st := make([][]float64, 5)
 	for _, t := range trials {
@@ -121,7 +122,7 @@ func summarize(trials []latTrial) (okN int, line string) {
 		fmt.Fprintf(&sb, " %s=%.1f/%.1f", n, m, x)
 	}
 	return okN, fmt.Sprintf("n=%d/%d fromDown median=%.1fms max=%.1fms fromUp median=%.1fms max=%.1fms | stages(ms after key-down, median/max):%s",
-		okN, len(trials), dm, dx, um, ux, sb.String())
+		okN, len(trials), dm, dx, um, ux, sb.String()), dm, dx
 }
 
 // rctrlLatency measures key-down→on-screen overlay latency for the three RCtrl uses on the
@@ -130,6 +131,9 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 	if h.Register == nil || s.Overlay == nil {
 		return
 	}
+	latency.Enable()
+	hotkey.SetAcceptInjected(true)
+	defer hotkey.SetAcceptInjected(false)
 	s.onUI(func() { s.Overlay.ApplyStyle(model.OverlayStyle{}, 260, 180) })
 	time.Sleep(300 * time.Millisecond)
 	x, y, w, hh, ok := s.overlayRect()
@@ -154,8 +158,11 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 			trials = append(trials, measureRCtrl(trigDown, trigUp, x, y, w, hh, to))
 			settle()
 		}
-		okN, line := summarize(trials)
-		step("latency: "+name, okN == len(trials) && okN > 0, line)
+		okN, line, med, max := summarize(trials)
+		// The on-screen time includes this sampler's BitBlt/DWM floor (~30 ms measured on the
+		// emergency path, which has no polling), so 60 ms median / 100 ms max from key-down keeps
+		// "about 50 ms" with CI jitter headroom.
+		step("latency: "+name, okN == len(trials) && okN > 0 && med <= 60 && max <= 100, line)
 	}
 	toggleTo := func(i int) ([3]uint8, bool) {
 		if i%2 == 0 {
@@ -164,9 +171,10 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 		return colorGrayIdle, !h.GlobalActive()
 	}
 
-	id, err := h.Register(rctrl, h.ToggleGlobal)
+	id, err := h.Register(rctrl, h.ToggleGlobal, h.PreviewToggle)
 	if step("latency: register rctrl global hotkey", err == nil, fmt.Sprint(err)) {
 		run("(a) global hotkey RCtrl DISABLE<->IDLE", keyDown, keyUp, toggleTo)
+		s.rctrlCombo(h, step, x, y, w, hh)
 		h.Unregister(id)
 		if !h.GlobalActive() {
 			_ = SendHotkey(h.GlobalHotkey)
@@ -177,7 +185,7 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 		if h.RunningScriptID() != "" {
 			h.StopRunning(epoch)
 		}
-	})
+	}, h.PreviewStop)
 	if step("latency: register rctrl stop hotkey", err == nil, fmt.Sprint(err)) {
 		run("(b) RCtrl stops a running script", keyDown, keyUp, func(int) ([3]uint8, bool) {
 			if h.RunningScriptID() == "" {
@@ -199,4 +207,28 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 		}
 	}
 	step("latency: global active restored", waitFor(4*time.Second, h.GlobalActive), "")
+}
+
+// rctrlCombo checks the real path for RCtrl+C: the overlay previews on RCtrl down, returns to the
+// real state when C goes down, and the release does not toggle the global state.
+func (s *SelfTest) rctrlCombo(h ProductionHooks, step func(string, bool, string) bool, x, y, w, hh int) {
+	if !waitFor(4*time.Second, h.GlobalActive) {
+		step("latency: combo precondition (global active)", false, "")
+		return
+	}
+	showing := func(rgb [3]uint8) bool {
+		px, err := captureScreen(x, y, w, hh)
+		return err == nil && screenHue(overlayObs{screen: px}, rgb) >= 10
+	}
+	defer SendKey(vkRCtrl, true)
+	_ = SendKey(vkRCtrl, false)
+	previewed := waitFor(time.Second, func() bool { return showing(colorRedInactive) })
+	_ = SendKey(0x43, false)
+	_ = SendKey(0x43, true)
+	reverted := waitFor(time.Second, func() bool { return showing(colorGrayIdle) })
+	time.Sleep(150 * time.Millisecond)
+	_ = SendKey(vkRCtrl, true)
+	time.Sleep(500 * time.Millisecond)
+	step("latency: RCtrl+C previews DISABLE, reverts to IDLE and does not toggle", previewed && reverted && h.GlobalActive(),
+		fmt.Sprintf("previewed=%v reverted=%v globalActive=%v", previewed, reverted, h.GlobalActive()))
 }

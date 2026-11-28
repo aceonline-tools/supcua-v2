@@ -58,13 +58,6 @@ type unregRequest struct {
 	reply chan error
 }
 
-type pollKeyEntry struct {
-	id       int
-	vkCode   uint32
-	callback HotkeyCallback
-	state    pollState
-}
-
 // Manager handles global hotkey registration and dispatching on Windows.
 // All Win32 calls happen on a single locked OS thread.
 type Manager struct {
@@ -74,8 +67,8 @@ type Manager struct {
 	registerCh   chan *regRequest
 	unregisterCh chan unregRequest
 
-	pollMu   sync.Mutex
-	pollKeys []pollKeyEntry
+	polls         pollSet
+	previewWanted atomic.Bool
 
 	listenerTID atomic.Uint32
 
@@ -209,9 +202,8 @@ func (m *Manager) registerOnListener(hk model.Hotkey, cb HotkeyCallback) regRepl
 
 	// Bare modifier keys can't use RegisterHotKey — use GetAsyncKeyState polling.
 	if modFlags == 0 && bareModifierVKCodes[vk] {
-		m.pollMu.Lock()
-		m.pollKeys = append(m.pollKeys, pollKeyEntry{id: id, vkCode: vk, callback: cb})
-		m.pollMu.Unlock()
+		m.polls.add(pollKeyEntry{id: id, vkCode: vk, callback: cb})
+		m.ensurePreviewHook()
 		return regReply{id, nil}
 	}
 	if registerThreadHook != nil {
@@ -230,17 +222,7 @@ func (m *Manager) registerOnListener(hk model.Hotkey, cb HotkeyCallback) regRepl
 // unregisterOnListener releases one registration (listener thread only): it drops the callback
 // first, so a released hotkey can never fire it.
 func (m *Manager) unregisterOnListener(id int) error {
-	m.pollMu.Lock()
-	found := false
-	for i, pk := range m.pollKeys {
-		if pk.id == id {
-			m.pollKeys = append(m.pollKeys[:i], m.pollKeys[i+1:]...)
-			found = true
-			break
-		}
-	}
-	m.pollMu.Unlock()
-	if found {
+	if m.polls.remove(id) {
 		return nil
 	}
 	return removeRegistration(&m.mu, m.callbacks, id, func(id int) error {
@@ -301,30 +283,25 @@ func (m *Manager) ListenForHotkeys() {
 		}
 
 		// Poll bare modifier keys via GetAsyncKeyState, fire on key-up.
-		m.pollMu.Lock()
 		muted := m.pollMute.sample(&pollSeen)
-		for i := range m.pollKeys {
-			pk := &m.pollKeys[i]
-			state, _, _ := procGetAsyncKeyState.Call(uintptr(pk.vkCode))
-			if pk.state.step(uint16(state)&0x8000 != 0, muted) {
-				go m.fire(pk.id, m.stamp(), pk.callback)
-			}
-		}
-		m.pollMu.Unlock()
+		m.polls.tick(keyIsDown, muted, func(f pollFire) {
+			epoch := m.stamp()
+			go func() {
+				m.fire(f.id, epoch, f.callback)
+				if f.token != 0 && f.preview != nil {
+					f.preview.Cancel(f.token) // the action did not end it (e.g. it started a script that was refused)
+				}
+			}()
+		})
 
-		time.Sleep(time.Duration(pollIntervalNs.Load()))
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-var pollIntervalNs atomic.Int64
-
-func init() { pollIntervalNs.Store(int64(DefaultPollInterval)) }
-
-// DefaultPollInterval is how often the listener samples polled bare-modifier keys.
-const DefaultPollInterval = 10 * time.Millisecond
-
-// SetPollInterval changes the listener's sampling period (self-test CPU comparison).
-func SetPollInterval(d time.Duration) { pollIntervalNs.Store(int64(d)) }
+func keyIsDown(vk uint32) bool {
+	state, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
+	return uint16(state)&0x8000 != 0
+}
 
 func (m *Manager) fire(id int, epoch uint64, cb HotkeyCallback) {
 	latency.Mark(latency.Detect)

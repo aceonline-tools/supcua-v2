@@ -163,7 +163,7 @@ func (overlayWindow *OverlayWindow) paint() {
 }
 
 func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
-	return overlayStatus(overlayWindow.appController.Snapshot())
+	return overlayStatus(overlayWindow.appController.OverlaySnapshot())
 }
 
 // render draws the overlay into a 32-bit premultiplied DIB and pushes it with UpdateLayeredWindow.
@@ -172,7 +172,7 @@ func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
 func (overlayWindow *OverlayWindow) render(x, y int) error {
 	st := overlayWindow.style
 	w, h := st.Width, st.Height
-	req := presentFor(overlayWindow.appController.Snapshot(), st, x, y)
+	req := presentFor(overlayWindow.appController.OverlaySnapshot(), st, x, y)
 	text, rgb := req.Text, req.RGB
 	overlayWindow.lastText, overlayWindow.lastRGB = text, rgb
 	overlayLog.Shown(text, rgb, overlayWindow.appController.IsGlobalActive())

@@ -261,9 +261,11 @@ type ProductionHooks struct {
 	OverlayHotkey     model.Hotkey
 
 	// Latency measurement (RCtrl): Register adds a hotkey with production-equivalent dispatch.
-	Register func(model.Hotkey, func(epoch uint64)) (int, error)
+	Register func(hk model.Hotkey, action func(epoch uint64), preview func(epoch uint64) uint64) (int, error)
 	Unregister func(int)
 	ToggleGlobal func(epoch uint64)
+	PreviewToggle func(epoch uint64) uint64
+	PreviewStop   func(epoch uint64) uint64
 	StopRunning  func(epoch uint64)
 	PhysicalRCtrl func(down bool) // runs the keyboard-lock hook proc for a physical RCtrl event
 }

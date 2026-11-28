@@ -41,15 +41,19 @@ func (p *pollMute) sample(seen *uint64) bool {
 // stays suppressed until its first release, after which it is armed again.
 type pollState struct {
 	wasDown, suppressed bool
+	// tainted: another key went down while this one was held, so its release is part of a combo
+	// and does not fire. It clears on the release.
+	tainted bool
 }
 
 func (p *pollState) step(isDown, muted bool) (fire bool) {
-	fire = p.wasDown && !isDown && !muted && !p.suppressed
+	fire = p.wasDown && !isDown && !muted && !p.suppressed && !p.tainted
 	if muted && isDown {
 		p.suppressed = true
 	}
 	if !isDown {
 		p.suppressed = false
+		p.tainted = false
 	}
 	p.wasDown = isDown
 	return fire

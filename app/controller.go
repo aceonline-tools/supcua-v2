@@ -33,6 +33,10 @@ type Controller struct {
 	// stopping is set once the running script was cancelled: the slot stays held until dequeueNext
 	// (dequeueDelay), but Snapshot already reports no running script so the overlay does not lag.
 	stopping bool
+
+	preview         *overlayPreview
+	previewSeq      uint64
+	previewNotifier func()
 	scriptQueue         []model.Script
 
 	scriptExecutor *executor.Executor
@@ -104,6 +108,10 @@ func (appController *Controller) SetGlobalActive(active bool) {
 func (appController *Controller) Snapshot() status.Snapshot {
 	appController.stateMutex.RLock()
 	defer appController.stateMutex.RUnlock()
+	return appController.snapshotLocked()
+}
+
+func (appController *Controller) snapshotLocked() status.Snapshot {
 	snap := status.Snapshot{
 		GlobalActive:      appController.globalActive,
 		RunningScriptID:   appController.runningScriptID,
@@ -171,7 +179,9 @@ func (appController *Controller) SetHotkeyRecording(on bool) {
 	} else if appController.hotkeyRecording > 0 {
 		appController.hotkeyRecording--
 	}
+	cleared := appController.clearPreviewLocked()
 	appController.stateMutex.Unlock()
+	appController.previewCleared(cleared)
 }
 
 // HotkeyEpoch is stamped on each hotkey event when it is detected (listener thread). An action
@@ -198,8 +208,10 @@ func (appController *Controller) hotkeyAllowed(epoch uint64) bool {
 // recording is active (checked in the same critical section as the flip).
 func (appController *Controller) ToggleGlobalFromHotkey(epoch uint64) {
 	appController.stateMutex.Lock()
+	cleared := appController.clearPreviewLocked()
 	if !appController.hotkeyAllowedLocked(epoch) {
 		appController.stateMutex.Unlock()
+		appController.previewCleared(cleared)
 		return
 	}
 	appController.globalActive = !appController.globalActive
@@ -345,8 +357,10 @@ func (appController *Controller) StartScriptFromHotkey(script model.Script, epoc
 // emergency stop and the tray keep using the ungated StopRunningScript.
 func (appController *Controller) StopRunningScriptFromHotkey(epoch uint64) {
 	appController.stateMutex.Lock()
+	cleared := appController.clearPreviewLocked()
 	if !appController.hotkeyAllowedLocked(epoch) {
 		appController.stateMutex.Unlock()
+		appController.previewCleared(cleared)
 		return
 	}
 	appController.scriptQueue = nil

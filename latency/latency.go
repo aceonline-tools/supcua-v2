@@ -26,7 +26,16 @@ var (
 // Now is a monotonic timestamp comparable with Marks.
 func Now() time.Duration { return time.Since(base) }
 
-func Mark(s Stage) { marks[s].Store(int64(Now()) + 1) }
+var enabled atomic.Bool
+
+// Enable turns the marks on. Only the selftests call it; in production Mark is one atomic load.
+func Enable() { enabled.Store(true) }
+
+func Mark(s Stage) {
+	if enabled.Load() {
+		marks[s].Store(int64(Now()) + 1)
+	}
+}
 
 func Reset() {
 	for i := range marks {

@@ -750,6 +750,11 @@ func main() {
 	if policy.RegisterHotkeys {
 		go hotkeyManager.ListenForHotkeys() // before any Register: it services the channel
 		stages.Mark("hotkey listener started")
+		fixed.setPreview(bridge.HotkeyGlobal, hotkey.Preview{Begin: appController.BeginTogglePreview, Cancel: appController.CancelPreview})
+		appController.SetPreviewNotifier(func() {
+			late.tryPost(overlayCtl.Refresh)
+		})
+		hotkeyManager.StartPreview()
 		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(_ int, epoch uint64) { appController.ToggleGlobalFromHotkey(epoch) })
 		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(_ int, epoch uint64) {
 			late.Post(func() { appController.RunHotkeyAction(epoch, overlayCtl.ToggleVisibility) })
@@ -822,9 +827,15 @@ func main() {
 				GlobalHotkey: appConfig.GlobalHotkey, ProbeHotkey: probe, ProbeID: "fx-probe-1",
 				ExpectFixed: 2, AutoActiveEnabled: appConfig.AutoActiveEnabled, ExpectRow: "Fixture Farm",
 				OverlayHotkey: appConfig.OverlayHotkey,
-				Register: func(hk model.Hotkey, f func(uint64)) (int, error) {
-					return hotkeyManager.Register(hk, func(_ int, epoch uint64) { f(epoch) })
+				Register: func(hk model.Hotkey, f func(uint64), begin func(uint64) uint64) (int, error) {
+					id, err := hotkeyManager.Register(hk, func(_ int, epoch uint64) { f(epoch) })
+					if err == nil && begin != nil {
+						hotkeyManager.SetPreview(id, hotkey.Preview{Begin: begin, Cancel: appController.CancelPreview})
+					}
+					return id, err
 				},
+				PreviewToggle: appController.BeginTogglePreview,
+				PreviewStop:   func(epoch uint64) uint64 { return appController.BeginStopPreview("fx-probe-1", epoch) },
 				Unregister:   func(id int) { _ = hotkeyManager.Unregister(id) },
 				ToggleGlobal: appController.ToggleGlobalFromHotkey,
 				StopRunning:  appController.StopRunningScriptFromHotkey,
