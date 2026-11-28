@@ -315,7 +315,8 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 		win.SetWindowPos(w.hwnd, 0, int32(l), int32(t), int32(r-l), int32(b-t), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 		w.wantMax = maximized
 		if w.staged && maximized && !w.shownOnce {
-			win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED) // WS_EX_NOACTIVATE: no focus while transparent
+			// ShowWindow(SW_SHOWMAXIMIZED) always activates, WS_EX_NOACTIVATE or not; the system command does not.
+			win.SendMessage(w.hwnd, win.WM_SYSCOMMAND, win.SC_MAXIMIZE, 0)
 		}
 	}
 }
