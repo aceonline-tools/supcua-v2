@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.8.0...v1.8.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* the overlay reacts to RCtrl on key-down ([e563223](https://github.com/aceonline-tools/supcua-v2/commit/e56322359b13e52e4923f64f6531c1fcb7134c6f))
+
 ## [1.8.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.7.1...v1.8.0) (2026-11-28)
 
 
