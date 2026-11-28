@@ -312,9 +312,19 @@ func (m *Manager) ListenForHotkeys() {
 		}
 		m.pollMu.Unlock()
 
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(time.Duration(pollIntervalNs.Load()))
 	}
 }
+
+var pollIntervalNs atomic.Int64
+
+func init() { pollIntervalNs.Store(int64(DefaultPollInterval)) }
+
+// DefaultPollInterval is how often the listener samples polled bare-modifier keys.
+const DefaultPollInterval = 4 * time.Millisecond
+
+// SetPollInterval changes the listener's sampling period (self-test CPU comparison).
+func SetPollInterval(d time.Duration) { pollIntervalNs.Store(int64(d)) }
 
 func (m *Manager) fire(id int, epoch uint64, cb HotkeyCallback) {
 	latency.Mark(latency.Detect)

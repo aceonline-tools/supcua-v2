@@ -137,6 +137,7 @@ func (s *SelfTest) rctrlLatency(h ProductionHooks, step func(string, bool, strin
 		return
 	}
 	rctrl := model.Hotkey{Key: "rctrl"}
+	s.pollCPU(h, step)
 	keyDown := func() { _ = SendKey(vkRCtrl, false) }
 	keyUp := func() { _ = SendKey(vkRCtrl, true) }
 	defer keyUp()
