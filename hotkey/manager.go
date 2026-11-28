@@ -321,7 +321,7 @@ var pollIntervalNs atomic.Int64
 func init() { pollIntervalNs.Store(int64(DefaultPollInterval)) }
 
 // DefaultPollInterval is how often the listener samples polled bare-modifier keys.
-const DefaultPollInterval = 4 * time.Millisecond
+const DefaultPollInterval = 10 * time.Millisecond
 
 // SetPollInterval changes the listener's sampling period (self-test CPU comparison).
 func SetPollInterval(d time.Duration) { pollIntervalNs.Store(int64(d)) }
