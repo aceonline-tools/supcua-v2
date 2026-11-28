@@ -118,6 +118,17 @@ func TestSetRejectsUnsupported(t *testing.T) {
 	}
 }
 
+func TestSetStoresCanonicalLocale(t *testing.T) {
+	t.Cleanup(func() { Set(EN) })
+	Set("VI-vn")
+	if Current() != VI {
+		t.Errorf("Set(VI-vn): Current = %q, want vi", Current())
+	}
+	if got := T("tray.exit"); got != "Thoát" {
+		t.Errorf("T after Set(VI-vn) = %q, want the Vietnamese text", got)
+	}
+}
+
 func TestInterpolateAndPlural(t *testing.T) {
 	if got := Interpolate("a {x} b {y} {z}", Params{"x": "{y}", "y": 3}); got != "a {y} b 3 {z}" {
 		t.Errorf("single-pass interpolation: %q", got)

@@ -63,6 +63,21 @@ describe('runtime', () => {
     delete c['x.count'];
   });
 
+  it('falls back to English, then the id, instead of throwing (missing translations)', () => {
+    const c = catalog as Record<string, unknown>;
+    c['x.noVi'] = { en: 'English' };
+    c['x.neither'] = {};
+    c['x.viPluralNoOther'] = { en: { one: '{n} a', other: '{n} as' }, vi: { one: '{n} b' } };
+    c['x.viNull'] = { en: 'English', vi: null };
+    expect(render('vi', 'x.noVi')).toBe('English');
+    expect(render('en', 'x.noVi')).toBe('English');
+    expect(render('vi', 'x.neither')).toBe('x.neither');
+    expect(render('en', 'x.neither')).toBe('x.neither');
+    expect(render('vi', 'x.viPluralNoOther', { n: 2 })).toBe('2 as');
+    expect(render('vi', 'x.viNull')).toBe('English');
+    for (const k of ['x.noVi', 'x.neither', 'x.viPluralNoOther', 'x.viNull']) delete c[k];
+  });
+
   it('t() is reactive to the language', () => {
     expect(t('settings.language')).toBe('Language');
     i18n.set('vi');
@@ -105,6 +120,15 @@ describe('literal scan (contract 7.2)', () => {
     expect(scan('a.svelte', "<button aria-label={on ? 'Stop' : 'Go'}></button>")).toEqual(['Stop', 'Go']);
     expect(scan('a.svelte', '<script lang="ts">\n  let error = $state("");\n  error = \'Something bad happened\';\n  const label = \'Dark\';\n</script>')).toEqual(['Something bad happened', 'Dark']);
     expect(scan('s.ts', "export const errText = { a: 'Update failed' };\nfunction statusText() { return 'Idle'; }")).toEqual(['Update failed', 'Idle']);
+  });
+
+  it('cannot be bypassed with plain literals in text expressions or String() wrappers (negative proofs)', () => {
+    expect(scan('a.svelte', '<p>{"hello"}</p>')).toEqual(['hello']);
+    expect(scan('a.svelte', "<p>{ok ? 'yes' : 'no'}</p>")).toEqual(['yes', 'no']);
+    expect(scan('a.svelte', '<script lang="ts">\n  let label = String("Hello world");\n</script>\n<p>{label}</p>')).toEqual(['Hello world']);
+    expect(scan('a.svelte', '<script lang="ts">\n  let label = String("hello");\n</script>')).toEqual(['hello']);
+    expect(scan('a.svelte', '<p>{String("hello")}</p>')).toEqual(['hello']);
+    expect(scan('a.svelte', '<p class={on ? "active" : ""} data-x={"abc"}>{t(\'a.b\')}</p>')).toEqual([]);
   });
 
   it('ignores ids, css, calls to t(), types, comparisons, logs and imports', () => {

@@ -63,7 +63,7 @@ export const ALLOW_REASONS = ['brand', 'key-name', 'code', 'css', 'diagnostic', 
 
 const A11Y = new Set(['aria-label', 'aria-description', 'aria-placeholder', 'aria-roledescription', 'title', 'placeholder', 'alt']);
 const NAMED = /(error|status|message|label|title|text|hint|failed|desc|description|placeholder|caption|heading|tooltip)$/i;
-const SKIP_CALL = /^(console\.\w+|t|render|errorMessage|querySelector(All)?|closest|matches|addEventListener|removeEventListener|setAttribute|getAttribute|removeAttribute|matchMedia|getItem|setItem|removeItem|Symbol|require|import|String|Number|JSON\.\w+|\w+\.classList\.\w+|classList\.\w+|\w+\.(dispatchEvent|emit|on|call)|api\.(call|on)|Error|TypeError|Set|Map|Intl\.\w+)$/;
+const SKIP_CALL = /^(console\.\w+|t|render|errorMessage|querySelector(All)?|closest|matches|addEventListener|removeEventListener|setAttribute|getAttribute|removeAttribute|matchMedia|getItem|setItem|removeItem|Symbol|require|import|JSON\.\w+|\w+\.classList\.\w+|classList\.\w+|\w+\.(dispatchEvent|emit|on|call)|api\.(call|on)|Error|TypeError|Set|Map|Intl\.\w+)$/;
 
 const hasLetter = (s: string): boolean => /\p{L}/u.test(s) && !ID.test(s);
 /** Prose-shaped: letters plus a space, or a Capitalised word. Lone lower-case tokens are ids/css. */
@@ -84,7 +84,7 @@ function scanTs(code: string, file: string, lineBase: number, hits: Hit[]): void
   };
   const bindingName = (n: ts.Node): string => {
     let cur: ts.Node = n;
-    while (cur.parent && (ts.isConditionalExpression(cur.parent) || ts.isParenthesizedExpression(cur.parent) || ts.isAsExpression(cur.parent) ||
+    while (cur.parent && (ts.isCallExpression(cur.parent) && cur.parent.expression.getText(sf) === 'String' && cur.parent.arguments.includes(cur as ts.Expression) ? true : ts.isConditionalExpression(cur.parent) || ts.isParenthesizedExpression(cur.parent) || ts.isAsExpression(cur.parent) ||
       (ts.isBinaryExpression(cur.parent) && [ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.AmpersandAmpersandToken].includes(cur.parent.operatorToken.kind)))) {
       if (ts.isConditionalExpression(cur.parent) && cur.parent.condition === cur) return '';
       cur = cur.parent;
@@ -178,7 +178,7 @@ export function scanSource(file: string, src: string): Hit[] {
       }
       return;
     }
-    if (o.type === 'ExpressionTag') return scanExpr(o.expression as Node, src, file, hits, false);
+    if (o.type === 'ExpressionTag') return scanExpr(o.expression as Node, src, file, hits, true);
     for (const k of Object.keys(o)) if (k !== 'type' && k !== 'start' && k !== 'end') walk(o[k]);
   };
   walk(ast.fragment);

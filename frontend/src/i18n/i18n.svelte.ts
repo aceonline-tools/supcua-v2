@@ -15,7 +15,8 @@ function interpolate(s: string, p: Params | undefined): string {
   return s.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, k: string) => (k in p ? String(p[k]) : m));
 }
 
-function pick(t: Text, lang: Locale, p: Params | undefined): string {
+function pick(t: Text | null | undefined, lang: Locale, p: Params | undefined): string {
+  if (t == null) return '';
   if (typeof t === 'string') return t;
   const n = typeof p?.n === 'number' ? p.n : Number(p?.n ?? 0);
   const rule = lang === 'en' ? new Intl.PluralRules('en').select(n) : 'other';
@@ -26,8 +27,8 @@ function pick(t: Text, lang: Locale, p: Params | undefined): string {
 export function render(lang: Locale, id: string, p?: Params): string {
   const e: Entry | undefined = catalog[id];
   if (!e) return id;
-  const own = pick(e[lang], lang, p);
-  return interpolate(own || pick(e.en, 'en', p), p);
+  const text = pick(e[lang], lang, p) || pick(e.en, 'en', p);
+  return text ? interpolate(text, p) : id;
 }
 
 class I18n {

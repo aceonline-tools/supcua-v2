@@ -51,8 +51,8 @@ func init() { current.Store(EN) }
 func Current() Locale { return current.Load().(Locale) }
 
 func Set(l Locale) {
-	if _, ok := Parse(string(l)); ok {
-		current.Store(l)
+	if p, ok := Parse(string(l)); ok {
+		current.Store(p)
 	}
 }
 
