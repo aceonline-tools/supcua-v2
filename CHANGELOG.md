@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/aceonline-tools/supcua-v2/compare/v1.7.0...v1.7.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* the status overlay shows the current state again (running, disabled, idle) ([1184da7](https://github.com/aceonline-tools/supcua-v2/commit/1184da77d9ac6617638abc474ccf758cae50dc07))
+
 ## [1.7.0](https://github.com/aceonline-tools/supcua-v2/compare/v1.6.0...v1.7.0) (2026-11-28)
 
 
