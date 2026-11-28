@@ -137,7 +137,7 @@ func NewOverlayWindow(appController *app.Controller, initialX, initialY int, sta
 		return nil, err
 	}
 
-	if err := overlayWindow.render(true); err != nil {
+	if err := overlayWindow.render(); err != nil {
 		overlayLog.Failure("render", "initial render failed: %v", err)
 		overlayCurrent.Store(nil)
 		win.DestroyWindow(overlayWindow.windowHandle)
@@ -155,7 +155,7 @@ func (overlayWindow *OverlayWindow) paint() {
 	var paintStruct win.PAINTSTRUCT
 	win.BeginPaint(overlayWindow.windowHandle, &paintStruct)
 	win.EndPaint(overlayWindow.windowHandle, &paintStruct)
-	if err := overlayWindow.render(false); err != nil {
+	if err := overlayWindow.render(); err != nil {
 		overlayLog.Failure("render", "render failed (paint): %v", err)
 	}
 }
@@ -166,11 +166,11 @@ func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
 
 // render draws the overlay into a 32-bit premultiplied DIB and pushes it with UpdateLayeredWindow.
 // GDI draws the glyphs (same system font as before) as a coverage mask; composeOverlay paints the
-// anti-aliased rounded background and the solid text. withGeometry also moves/resizes the window.
-func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
+// anti-aliased rounded background and the solid text. Position and size are always passed (see presentFor).
+func (overlayWindow *OverlayWindow) render() error {
 	st := overlayWindow.style
 	w, h := st.Width, st.Height
-	req := presentFor(overlayWindow.appController.Snapshot(), st, overlayWindow.positionX, overlayWindow.positionY, withGeometry)
+	req := presentFor(overlayWindow.appController.Snapshot(), st, overlayWindow.positionX, overlayWindow.positionY)
 	text, rgb := req.Text, req.RGB
 	overlayWindow.lastText, overlayWindow.lastRGB = text, rgb
 	overlayLog.Shown(text, rgb, overlayWindow.appController.IsGlobalActive())
@@ -233,11 +233,7 @@ func (overlayWindow *OverlayWindow) render(withGeometry bool) error {
 	origin := win.POINT{}
 	size := win.SIZE{CX: int32(w), CY: int32(h)}
 	dst := win.POINT{X: int32(overlayWindow.positionX), Y: int32(overlayWindow.positionY)}
-	var dstPtr, sizePtr uintptr
-	if req.Dst != nil {
-		dstPtr, sizePtr = uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&size))
-	}
-	ok, _, callErr := procUpdateLayeredWin.Call(uintptr(overlayWindow.windowHandle), 0, dstPtr, sizePtr,
+	ok, _, callErr := procUpdateLayeredWin.Call(uintptr(overlayWindow.windowHandle), 0, uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&size)),
 		uintptr(memDC), uintptr(unsafe.Pointer(&origin)), 0, uintptr(unsafe.Pointer(&blend)), ulwAlpha)
 	if ok == 0 {
 		return fmt.Errorf("overlay: UpdateLayeredWindow failed: %v", callErr)
@@ -252,10 +248,10 @@ func (overlayWindow *OverlayWindow) ApplyStyle(style model.ResolvedOverlayStyle,
 	overlayWindow.style = style
 	x, y = ClampToMonitors(x, y, style.Width, style.Height)
 	overlayWindow.positionX, overlayWindow.positionY = x, y
-	if err := overlayWindow.render(true); err != nil {
+	if err := overlayWindow.render(); err != nil {
 		overlayLog.Failure("apply-style", "apply style failed, keeping the previous style: %v", err)
 		overlayWindow.style, overlayWindow.positionX, overlayWindow.positionY = prevStyle, prevX, prevY
-		if rerr := overlayWindow.render(true); rerr != nil {
+		if rerr := overlayWindow.render(); rerr != nil {
 			overlayLog.Failure("render", "render failed (style rollback): %v", rerr)
 		}
 		return prevX, prevY, err
@@ -348,7 +344,7 @@ func (overlayWindow *OverlayWindow) Style() model.ResolvedOverlayStyle { return 
 
 // Refresh triggers a repaint of the overlay.
 func (overlayWindow *OverlayWindow) Refresh() {
-	if err := overlayWindow.render(false); err != nil {
+	if err := overlayWindow.render(); err != nil {
 		overlayLog.Failure("render", "render failed (refresh): %v", err)
 	}
 }

@@ -22,25 +22,20 @@ func overlayStatus(snap status.Snapshot) (string, [3]uint8) {
 	return "IDLE", colorGrayIdle
 }
 
-// layeredPresent is what one repaint hands to UpdateLayeredWindow. Dst and Size are nil when the
-// call leaves the position and size to the window.
+// layeredPresent is what one repaint hands to UpdateLayeredWindow.
 type layeredPresent struct {
 	Text string
 	RGB  [3]uint8
-	Dst  *[2]int
-	Size *[2]int
+	Dst  [2]int
+	Size [2]int
 }
 
-// presentFor builds the repaint request for snap. A repaint of unchanged geometry (status change)
-// must still carry the position and size.
-func presentFor(snap status.Snapshot, st model.ResolvedOverlayStyle, x, y int, withGeometry bool) layeredPresent {
+// presentFor builds the repaint request for snap. Every repaint carries the position and size:
+// UpdateLayeredWindow with NULL pptDst/psize returns success but the screen keeps the previous frame.
+func presentFor(snap status.Snapshot, st model.ResolvedOverlayStyle, x, y int) layeredPresent {
 	text, rgb := overlayStatus(snap)
 	if st.TextColor != "" {
 		rgb[0], rgb[1], rgb[2] = parseHex(st.TextColor)
 	}
-	p := layeredPresent{Text: text, RGB: rgb}
-	if withGeometry {
-		p.Dst, p.Size = &[2]int{x, y}, &[2]int{st.Width, st.Height}
-	}
-	return p
+	return layeredPresent{Text: text, RGB: rgb, Dst: [2]int{x, y}, Size: [2]int{st.Width, st.Height}}
 }

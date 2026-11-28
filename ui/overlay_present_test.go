@@ -21,7 +21,7 @@ func (noInput) UnlockAll() {}
 type overlaySink struct{ got []layeredPresent }
 
 func (o *overlaySink) subscribe(c *app.Controller, st model.ResolvedOverlayStyle) {
-	c.Subscribe(func(snap status.Snapshot) { o.got = append(o.got, presentFor(snap, st, 260, 180, false)) })
+	c.Subscribe(func(snap status.Snapshot) { o.got = append(o.got, presentFor(snap, st, 260, 180)) })
 }
 
 func (o *overlaySink) find(text string) (layeredPresent, bool) {
@@ -65,7 +65,7 @@ func TestOverlayFollowsControllerPublish(t *testing.T) {
 				}
 			}
 			for _, p := range sink.got {
-				if p.Dst == nil || p.Size == nil {
+				if p.Size != [2]int{st.Width, st.Height} || p.Dst != [2]int{260, 180} {
 					t.Errorf("repaint %q passes no position/size to UpdateLayeredWindow: the screen keeps the previous frame", p.Text)
 				}
 			}
