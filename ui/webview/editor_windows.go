@@ -315,19 +315,14 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 		win.SetWindowPos(w.hwnd, 0, int32(l), int32(t), int32(r-l), int32(b-t), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 		w.wantMax = maximized
 		if w.staged && maximized && !w.shownOnce {
-			// Every way of maximising a window activates it. While transparent the window is instead
-			// laid out at exactly the rectangle Windows gives a maximised window on this monitor, and
-			// the real maximise runs at the reveal (same geometry, so no visible resize).
-			if mon := win.MonitorFromWindow(w.hwnd, win.MONITOR_DEFAULTTONEAREST); mon != 0 {
-				mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
-				if win.GetMonitorInfo(mon, &mi) {
-					var fr win.RECT
-					procAdjustWindowRectExForDpi.Call(uintptr(unsafe.Pointer(&fr)), uintptr(win.WS_OVERLAPPEDWINDOW), 0, 0, uintptr(windowDPI(w.hwnd)))
-					w.normalRect, w.hasNormal = win.RECT{Left: int32(l), Top: int32(t), Right: int32(r), Bottom: int32(b)}, true
-					bx, by := -fr.Left, fr.Bottom // the invisible resize border a maximised window hides
-					win.SetWindowPos(w.hwnd, 0, mi.RcWork.Left-bx, mi.RcWork.Top-by, mi.RcWork.Right-mi.RcWork.Left+2*bx, mi.RcWork.Bottom-mi.RcWork.Top+2*by,
-						win.SWP_NOZORDER|win.SWP_NOACTIVATE)
-				}
+			// Maximise now, while transparent, with the intended NORMAL rectangle as the restore
+			// position (workspace coordinates), so the page lays out and paints at the final size and
+			// the reveal changes nothing but opacity. WS_EX_NOACTIVATE is set on the staged window.
+			dx, dy := workOffset(w.hwnd)
+			wp := win.WINDOWPLACEMENT{ShowCmd: win.SW_SHOWMAXIMIZED, RcNormalPosition: win.RECT{Left: int32(l) - dx, Top: int32(t) - dy, Right: int32(r) - dx, Bottom: int32(b) - dy}}
+			wp.Length = uint32(unsafe.Sizeof(wp))
+			if !win.SetWindowPlacement(w.hwnd, &wp) {
+				win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
 			}
 		}
 	}
@@ -342,7 +337,6 @@ func (u *UI) ShowEditorWindow(gen uint64) bool {
 	if w == nil || w.gen != gen || w.hwnd == 0 {
 		return false
 	}
-	wasStaged := w.staged
 	if w.staged {
 		if !w.revealStaged() {
 			return false
@@ -352,21 +346,6 @@ func (u *UI) ShowEditorWindow(gen uint64) bool {
 	switch {
 	case win.IsIconic(w.hwnd):
 		win.ShowWindow(w.hwnd, win.SW_RESTORE)
-	case wasStaged && w.wantMax && !w.shownOnce:
-		// Maximise and install the intended NORMAL rectangle as the restore position in one call: while
-		// staged the window sits at the maximised rectangle, which must never become the restore size.
-		wp := win.WINDOWPLACEMENT{ShowCmd: win.SW_SHOWMAXIMIZED}
-		wp.Length = uint32(unsafe.Sizeof(wp))
-		if w.hasNormal {
-			dx, dy := workOffset(w.hwnd)
-			wp.RcNormalPosition = win.RECT{Left: w.normalRect.Left - dx, Top: w.normalRect.Top - dy, Right: w.normalRect.Right - dx, Bottom: w.normalRect.Bottom - dy}
-		} else if !win.GetWindowPlacement(w.hwnd, &wp) {
-			wp.ShowCmd = win.SW_SHOWMAXIMIZED
-		}
-		wp.ShowCmd = win.SW_SHOWMAXIMIZED
-		if !win.SetWindowPlacement(w.hwnd, &wp) {
-			win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
-		}
 	case !win.IsWindowVisible(w.hwnd) && w.wantMax && !w.shownOnce:
 		win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
 	case !win.IsWindowVisible(w.hwnd):
@@ -389,9 +368,6 @@ func (u *UI) EditorWindowBounds(gen uint64) (l, t, r, b int, maximized, ok bool)
 		return
 	}
 	n := wp.RcNormalPosition
-	if w.staged && w.hasNormal { // still at the staging rectangle: the intended normal one is the truth
-		return int(w.normalRect.Left), int(w.normalRect.Top), int(w.normalRect.Right), int(w.normalRect.Bottom), w.wantMax, true
-	}
 	dx, dy := workOffset(w.hwnd) // WINDOWPLACEMENT is in workspace coordinates, the config in screen coordinates
 	return int(n.Left) + int(dx), int(n.Top) + int(dy), int(n.Right) + int(dx), int(n.Bottom) + int(dy), wp.ShowCmd == win.SW_SHOWMAXIMIZED, true
 }
