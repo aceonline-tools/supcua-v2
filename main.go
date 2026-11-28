@@ -569,6 +569,7 @@ func main() {
 			return ""
 		},
 		UpdateCheck: updater.CheckKind,
+		NewDeferred: func() (any, func(any, error)) { d := rpc.NewDeferred(); return d, d.Resolve },
 	}, late)
 
 	initialScripts := br.InitialScripts()

@@ -143,6 +143,9 @@ type Deps struct {
 	// UpdateCheck (optional) runs a release check: the new tag and download URL, or an error kind
 	// ("offline", "rate_limited", "other"). Wired to updater.CheckKind.
 	UpdateCheck func(current string) (tag, dlURL, errKind string)
+	// NewDeferred (optional) returns a handler result that the host's dispatcher completes later
+	// through resolve, so a slow handler does not hold the single RPC worker. Wired to rpc.NewDeferred.
+	NewDeferred func() (reply any, resolve func(out any, err error))
 }
 
 var uiCallTimeout = 3 * time.Second
@@ -854,10 +857,22 @@ func (b *Bridge) updateApply() (any, error) {
 // (updater.CheckUpdateShared joins in-flight checks, including the startup one). An available
 // update is recorded on the host exactly as the startup check does, so update.apply installs it;
 // no update.available event is emitted (the page shows the result inline, not the dialog).
+//
+// The network round trip (up to the updater's 10 s timeout) must not hold the single RPC worker,
+// which every other page call shares, so the reply is deferred and resolved from its own goroutine.
 func (b *Bridge) updateCheck() (any, error) {
 	if b.d.Host == nil || b.d.UpdateCheck == nil {
 		return nil, newErr(CodeInternal)
 	}
+	if b.d.NewDeferred == nil {
+		return b.checkUpdate()
+	}
+	reply, resolve := b.d.NewDeferred()
+	go func() { resolve(b.checkUpdate()) }()
+	return reply, nil
+}
+
+func (b *Bridge) checkUpdate() (any, error) {
 	current := b.d.Host.BootInfo().Version
 	tag, dl, kind := b.d.UpdateCheck(current)
 	if kind != "" {
