@@ -87,6 +87,7 @@ type SettingsDTO struct {
 	CollapsedGroups       []string        `json:"collapsed_groups"`
 	SidebarCollapsed      bool            `json:"sidebar_collapsed"`
 	OverlayStyle          OverlayStyleDTO `json:"overlay_style"`
+	Language              string          `json:"language"`
 }
 
 type SettingsPatch struct {
@@ -99,6 +100,7 @@ type SettingsPatch struct {
 	ScriptsDir            *string `json:"scripts_dir"`
 	AutoActiveEnabled     *bool   `json:"auto_active_enabled"`
 	AutoActiveProcessName *string `json:"auto_active_process_name"`
+	Language              *string `json:"language"`
 }
 
 type SettingsUpdateResult struct {
@@ -163,7 +165,8 @@ type scriptsChangedEvent struct {
 }
 
 type settingsChangedEvent struct {
-	Fields []string `json:"fields"`
+	Fields   []string `json:"fields"`
+	Language string   `json:"language,omitempty"`
 }
 
 type saveFailedEvent struct {

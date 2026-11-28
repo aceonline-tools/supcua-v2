@@ -88,7 +88,10 @@ export interface SettingsDTO {
   collapsed_groups: string[];
   sidebar_collapsed: boolean;
   overlay_style: OverlayStyleDTO;
+  language: LanguageSetting;
 }
+
+export type LanguageSetting = 'en' | 'vi';
 
 export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed' | 'overlay_style'>>;
 
@@ -208,7 +211,8 @@ export type ErrorCode =
   | 'BAD_REQUEST' | 'UNKNOWN_METHOD' | 'BUSY' | 'INTERNAL' | 'NOT_FOUND' | 'NAME_EMPTY'
   | 'NAME_TAKEN' | 'HOTKEY_CONFLICT' | 'HOTKEY_REGISTER_FAILED' | 'HOTKEY_RESTORE_FAILED' | 'EDITOR_BUSY' | 'EDITOR_CLOSED'
   | 'SAVE_FAILED' | 'INVALID_SETTING' | 'UPDATE_FAILED' | 'NOT_LICENSED'
-  | 'FORBIDDEN_ROLE' | 'STALE_GEN' | 'SESSION_CLOSING' | 'DRAFT_TOO_LARGE' | 'SHUTTING_DOWN' | 'EDITOR_WINDOW_BUSY';
+  | 'FORBIDDEN_ROLE' | 'STALE_GEN' | 'SESSION_CLOSING' | 'DRAFT_TOO_LARGE' | 'SHUTTING_DOWN' | 'EDITOR_WINDOW_BUSY'
+  | 'CLIENT_TIMEOUT' | 'CLIENT_DISCONNECTED' | 'UPDATE_STALE';
 
 export interface ApiErrorBody {
   code: ErrorCode;
@@ -270,7 +274,7 @@ export type MethodName = keyof Methods;
 export interface Events {
   state: StateDTO;
   'scripts.changed': { rev: number };
-  'settings.changed': { fields: string[] };
+  'settings.changed': { fields: string[]; language?: LanguageSetting };
   'save.failed': { scriptId: string; name: string; message: string };
   'capture.hotkey': { capture_id: number; field: HotkeyField; hotkey: Hotkey | null; display: string };
   // mods: modifier state at the key-down (bridge/capture.go keyEvent); null/absent when the host does not report it.

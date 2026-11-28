@@ -112,7 +112,7 @@ try {
     root: frontendDir,
     cacheDir: path.join(cacheDir, '.vite-current'),
     plugins: [seedMockPlugin(frontendDir, CURRENT), svelte()],
-    server: { port: ports[CURRENT], strictPort: true, host: '127.0.0.1' },
+    server: { port: ports[CURRENT], strictPort: true, host: '127.0.0.1', fs: { allow: [repoRoot] } },
   });
   servers.push(current);
   await current.listen();

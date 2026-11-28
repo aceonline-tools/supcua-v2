@@ -13,7 +13,9 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "sim": "node sim/run.mjs",
     "sim:test": "vitest run --config sim/vitest.config.ts",
-    "sim:build": "node sim/build-static.mjs"
+    "sim:build": "node sim/build-static.mjs",
+    "i18n:gen": "node ../scripts/i18n-gen.mjs",
+    "i18n:check": "node ../scripts/i18n-gen.mjs --check"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
