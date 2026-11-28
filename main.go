@@ -725,15 +725,18 @@ func main() {
 	appController.Subscribe(func(snap status.Snapshot) {
 		latency.Mark(latency.Publish)
 		ui.LogOverlayState(snap.GlobalActive, snap.RunningScriptName)
-		if scriptHotkeys != nil {
-			scriptHotkeys.Reconcile()
-		}
-		if ok, why := late.tryPost(func() {
+		// The overlay repaint is posted before Reconcile: Reconcile blocks on the hotkey listener
+		// whenever the global state flips and must not delay what the user is looking at.
+		ok, why := late.tryPost(func() {
 			latency.Mark(latency.Refresh)
 			overlayCtl.Refresh()
 			tray.UpdateTooltip()
-		}); !ok {
+		})
+		if !ok {
 			ui.LogOverlayDropped(why)
+		}
+		if scriptHotkeys != nil {
+			scriptHotkeys.Reconcile()
 		}
 	})
 	tray.UpdateTooltip()

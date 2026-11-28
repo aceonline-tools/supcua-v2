@@ -30,6 +30,9 @@ type Controller struct {
 	runningScriptID     string
 	runningScriptName   string
 	cancelRunningScript context.CancelFunc
+	// stopping is set once the running script was cancelled: the slot stays held until dequeueNext
+	// (dequeueDelay), but Snapshot already reports no running script so the overlay does not lag.
+	stopping bool
 	scriptQueue         []model.Script
 
 	scriptExecutor *executor.Executor
@@ -101,13 +104,17 @@ func (appController *Controller) SetGlobalActive(active bool) {
 func (appController *Controller) Snapshot() status.Snapshot {
 	appController.stateMutex.RLock()
 	defer appController.stateMutex.RUnlock()
-	return status.Snapshot{
+	snap := status.Snapshot{
 		GlobalActive:      appController.globalActive,
 		RunningScriptID:   appController.runningScriptID,
 		RunningScriptName: appController.runningScriptName,
 		EditDialogOpen:    appController.editDialogOpen,
 		QueueLength:       len(appController.scriptQueue),
 	}
+	if appController.stopping {
+		snap.RunningScriptID, snap.RunningScriptName = "", ""
+	}
+	return snap
 }
 
 // Subscribe registers a status subscriber; the latest snapshot is replayed. fn must not block.
@@ -256,6 +263,7 @@ func (appController *Controller) ClearRunningScript() {
 	appController.runningScriptID = ""
 	appController.runningScriptName = ""
 	appController.cancelRunningScript = nil
+	appController.stopping = false
 }
 
 // GetQueueLength returns the number of scripts waiting in the queue.
@@ -271,6 +279,7 @@ func (appController *Controller) launchLocked(script model.Script) {
 	appController.runningScriptID = script.ID
 	appController.runningScriptName = toSnakeCase(script.Name)
 	appController.cancelRunningScript = cancel
+	appController.stopping = false
 	go func() {
 		defer appController.dequeueNext()
 		appController.scriptExecutor.Execute(ctx, script)
@@ -288,6 +297,7 @@ func (appController *Controller) dequeueNext() {
 	appController.runningScriptID = ""
 	appController.runningScriptName = ""
 	appController.cancelRunningScript = nil
+	appController.stopping = false
 	latency.Mark(latency.State)
 	if len(appController.scriptQueue) > 0 && appController.globalActive && !appController.editDialogOpen && appController.hotkeyRecording == 0 {
 		next, _ := appController.popQueueLocked()
@@ -342,6 +352,7 @@ func (appController *Controller) StopRunningScriptFromHotkey(epoch uint64) {
 	appController.scriptQueue = nil
 	if appController.cancelRunningScript != nil {
 		appController.cancelRunningScript()
+		appController.stopping = true
 	}
 	appController.stateMutex.Unlock()
 	latency.Mark(latency.State)
@@ -381,6 +392,7 @@ func (appController *Controller) StopRunningScript() {
 	appController.scriptQueue = nil
 	if appController.cancelRunningScript != nil {
 		appController.cancelRunningScript()
+		appController.stopping = true
 	}
 	appController.stateMutex.Unlock()
 	appController.publish()
