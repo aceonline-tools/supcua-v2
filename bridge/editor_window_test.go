@@ -79,6 +79,7 @@ type fakeEdHost struct {
 	payloads    map[string][]any
 	visible     bool
 	staged      bool
+	showFails   bool
 	nextGen     uint64
 	createErr   error
 	metrics     EditorMetrics
@@ -132,13 +133,14 @@ func (h *fakeEdHost) PrepareEditor(uint64, model.EditorWindow) (EditorMetrics, e
 	h.rec("prepare")
 	return h.metrics, nil
 }
-func (h *fakeEdHost) PlaceEditor(_ uint64, r Rect, _ bool) {
+func (h *fakeEdHost) PlaceEditor(_ uint64, r Rect, max bool) {
 	h.rec("place")
 	h.mu.Lock()
+	h.maximized = max
 	h.bounds = r
 	h.mu.Unlock()
 }
-func (h *fakeEdHost) ShowEditor(uint64)        { h.rec("show") }
+func (h *fakeEdHost) ShowEditor(uint64) bool   { h.rec("show"); return !h.showFails }
 func (h *fakeEdHost) EditorStaged(uint64) bool { return h.staged }
 func (h *fakeEdHost) EditorBounds(uint64) (Rect, bool, bool) {
 	h.mu.Lock()
@@ -262,8 +264,8 @@ func TestOpenWindowRaisesGateThenDisablesMainThenCreates(t *testing.T) {
 			creates++
 		}
 	}
-	if creates != 1 || !e.h.order("show") {
-		t.Fatalf("no second window; focus shows it: %v", e.h.log)
+	if creates != 1 || e.h.countLog("show") != 0 {
+		t.Fatalf("no second window; an unrevealed editor is not shown by a repeat (focus is deferred): %v", e.h.log)
 	}
 }
 
@@ -1265,4 +1267,63 @@ func (h *fakeEdHost) countLog(s string) int {
 		}
 	}
 	return n
+}
+
+func TestFailedRevealRollsTheEditorBackAndReEnablesMain(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.h.staged = true
+	e.h.showFails = true
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`)
+	gen := e.b.win.currentGen()
+	e.mustCall(t, "editor.windowReady", ``)
+	e.mustCall(t, "editor.measured", `{"token":1,"cssW":1000,"cssH":700,"dpr":1}`)
+	e.mustCall(t, "editor.painted", ``)
+	if !e.h.mainEnabled || !e.h.destroyed[gen] || e.b.win.active() {
+		t.Fatalf("an invisible modal editor must not survive: mainEnabled=%v destroyed=%v log=%v", e.h.mainEnabled, e.h.destroyed[gen], e.h.log)
+	}
+	if !e.h.order("place", "show", "enableMain=true", "destroy") && e.h.countLog("show") != 1 {
+		t.Fatalf("%v", e.h.log)
+	}
+}
+
+func TestRememberedMaximizedStagedWindowIsNotShownBeforePainted(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.h.staged = true
+	e.b.d.Config.Update(func(a *model.AppConfig) {
+		a.EditorWindow = model.EditorWindow{X: 10, Y: 10, W: 1000, H: 700, Maximized: true, Version: model.EditorLayoutVersion}
+	})
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`)
+	e.mustCall(t, "editor.windowReady", ``)
+	e.mustCall(t, "editor.measured", `{"token":1,"cssW":1000,"cssH":700,"dpr":1}`)
+	if !e.h.maximized || e.h.countLog("show") != 0 {
+		t.Fatalf("placed maximised, but nothing activates before painted: max=%v %v", e.h.maximized, e.h.log)
+	}
+	e.mustCall(t, "editor.painted", ``)
+	if e.h.countLog("show") != 1 {
+		t.Fatalf("%v", e.h.log)
+	}
+}
+
+func TestRepeatedOpenWhileUnrevealedIsDeferredUntilReveal(t *testing.T) {
+	e := newEdRig(t, edScript("a"))
+	e.h.staged = true
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`)
+	if r := e.mustCall(t, "editor.openWindow", `{"id":"a"}`); r["status"] != "focused" {
+		t.Fatalf("%v", r)
+	}
+	e.mustCall(t, "editor.windowReady", ``)
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`) // measuring
+	e.mustCall(t, "editor.measured", `{"token":1,"cssW":1000,"cssH":700,"dpr":1}`)
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`) // placed, not painted
+	if n := e.h.countLog("show"); n != 0 {
+		t.Fatalf("no focus/show before the reveal, got %d: %v", n, e.h.log)
+	}
+	e.mustCall(t, "editor.painted", ``)
+	if n := e.h.countLog("show"); n != 2 { // the reveal, then the recorded focus request
+		t.Fatalf("reveal + deferred focus expected, got %d: %v", n, e.h.log)
+	}
+	e.mustCall(t, "editor.openWindow", `{"id":"a"}`) // revealed: focuses directly
+	if n := e.h.countLog("show"); n != 3 {
+		t.Fatalf("%d: %v", n, e.h.log)
+	}
 }

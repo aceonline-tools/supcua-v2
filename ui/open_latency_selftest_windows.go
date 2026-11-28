@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -180,6 +181,9 @@ type openTrial struct {
 	BlankFrames int
 	ClientW     int
 	ClientH     int
+	FirstW      int
+	FirstH      int
+	EarlyFocus  bool // the editor was the foreground window before it was revealed
 	Stages      string
 	err         error
 }
@@ -188,7 +192,7 @@ const readyJS = `(function(){var n=document.getElementById('ed-name');var m=wind
 return {name:n?n.value:null,measuring:m?m.measuring:true,w:innerWidth,h:innerHeight}})()`
 
 // openByClick clicks the real main-page control(s) and times the editor's appearance and readiness.
-func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial {
+func (s *SelfTest) openByClick(kind, wantName string, shotName string, afterClick func()) openTrial {
 	tr := openTrial{Kind: kind}
 	main := win.HWND(s.UI.HWND())
 	win.ShowWindow(main, win.SW_RESTORE)
@@ -230,6 +234,7 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial
 	}
 	visCh := make(chan vis, 1)
 	stop := make(chan struct{})
+	var early atomic.Bool
 	go func() {
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
@@ -239,6 +244,9 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial
 			default:
 			}
 			if ed := s.UI.Editor(); ed != nil {
+				if hw := ed.HWND(); hw != 0 && !editorRevealed(hw) && win.GetForegroundWindow() == win.HWND(hw) {
+					early.Store(true)
+				}
 				if hw := ed.HWND(); hw != 0 && editorRevealed(hw) {
 					v := vis{t: time.Now(), h: hw}
 					if px, w, h, err := captureClient(hw); err == nil {
@@ -253,6 +261,9 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial
 		visCh <- vis{}
 	}()
 	t0, err := clickAt(x, y, clicks)
+	if afterClick != nil {
+		go afterClick()
+	}
 	if err != nil {
 		close(stop)
 		tr.err = err
@@ -264,6 +275,7 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial
 		return tr
 	}
 	tr.Visible, tr.Frame = v.t.Sub(t0), v.fr
+	tr.FirstW, tr.FirstH = v.fr.W, v.fr.H
 	if !v.ok || v.fr.Blank() {
 		tr.AnyBlank = true
 		tr.BlankFrames++
@@ -297,6 +309,7 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string) openTrial
 			}
 		}
 	}
+	tr.EarlyFocus = early.Load()
 	tr.Stages = s.stageLine(t0)
 	return tr
 }
@@ -361,7 +374,7 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 			if i == 0 {
 				shot = "open-first-frame-" + kind
 			}
-			tr := s.openByClick(kind, want, shot)
+			tr := s.openByClick(kind, want, shot, nil)
 			if tr.err != nil || tr.Usable == 0 {
 				step(fmt.Sprintf("open latency: %s #%d", kind, i), false, fmt.Sprint(tr.err))
 				okAll = false
@@ -373,6 +386,10 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 			blank += tr.BlankFrames
 			if !strings.Contains(tr.Stages, "page:measured-sent") || tr.Visible > 2*time.Second {
 				step(fmt.Sprintf("open latency: %s #%d used the measured natural size (no fallback)", kind, i), false, tr.Stages)
+				okAll = false
+			}
+			if tr.EarlyFocus || tr.FirstW != tr.ClientW || tr.FirstH != tr.ClientH {
+				step(fmt.Sprintf("open latency: %s #%d no early focus, no resize after reveal", kind, i), false, fmt.Sprintf("earlyFocus=%v first=%dx%d usable=%dx%d", tr.EarlyFocus, tr.FirstW, tr.FirstH, tr.ClientW, tr.ClientH))
 				okAll = false
 			}
 			if tr.BlankFrames > 0 {
@@ -402,4 +419,52 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 		step("open latency: "+kind, okAll, fmt.Sprintf("first visible=%.0fms usable=%.0fms | repeat n=%d visible med=%.0f max=%.0f usable med=%.0f max=%.0f ms | blank frames=%d",
 			ms(first.Visible), ms(first.Usable), len(vis), vm, vx, um, ux, blank))
 	}
+}
+
+// stagingEdgeCases opens the editor with a remembered maximised state and with a second open right
+// after the click, and checks that nothing activates the transparent window, the first revealed
+// frame is not blank and its size never changes afterwards. A second REAL click is impossible (main
+// is disabled within ~2 ms of the first), so the repeats are the same editor.openWindow RPC.
+func (s *SelfTest) stagingEdgeCases(scriptName string, step func(string, bool, string) bool) {
+	check := func(name string, tr openTrial, want func(openTrial) bool) {
+		ok := tr.err == nil && tr.Usable > 0 && !tr.EarlyFocus && tr.BlankFrames == 0 && tr.FirstW == tr.ClientW && tr.FirstH == tr.ClientH && (want == nil || want(tr))
+		step("staging: "+name, ok, fmt.Sprintf("err=%v earlyFocus=%v blank=%d first=%dx%d usable=%dx%d visible=%.0fms", tr.err, tr.EarlyFocus, tr.BlankFrames, tr.FirstW, tr.FirstH, tr.ClientW, tr.ClientH, ms(tr.Visible)))
+	}
+	// remembered maximised: maximise once, close (the host remembers it), reopen.
+	tr := s.openByClick("dblclick", scriptName, "", nil)
+	if tr.err != nil {
+		step("staging: remembered maximised (setup open)", false, tr.err.Error())
+		s.closeEditorAndWait()
+		return
+	}
+	if ed := s.UI.Editor(); ed != nil {
+		win.ShowWindow(win.HWND(ed.HWND()), win.SW_MAXIMIZE)
+		time.Sleep(600 * time.Millisecond)
+	}
+	s.closeEditorAndWait()
+	time.Sleep(1500 * time.Millisecond)
+	tr = s.openByClick("dblclick", scriptName, "staging-maximized-first-frame", nil)
+	maxed := false
+	if ed := s.UI.Editor(); ed != nil {
+		var wp win.WINDOWPLACEMENT
+		wp.Length = uint32(unsafe.Sizeof(wp))
+		maxed = win.GetWindowPlacement(win.HWND(ed.HWND()), &wp) && wp.ShowCmd == win.SW_SHOWMAXIMIZED
+	}
+	check("remembered maximised opens maximised, never activated while transparent", tr, func(openTrial) bool { return maxed })
+	if ed := s.UI.Editor(); ed != nil {
+		win.ShowWindow(win.HWND(ed.HWND()), win.SW_RESTORE)
+		time.Sleep(600 * time.Millisecond)
+	}
+	s.closeEditorAndWait()
+	time.Sleep(1500 * time.Millisecond)
+
+	// repeated open while the first is still being created / measured / waiting for its paint.
+	tr = s.openByClick("new", "", "staging-double-open-first-frame", func() {
+		for _, d := range []time.Duration{30, 60, 120} {
+			time.Sleep(d * time.Millisecond)
+			_, _ = s.call("editor.openWindow", `{"id":null}`)
+		}
+	})
+	check("repeated open during creation/measure/paint reveals once, no early focus", tr, nil)
+	s.closeEditorAndWait()
 }

@@ -186,13 +186,26 @@ const wsExLayered = 0x00080000
 // loads, lays out and paints while nothing is visible; ShowEditorWindow then reveals it. UI thread.
 func (w *Window) stageEditor() {
 	ex := win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)
-	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex|wsExLayered)
+	// NOACTIVATE keeps every show (a remembered-maximised one included) from taking focus while transparent.
+	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex|wsExLayered|wsExNoActivate)
 	if r, _, _ := procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 0, 2); r == 0 {
 		win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex)
 		return
 	}
 	w.staged = true
 	win.ShowWindow(w.hwnd, win.SW_SHOWNA)
+}
+
+const wsExNoActivate = 0x08000000
+
+// revealStaged ends the staging: the layered and no-activate styles are removed (so no layered style
+// lingers on the WebView2 host once the window is opaque) and the result is read back. It reports
+// whether the window is really opaque and activatable now. UI thread.
+func (w *Window) revealStaged() bool {
+	procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 255, 2)
+	ex := win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)
+	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex&^(wsExLayered|wsExNoActivate))
+	return win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)&wsExLayered == 0
 }
 
 // EditorStaged reports whether the editor is shown-but-transparent and waits for ShowEditorWindow.
@@ -302,20 +315,25 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 		win.SetWindowPos(w.hwnd, 0, int32(l), int32(t), int32(r-l), int32(b-t), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 		w.wantMax = maximized
 		if w.staged && maximized && !w.shownOnce {
-			win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
+			win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED) // WS_EX_NOACTIVATE: no focus while transparent
 		}
 	}
 }
 
 // ShowEditorWindow restores (iconic), shows (hidden) and activates the editor. UI thread only.
-func (u *UI) ShowEditorWindow(gen uint64) {
+// It reports whether the window is visible afterwards; a staged window that could not be made
+// opaque stays staged and reports false, so the owner rolls the editor back instead of leaving an
+// invisible modal window.
+func (u *UI) ShowEditorWindow(gen uint64) bool {
 	w := u.editor
 	if w == nil || w.gen != gen || w.hwnd == 0 {
-		return
+		return false
 	}
 	if w.staged {
+		if !w.revealStaged() {
+			return false
+		}
 		w.staged = false
-		procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 255, 2)
 	}
 	switch {
 	case win.IsIconic(w.hwnd):
@@ -327,6 +345,7 @@ func (u *UI) ShowEditorWindow(gen uint64) {
 	}
 	w.shownOnce = true
 	win.SetForegroundWindow(w.hwnd)
+	return win.IsWindowVisible(w.hwnd)
 }
 
 // EditorWindowBounds is the restored (normal) rectangle and the maximised flag. UI thread only.

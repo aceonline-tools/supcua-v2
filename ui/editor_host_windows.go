@@ -102,7 +102,7 @@ func (h *EditorHost) PlaceEditor(gen uint64, r bridge.Rect, maximized bool) {
 }
 
 func (h *EditorHost) EditorStaged(gen uint64) bool { return h.U.EditorStaged(gen) }
-func (h *EditorHost) ShowEditor(gen uint64)        { h.rec("show"); h.U.ShowEditorWindow(gen) }
+func (h *EditorHost) ShowEditor(gen uint64) bool   { h.rec("show"); return h.U.ShowEditorWindow(gen) }
 
 func (h *EditorHost) EditorBounds(gen uint64) (bridge.Rect, bool, bool) {
 	l, t, r, b, max, ok := h.U.EditorWindowBounds(gen)

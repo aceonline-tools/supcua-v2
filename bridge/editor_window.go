@@ -31,7 +31,9 @@ type EditorHost interface {
 	// the owner's), lets its DPI settle and returns that monitor's facts.
 	PrepareEditor(gen uint64, remembered model.EditorWindow) (EditorMetrics, error)
 	PlaceEditor(gen uint64, r Rect, maximized bool)
-	ShowEditor(gen uint64) // restore when iconic or hidden, reveal a staged window, then activate
+	// ShowEditor restores when iconic or hidden, reveals a staged window, then activates. It reports
+	// whether the window is visible afterwards (false: a staged window could not be revealed).
+	ShowEditor(gen uint64) bool
 	// EditorStaged: the window is shown but transparent; the page's `editor.painted` (or revealGrace) reveals it.
 	EditorStaged(gen uint64) bool
 	EditorBounds(gen uint64) (r Rect, maximized bool, ok bool)
@@ -129,6 +131,7 @@ type windowCtl struct {
 
 	revealT    Timer
 	revealed   bool
+	focusReq   bool       // a second open arrived before the window was revealed
 	pendingOut *BoundsOut // fallback size waiting for the page's measureAck or the grace timer
 
 	activeScript atomic.Pointer[string] // the script of the active generation; set under Bridge.admitMu
@@ -239,8 +242,14 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 	c.mu.Lock()
 	if c.state != stNone && c.state != stClosing {
 		gen = c.gen
+		revealed := c.revealed
+		if !revealed {
+			c.focusReq = true // creating, loading, measuring or staged: focus once it is revealed
+		}
 		c.mu.Unlock()
-		c.h.ShowEditor(gen)
+		if revealed {
+			c.h.ShowEditor(gen)
+		}
 		return "focused", gen, nil
 	}
 	if c.state == stClosing || c.b.stopping.Load() {
@@ -256,7 +265,7 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 	c.activeScript.Store(id)
 	c.b.admitMu.Unlock()
 	c.shown, c.shutdown, c.token, c.tries = false, false, 0, 0
-	c.revealed = false
+	c.revealed, c.focusReq = false, false
 	c.recoverBy = time.Time{}
 	c.destroyed, c.done = make(chan struct{}), make(chan struct{})
 	c.b.d.Controller.SetEditDialogOpen(true)
@@ -462,6 +471,9 @@ func (c *windowCtl) present(gen uint64, out BoundsOut) {
 	otrace.At("placed")
 	if !c.h.EditorStaged(gen) {
 		c.h.ShowEditor(gen)
+		c.mu.Lock()
+		c.revealed = true
+		c.mu.Unlock()
 		otrace.At("shown")
 		return
 	}
@@ -488,13 +500,23 @@ func (c *windowCtl) reveal(gen uint64) {
 		c.mu.Unlock()
 		return
 	}
-	c.revealed = true
 	if c.revealT != nil {
 		c.revealT.Stop()
 		c.revealT = nil
 	}
 	c.mu.Unlock()
-	c.h.ShowEditor(gen)
+	if !c.h.ShowEditor(gen) {
+		c.failEditor(gen, "reveal", "the editor window could not be shown")
+		return
+	}
+	c.mu.Lock()
+	c.revealed = true
+	focus := c.focusReq
+	c.focusReq = false
+	c.mu.Unlock()
+	if focus {
+		c.h.ShowEditor(gen)
+	}
 	otrace.At("shown")
 }
 
