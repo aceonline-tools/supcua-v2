@@ -6,6 +6,7 @@
   import Toggle from './Toggle.svelte';
   import HotkeyRecorder from './HotkeyRecorder.svelte';
   import TextSetting from './TextSetting.svelte';
+  import ProcessPicker from './ProcessPicker.svelte';
   import OverlayStyle from './OverlayStyle.svelte';
   let { store }: { store: AppStore } = $props();
 
@@ -50,7 +51,7 @@
     </div>
     <div class="setting-row">
       <div><strong>Game process name</strong><p>Executable that must be in the foreground.</p></div>
-      <TextSetting label="Game process name" value={aa.process_name} commit={(v) => store.setAutoActive({ processName: String(v) })} />
+      <ProcessPicker {store} value={aa.process_name} />
     </div>
   </div>
 {/if}

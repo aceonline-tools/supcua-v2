@@ -230,6 +230,7 @@ jobs:
             $o = "$dir/stdout-prod.txt"; $e = "$dir/stderr-prod.txt"
             $env:SUPCUA_EDITOR_SHOTS = Join-Path $PWD "out/editor-window-shots/$v-production"
             $env:SUPCUA_OVERLAY_SHOTS = Join-Path $PWD "out/overlay-shots/$v-production"
+            $env:SUPCUA_PICKER_SHOTS = Join-Path $PWD "out/picker-shots/$v"
             $p = Start-Process -FilePath (Join-Path $dir "supcua-v2.exe") -ArgumentList "-selftest-production","-fixture",$fixture,"-label",$v `
                  -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
             if (-not $p.WaitForExit(240000)) { $p.Kill($true); Write-Host "::error::$v selftest-production TIMEOUT"; $fail = 1 }
@@ -239,8 +240,19 @@ jobs:
             $j = "$dir/supcua-v2.exe.selftest-production.json"
             if (Test-Path -LiteralPath $j) { Copy-Item -LiteralPath $j (Join-Path $results "$v-prod.json") -Force }
             else { Write-Host "::error::missing $j"; $fail = 1 }
+            if (Test-Path -LiteralPath $j) {
+              $steps = @((Get-Content -LiteralPath $j -Raw | ConvertFrom-Json).steps | Where-Object { $_.name -like "process picker:*" })
+              $picked = @{ steps = $steps.Count; failed = @($steps | Where-Object { -not $_.ok }).Count }
+              Write-Host "$v process picker steps: $($picked | ConvertTo-Json -Compress)"
+              $steps | ForEach-Object { Write-Host ("  [{0}] {1} {2}" -f $(if ($_.ok) { "ok" } else { "FAIL" }), $_.name, $_.detail) }
+              $steps | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $results "$v-process-picker.json")
+              if ($steps.Count -lt 11 -or $picked.failed -gt 0) { Write-Host "::error::$v process picker selftest incomplete or failed"; $fail = 1 }
+            }
             if (Test-Path -LiteralPath $log) {
               Copy-Item -LiteralPath $log (Join-Path $results "$v-prod.log") -Force
+              $m = [regex]::Matches((Get-Content -LiteralPath $log -Raw), 'processes\.list: rows=\d+ truncated=\w+ elapsed_ms=(\d+)')
+              if ($m.Count -eq 0) { Write-Host "::error::$v log has no processes.list timing"; $fail = 1 }
+              foreach ($x in $m) { Write-Host "$v $($x.Value)"; if ([int]$x.Groups[1].Value -gt 250) { Write-Host "::error::$v processes.list exceeded 250 ms"; $fail = 1 } }
               $text = Get-Content -LiteralPath $log -Raw
               foreach ($line in $required) {
                 if (-not $text.Contains($line)) { Write-Host "::error::$v log lacks stage line '$line'"; $fail = 1 }
@@ -407,6 +419,13 @@ jobs:
           name: app-selftest-results
           path: out/results/
           if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: picker-shots
+          path: out/picker-shots/
+          if-no-files-found: warn
           retention-days: 7
       - uses: actions/upload-artifact@v7
         if: always()

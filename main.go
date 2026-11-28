@@ -573,6 +573,7 @@ func main() {
 		Config:     configService,
 		Hotkeys:    hotkeySet,
 		AutoActive: proxy,
+		Windows:    bridge.SystemWindowLister{},
 		Locks:      lockTracker,
 		Overlay:    overlayCtl,
 		UI:         late,
@@ -837,9 +838,9 @@ func main() {
 				},
 				PreviewToggle: appController.BeginTogglePreview,
 				PreviewStop:   func(epoch uint64) uint64 { return appController.BeginStopPreview("fx-probe-1", epoch) },
-				Unregister:   func(id int) { _ = hotkeyManager.Unregister(id) },
-				ToggleGlobal: appController.ToggleGlobalFromHotkey,
-				StopRunning:  appController.StopRunningScriptFromHotkey,
+				Unregister:    func(id int) { _ = hotkeyManager.Unregister(id) },
+				ToggleGlobal:  appController.ToggleGlobalFromHotkey,
+				StopRunning:   appController.StopRunningScriptFromHotkey,
 				PhysicalRCtrl: executor.SimulatePhysicalRCtrl,
 			})
 		} else {

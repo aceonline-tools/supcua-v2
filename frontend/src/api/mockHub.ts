@@ -11,7 +11,7 @@ const MAIN_ONLY = [
   'scripts.list', 'scripts.get', 'scripts.setEnabled', 'scripts.setGroupEnabled', 'scripts.setGroupCollapsed',
   'scripts.clone', 'scripts.delete', 'scripts.retrySave', 'settings.update', 'settings.setSidebarCollapsed',
   'overlay.set', 'overlay.setStyle', 'overlay.resetStyle', 'autoactive.set', 'update.apply', 'update.skip', 'update.check',
-  'editor.openWindow', 'settings.capture.start', 'settings.capture.stop',
+  'editor.openWindow', 'settings.capture.start', 'settings.capture.stop', 'processes.list',
 ];
 // Selftest-only gen-0 route (bridge/roles.go SelftestOnly): denied to both windows in production.
 const SELFTEST_ONLY = ['editor.close'];

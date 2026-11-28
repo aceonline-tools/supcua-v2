@@ -134,10 +134,12 @@ type Deps struct {
 	Config     Config
 	Hotkeys    HotkeySet
 	AutoActive AutoActive
-	Locks      LockState
-	Overlay    Overlay
-	UI         UIThread
-	Capture    CaptureBackend
+	// Windows (optional) backs processes.list; nil answers an empty list.
+	Windows WindowLister
+	Locks   LockState
+	Overlay Overlay
+	UI      UIThread
+	Capture CaptureBackend
 	// HotkeyMute (optional) mutes every registered hotkey while the Settings recorder runs.
 	HotkeyMute HotkeyMute
 	Host       Host
@@ -755,6 +757,7 @@ func (b *Bridge) Methods() map[string]Handler {
 	reg(m, "overlay.setStyle", b.overlaySetStyle, "radius", "background", "text_color", "background_opacity", "opacity", "width", "height", "x", "y")
 	regNoParams(m, "overlay.resetStyle", b.overlayResetStyle)
 	reg(m, "autoactive.set", b.autoActiveSet)
+	regNoParams(m, "processes.list", b.processesList)
 	reg(m, "update.apply", b.updateApply, "version")
 	reg(m, "update.skip", b.updateSkip, "version")
 	regNoParams(m, "update.check", b.updateCheck)

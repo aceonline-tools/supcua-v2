@@ -378,6 +378,7 @@ await __st.sleep(100)}return null})()`, h.ExpectRow)
 		fire(h.GlobalHotkey, "global hotkey (SendInput) turns global active off", func() bool { return !h.GlobalActive() })
 		step("script hotkeys unregistered when inactive", waitFor(4*time.Second, func() bool { return h.ScriptHotkeyCount() == 0 }), fmt.Sprintf("count=%d", h.ScriptHotkeyCount()))
 	}
+	s.processPickerSuite(h, step)
 	done()
 }
 

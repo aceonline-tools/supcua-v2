@@ -42,7 +42,7 @@ func Roles() RoleLists {
 			"scripts.clone", "scripts.delete", "scripts.retrySave",
 			"settings.update", "settings.setSidebarCollapsed", "settings.capture.start", "settings.capture.stop",
 			"overlay.set", "overlay.setStyle", "overlay.resetStyle", "autoactive.set", "update.apply", "update.skip", "update.check",
-			"editor.openWindow",
+			"editor.openWindow", "processes.list",
 		},
 		// The selftest-only gen-0 route's close (the leak check's main-page cycles): no production caller.
 		SelftestOnly: []string{"editor.close"},

@@ -92,6 +92,9 @@ export interface SettingsDTO {
 
 export type SettingsPatch = Partial<Omit<SettingsDTO, 'collapsed_groups' | 'sidebar_collapsed' | 'overlay_style'>>;
 
+export interface ProcessRow { exe: string; title: string }
+export interface ProcessListDTO { rows: ProcessRow[]; truncated: boolean }
+
 export type UpdateCheckError = 'offline' | 'rate_limited' | 'other' | 'stale';
 export interface UpdateCheckResult {
   status: 'up_to_date' | 'available' | 'error';
@@ -262,6 +265,7 @@ export interface Methods {
   'overlay.set': { params: Partial<Pick<OverlayDTO, 'enabled' | 'visible' | 'draggable'>>; result: OverlayDTO };
   'overlay.setStyle': { params: OverlayStyleDTO; result: OverlayStyleDTO };
   'overlay.resetStyle': { params: undefined; result: OverlayStyleDTO };
+  'processes.list': { params: undefined; result: ProcessListDTO };
   'autoactive.set': { params: { enabled?: boolean; processName?: string }; result: { enabled: boolean; processName: string } };
 }
 
