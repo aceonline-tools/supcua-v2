@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -172,6 +171,8 @@ func captureClient(h uintptr) ([]byte, int, int, error) {
 	return pix, w, ht, err
 }
 
+var revealByPainted, revealByGrace int
+
 type openTrial struct {
 	Kind        string
 	Visible     time.Duration
@@ -183,7 +184,11 @@ type openTrial struct {
 	ClientH     int
 	FirstW      int
 	FirstH      int
-	EarlyFocus  bool // the editor was the foreground window before it was revealed
+	EarlyFocus  bool // the transparent editor held the foreground before it was revealed
+	ActMs       float64
+	FocusBack   bool // at the last pre-reveal sample the foreground was the main window
+	ByPainted   bool
+	ByGrace     bool
 	Stages      string
 	err         error
 }
@@ -231,12 +236,16 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string, afterClic
 		fr frameStats
 		px []byte
 		ok bool
+
+		act    bool    // the transparent editor held the foreground
+		actMs  float64 // first to last sample while it did
+		lastFG win.HWND
 	}
 	visCh := make(chan vis, 1)
 	stop := make(chan struct{})
-	var early atomic.Bool
 	go func() {
-		var fgSince time.Time
+		var actFirst, actLast time.Time
+		var lastFG win.HWND
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			select {
@@ -245,19 +254,22 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string, afterClic
 			default:
 			}
 			if ed := s.UI.Editor(); ed != nil {
-				// Focus on the still-transparent window counts only when it is held (a reveal-time handoff
-				// is sub-millisecond); the staged maximise hands it straight back.
-				if hw := ed.HWND(); hw != 0 && !editorRevealed(hw) && win.GetForegroundWindow() == win.HWND(hw) {
-					if fgSince.IsZero() {
-						fgSince = time.Now()
-					} else if time.Since(fgSince) > 25*time.Millisecond {
-						early.Store(true)
+				// Foreground on the still-transparent window is recorded as data (first/last sample); the
+				// foreground at the last unrevealed sample says where the focus is before the reveal.
+				if hw := ed.HWND(); hw != 0 && !editorRevealed(hw) {
+					lastFG = win.GetForegroundWindow()
+					if lastFG == win.HWND(hw) {
+						if actFirst.IsZero() {
+							actFirst = time.Now()
+						}
+						actLast = time.Now()
 					}
-				} else {
-					fgSince = time.Time{}
 				}
 				if hw := ed.HWND(); hw != 0 && editorRevealed(hw) {
-					v := vis{t: time.Now(), h: hw}
+					v := vis{t: time.Now(), h: hw, lastFG: lastFG}
+					if !actFirst.IsZero() {
+						v.actMs, v.act = ms(actLast.Sub(actFirst)), true
+					}
 					if px, w, h, err := captureClient(hw); err == nil {
 						v.px, v.fr, v.ok = px, analyzeFrame(px, w, h), true
 					}
@@ -318,7 +330,17 @@ func (s *SelfTest) openByClick(kind, wantName string, shotName string, afterClic
 			}
 		}
 	}
-	tr.EarlyFocus = early.Load()
+	tr.EarlyFocus, tr.ActMs, tr.FocusBack = v.act, v.actMs, v.lastFG == main
+	for _, m := range otrace.Marks() {
+		switch m.Name {
+		case "reveal-by-painted":
+			tr.ByPainted = true
+			revealByPainted++
+		case "reveal-by-grace":
+			tr.ByGrace = true
+			revealByGrace++
+		}
+	}
 	tr.Stages = s.stageLine(t0)
 	return tr
 }
@@ -397,8 +419,12 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 				step(fmt.Sprintf("open latency: %s #%d used the measured natural size (no fallback)", kind, i), false, tr.Stages)
 				okAll = false
 			}
+			if !tr.ByPainted || tr.ByGrace {
+				step(fmt.Sprintf("open latency: %s #%d revealed by editor.painted, not the grace timer", kind, i), false, tr.Stages)
+				okAll = false
+			}
 			if tr.EarlyFocus || tr.FirstW != tr.ClientW || tr.FirstH != tr.ClientH {
-				step(fmt.Sprintf("open latency: %s #%d no early focus, no resize after reveal", kind, i), false, fmt.Sprintf("earlyFocus=%v first=%dx%d usable=%dx%d", tr.EarlyFocus, tr.FirstW, tr.FirstH, tr.ClientW, tr.ClientH))
+				step(fmt.Sprintf("open latency: %s #%d no focus on the transparent window before the reveal, no resize after it", kind, i), false, fmt.Sprintf("earlyFocus=%v first=%dx%d usable=%dx%d", tr.EarlyFocus, tr.FirstW, tr.FirstH, tr.ClientW, tr.ClientH))
 				okAll = false
 			}
 			if tr.BlankFrames > 0 {
@@ -435,9 +461,17 @@ func (s *SelfTest) openLatency(scriptName string, step func(string, bool, string
 // frame is not blank and its size never changes afterwards. A second REAL click is impossible (main
 // is disabled within ~2 ms of the first), so the repeats are the same editor.openWindow RPC.
 func (s *SelfTest) stagingEdgeCases(scriptName string, step func(string, bool, string) bool) {
-	check := func(name string, tr openTrial, want func(openTrial) bool) {
-		ok := tr.err == nil && tr.Usable > 0 && !tr.EarlyFocus && tr.BlankFrames == 0 && tr.FirstW == tr.ClientW && tr.FirstH == tr.ClientH && (want == nil || want(tr))
-		step("staging: "+name, ok, fmt.Sprintf("err=%v earlyFocus=%v blank=%d first=%dx%d usable=%dx%d visible=%.0fms", tr.err, tr.EarlyFocus, tr.BlankFrames, tr.FirstW, tr.FirstH, tr.ClientW, tr.ClientH, ms(tr.Visible)))
+	// maximised: Windows activates a window when it is maximised, so the transient activation is
+	// recorded as data and the assertion is that the focus is back on main before the reveal.
+	// Otherwise the transparent window must never take the foreground at all.
+	check := func(name string, tr openTrial, maximised bool, want func(openTrial) bool) {
+		focusOK := !tr.EarlyFocus
+		if maximised {
+			focusOK = tr.FocusBack
+		}
+		ok := tr.err == nil && tr.Usable > 0 && focusOK && tr.ByPainted && !tr.ByGrace && tr.BlankFrames == 0 && tr.FirstW == tr.ClientW && tr.FirstH == tr.ClientH && (want == nil || want(tr))
+		step("staging: "+name, ok, fmt.Sprintf("err=%v transientActivation=%v (%.0fms) focusBackOnMainBeforeReveal=%v revealedByPainted=%v blank=%d first=%dx%d usable=%dx%d visible=%.0fms",
+			tr.err, tr.EarlyFocus, tr.ActMs, tr.FocusBack, tr.ByPainted, tr.BlankFrames, tr.FirstW, tr.FirstH, tr.ClientW, tr.ClientH, ms(tr.Visible)))
 	}
 	// remembered maximised: maximise once, close, reopen (maximised), close while maximised, reopen
 	// (maximised), restore: the restored size must be the ORIGINAL normal one, not the staging rectangle.
@@ -477,9 +511,9 @@ func (s *SelfTest) stagingEdgeCases(scriptName string, step func(string, bool, s
 		time.Sleep(600 * time.Millisecond)
 	}
 	tr = reopen("staging-maximized-first-frame")
-	check("remembered maximised opens maximised, never activated while transparent", tr, func(openTrial) bool { return isMax() })
+	check("remembered maximised opens maximised; the focus is back on main before the reveal", tr, true, func(openTrial) bool { return isMax() })
 	tr = reopen("") // closed while maximised: what is persisted must still be the normal rectangle
-	check("reopened maximised again after closing while maximised", tr, func(openTrial) bool { return isMax() })
+	check("reopened maximised again after closing while maximised; the focus is back on main before the reveal", tr, true, func(openTrial) bool { return isMax() })
 	if ed := s.UI.Editor(); ed != nil {
 		win.ShowWindow(win.HWND(ed.HWND()), win.SW_RESTORE)
 		time.Sleep(600 * time.Millisecond)
@@ -501,6 +535,7 @@ func (s *SelfTest) stagingEdgeCases(scriptName string, step func(string, bool, s
 			_, _ = s.call("editor.openWindow", `{"id":null}`)
 		}
 	})
-	check("repeated open during creation/measure/paint reveals once, no early focus", tr, nil)
+	check("repeated open during creation/measure/paint reveals once and never takes the focus while transparent", tr, false, nil)
 	s.closeEditorAndWait()
+	step("open latency: reveal cause", revealByGrace == 0 && revealByPainted > 0, fmt.Sprintf("revealed by editor.painted=%d, by grace timer=%d", revealByPainted, revealByGrace))
 }

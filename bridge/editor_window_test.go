@@ -1281,7 +1281,10 @@ func TestFailedRevealRollsTheEditorBackAndReEnablesMain(t *testing.T) {
 	if !e.h.mainEnabled || !e.h.destroyed[gen] || e.b.win.active() {
 		t.Fatalf("an invisible modal editor must not survive: mainEnabled=%v destroyed=%v log=%v", e.h.mainEnabled, e.h.destroyed[gen], e.h.log)
 	}
-	if !e.h.order("place", "show") || e.h.countLog("show") != 1 {
+	if !e.h.order("place", "show", "enableMain=true", "destroy") {
+		t.Fatalf("a failed reveal must show, then re-enable main, then destroy: %v", e.h.log)
+	}
+	if e.h.countLog("show") != 1 {
 		t.Fatalf("%v", e.h.log)
 	}
 }

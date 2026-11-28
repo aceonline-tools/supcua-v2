@@ -479,7 +479,7 @@ func (c *windowCtl) present(gen uint64, out BoundsOut) {
 	}
 	c.mu.Lock()
 	if c.revealT == nil {
-		c.revealT = c.clk.AfterFunc(revealGrace, func() { c.postGen(gen, func() { c.reveal(gen) }) })
+		c.revealT = c.clk.AfterFunc(revealGrace, func() { c.postGen(gen, func() { c.reveal(gen, "grace") }) })
 	}
 	c.mu.Unlock()
 }
@@ -490,11 +490,11 @@ func (c *windowCtl) painted() {
 	gen, ok := c.gen, c.state == stOpen
 	c.mu.Unlock()
 	if ok {
-		c.reveal(gen)
+		c.reveal(gen, "painted")
 	}
 }
 
-func (c *windowCtl) reveal(gen uint64) {
+func (c *windowCtl) reveal(gen uint64, cause string) {
 	c.mu.Lock()
 	if c.gen != gen || c.state != stOpen || c.revealed {
 		c.mu.Unlock()
@@ -505,6 +505,7 @@ func (c *windowCtl) reveal(gen uint64) {
 		c.revealT = nil
 	}
 	c.mu.Unlock()
+	otrace.At("reveal-by-" + cause)
 	if !c.h.ShowEditor(gen) {
 		c.failEditor(gen, "reveal", "the editor window could not be shown")
 		return

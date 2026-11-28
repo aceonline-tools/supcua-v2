@@ -327,8 +327,13 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 			}
 			// Maximising activates whatever the extended styles say; hand the focus straight back, the
 			// reveal activates the window for real.
-			if prev != 0 && prev != w.hwnd && win.GetForegroundWindow() == w.hwnd {
-				win.SetForegroundWindow(prev)
+			if win.GetForegroundWindow() == w.hwnd && prev != w.hwnd {
+				switch {
+				case prev == 0 || !isWindow(prev) || !win.IsWindowVisible(prev):
+					log.Printf("webview: editor focus hand-back skipped: previous foreground window %#x is gone or hidden; the editor keeps it until the reveal", uintptr(prev))
+				case !win.SetForegroundWindow(prev) || win.GetForegroundWindow() != prev:
+					log.Printf("webview: editor focus hand-back to %#x failed (foreground is %#x); the editor keeps it until the reveal", uintptr(prev), uintptr(win.GetForegroundWindow()))
+				}
 			}
 		}
 	}
