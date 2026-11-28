@@ -8,7 +8,7 @@ import (
 
 func TestRemoveRegistrationDropsCallbackEvenOnOSFailure(t *testing.T) {
 	var mu sync.RWMutex
-	cbs := map[int]HotkeyCallback{1: func(int) {}, 2: func(int) {}}
+	cbs := map[int]HotkeyCallback{1: func(int, uint64) {}, 2: func(int, uint64) {}}
 
 	if err := removeRegistration(&mu, cbs, 1, func(int) error { return nil }); err != nil {
 		t.Fatal(err)

@@ -56,6 +56,12 @@ func (c *CaptureBackend) Start(mode bridge.CaptureMode, pick model.Hotkey, sink 
 			return err
 		}
 		c.stopKey = stop
+	case bridge.CaptureSettingsHotkey:
+		stop, err := webview.StartKeyCaptureWithAlt(webview.ForegroundIs(c.HWND), settingsHotkeyHandler(sink, vkCodeToName))
+		if err != nil {
+			return err
+		}
+		c.stopKey = stop
 	case bridge.CaptureKey:
 		stop, err := webview.StartKeyCapture(webview.ForegroundIs(c.HWND), keyCaptureHandler(sink, keyToName))
 		if err != nil {

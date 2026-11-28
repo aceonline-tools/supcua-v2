@@ -50,7 +50,7 @@ func (r *fakeRegistrar) fire(t *testing.T, key string) {
 	if cb == nil {
 		t.Fatalf("no hotkey registered for %q", key)
 	}
-	cb(id)
+	cb(id, 0)
 }
 
 func (r *fakeRegistrar) has(key string) bool {
@@ -72,13 +72,13 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) GetRunningScriptID() string { f.mu.Lock(); defer f.mu.Unlock(); return f.running }
-func (f *fakeRunner) StartScript(s model.Script) {
+func (f *fakeRunner) StartScriptFromHotkey(s model.Script, _ uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.starts = append(f.starts, s.ID)
 }
-func (f *fakeRunner) StopRunningScript() { f.mu.Lock(); defer f.mu.Unlock(); f.stops++ }
-func (f *fakeRunner) set(id string)      { f.mu.Lock(); defer f.mu.Unlock(); f.running = id }
+func (f *fakeRunner) StopRunningScriptFromHotkey(uint64) { f.mu.Lock(); defer f.mu.Unlock(); f.stops++ }
+func (f *fakeRunner) set(id string)                      { f.mu.Lock(); defer f.mu.Unlock(); f.running = id }
 
 func hk(k string) *model.Hotkey { return &model.Hotkey{Key: k} }
 

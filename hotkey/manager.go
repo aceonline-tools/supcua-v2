@@ -48,8 +48,9 @@ var bareModifierVKCodes = map[uint32]bool{
 	0x5C: true, // VK_RWIN
 }
 
-// HotkeyCallback is invoked when a registered hotkey is pressed.
-type HotkeyCallback func(hotkeyID int)
+// HotkeyCallback is invoked when a registered hotkey is pressed; epoch is the EpochSource value
+// read on the listener thread when the press was detected.
+type HotkeyCallback func(hotkeyID int, epoch uint64)
 
 type unregRequest struct {
 	id    int
@@ -60,7 +61,7 @@ type pollKeyEntry struct {
 	id       int
 	vkCode   uint32
 	callback HotkeyCallback
-	wasDown  bool
+	state    pollState
 }
 
 // Manager handles global hotkey registration and dispatching on Windows.
@@ -76,6 +77,25 @@ type Manager struct {
 	pollKeys []pollKeyEntry
 
 	listenerTID atomic.Uint32
+
+	pollMute pollMute
+	epoch    func() uint64
+}
+
+// SetSuspended marks a Settings recording as active (calls nest). It only affects the polled
+// bare-modifier keys: a key seen down while recording does not fire on its later release. Whether
+// an action may run is decided by the app controller (SetHotkeyRecording), not here.
+func (m *Manager) SetSuspended(on bool) { m.pollMute.set(on) }
+
+// SetEpochSource sets the stamp read for every hotkey event at detection, before it is dispatched.
+// Call it before ListenForHotkeys.
+func (m *Manager) SetEpochSource(f func() uint64) { m.epoch = f }
+
+func (m *Manager) stamp() uint64 {
+	if m.epoch == nil {
+		return 0
+	}
+	return m.epoch()
 }
 
 // registerThreadHook, when set (tests only), receives the OS thread id RegisterHotKey ran on.
@@ -248,6 +268,7 @@ func (m *Manager) ListenForHotkeys() {
 		ptY     int32
 	}
 
+	var pollSeen uint64
 	for {
 		// Process pending registrations/unregistrations
 		for {
@@ -274,27 +295,27 @@ func (m *Manager) ListenForHotkeys() {
 			cb, ok := m.callbacks[pressedID]
 			m.mu.RUnlock()
 			if ok {
-				log.Printf("hotkey fired: id=%d", pressedID)
-				go cb(pressedID)
+				go m.fire(pressedID, m.stamp(), cb)
 			}
 		}
 
 		// Poll bare modifier keys via GetAsyncKeyState, fire on key-up.
 		m.pollMu.Lock()
+		muted := m.pollMute.sample(&pollSeen)
 		for i := range m.pollKeys {
 			pk := &m.pollKeys[i]
 			state, _, _ := procGetAsyncKeyState.Call(uintptr(pk.vkCode))
-			isDown := uint16(state)&0x8000 != 0
-			if pk.wasDown && !isDown {
-				cb := pk.callback
-				id := pk.id
-				log.Printf("hotkey fired: id=%d", id)
-				go cb(id)
+			if pk.state.step(uint16(state)&0x8000 != 0, muted) {
+				go m.fire(pk.id, m.stamp(), pk.callback)
 			}
-			pk.wasDown = isDown
 		}
 		m.pollMu.Unlock()
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func (m *Manager) fire(id int, epoch uint64, cb HotkeyCallback) {
+	log.Printf("hotkey fired: id=%d", id)
+	cb(id, epoch)
 }

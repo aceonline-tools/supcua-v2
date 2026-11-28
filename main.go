@@ -374,6 +374,7 @@ func main() {
 	scriptExecutor := executor.NewExecutor(lockTracker, imageDetectorInstance, appConfig.KeyPressDurationMs)
 	hotkeyManager := hotkey.NewManager()
 	appController := app.NewController(scriptExecutor, hotkeyManager, scriptStore, configStore)
+	hotkeyManager.SetEpochSource(appController.HotkeyEpoch)
 
 	// Allow rctrl to toggle global active even during keyboard lock
 	executor.SetEmergencyToggle(appController.ToggleGlobalStatus)
@@ -559,6 +560,7 @@ func main() {
 		Overlay:    overlayCtl,
 		UI:         late,
 		Capture:    &ui.CaptureBackend{HWND: late.hwnd},
+		HotkeyMute: hotkeyManager,
 		Host:       host,
 		CallerRole: func(ctx context.Context) string {
 			if c, ok := rpc.CallerFrom(ctx); ok {
@@ -724,9 +726,9 @@ func main() {
 	if policy.RegisterHotkeys {
 		go hotkeyManager.ListenForHotkeys() // before any Register: it services the channel
 		stages.Mark("hotkey listener started")
-		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(int) { appController.ToggleGlobalStatus() })
-		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(int) {
-			late.Post(overlayCtl.ToggleVisibility)
+		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(_ int, epoch uint64) { appController.ToggleGlobalFromHotkey(epoch) })
+		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(_ int, epoch uint64) {
+			late.Post(func() { appController.RunHotkeyAction(epoch, overlayCtl.ToggleVisibility) })
 		})
 		registerStartupHotkeys := func() {
 			t0 := time.Now()

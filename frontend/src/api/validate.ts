@@ -28,6 +28,8 @@ const validators: Record<EventName, (v: Obj) => boolean> = {
   'editor.windowFailed': (v) => int(v.gen) && str(v.stage) && str(v.message) && (v.recoveredPath === undefined || str(v.recoveredPath)),
   'editor.windowClosed': (v) => int(v.gen) && bool(v.saved) && bool(v.forced) && (v.recoveredPath === undefined || str(v.recoveredPath)),
   'capture.hotkey': (v) => int(v.capture_id) && oneOf(v.field, ['toggle', 'start', 'stop']) && (v.hotkey === null || hotkey(v.hotkey)) && str(v.display),
+  'settings.capture.hotkey': (v) => int(v.capture_id) && oneOf(v.field, ['global_hotkey', 'overlay_hotkey', 'capture_hotkey']) && (v.hotkey === null || hotkey(v.hotkey)) && str(v.display),
+  'settings.capture.ended': (v) => int(v.capture_id) && oneOf(v.reason, ['stopped', 'blur', 'timeout', 'editorClosed']),
   'capture.key': (v) => int(v.capture_id) && str(v.key),
   'capture.mouse': (v) => int(v.capture_id) && num(v.x) && num(v.y),
   'capture.ended': (v) => int(v.capture_id) && oneOf(v.reason, ['stopped', 'blur', 'timeout', 'editorClosed']),

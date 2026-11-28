@@ -37,6 +37,7 @@ type Controller interface {
 	Snapshot() status.Snapshot
 	Subscribe(fn func(status.Snapshot))
 	SetEditDialogOpen(open bool)
+	SetHotkeyRecording(on bool)
 }
 
 type Store interface {
@@ -63,6 +64,11 @@ type Config interface {
 
 type HotkeySet interface {
 	SetScripts(scripts []model.Script)
+}
+
+// HotkeyMute mutes and restores all registered hotkeys without unregistering them.
+type HotkeyMute interface {
+	SetSuspended(on bool)
 }
 
 type AutoActive interface {
@@ -120,6 +126,8 @@ type Deps struct {
 	Overlay    Overlay
 	UI         UIThread
 	Capture    CaptureBackend
+	// HotkeyMute (optional) mutes every registered hotkey while the Settings recorder runs.
+	HotkeyMute HotkeyMute
 	Host       Host
 	// CallerRole names the window a call came from ("main"|"editor"); set by the host transport.
 	CallerRole func(ctx context.Context) string
@@ -196,6 +204,14 @@ func New(d Deps, e Emitter) *Bridge {
 		closingReady: make(chan struct{}),
 	}
 	b.capture = newCaptureManager(d.Capture, b.emit, defaultCaptureIdle)
+	b.capture.suspend = func(on bool) {
+		if d.Controller != nil {
+			d.Controller.SetHotkeyRecording(on)
+		}
+		if d.HotkeyMute != nil {
+			d.HotkeyMute.SetSuspended(on)
+		}
+	}
 	if d.Store != nil {
 		if scripts, err := d.Store.List(); err != nil {
 			log.Printf("bridge: initial script list failed: %v", err)
@@ -705,6 +721,8 @@ func (b *Bridge) Methods() map[string]Handler {
 	reg(m, "editor.toJSON", b.editorToJSON, "script")
 	reg(m, "editor.fromJSON", b.editorFromJSON, "text")
 	regNoParams(m, "actions.catalog", func() (any, error) { return buildCatalog(), nil })
+	reg(m, "settings.capture.start", b.settingsCaptureStart, "field")
+	reg(m, "settings.capture.stop", b.settingsCaptureStop)
 	reg(m, "capture.hotkey.start", b.captureHotkeyStart, "sessionId", "field")
 	reg(m, "capture.key.start", b.captureKeyStart, "sessionId")
 	reg(m, "capture.stop", b.captureStop, "sessionId")

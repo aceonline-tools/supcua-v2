@@ -161,6 +161,13 @@ func (b *Bridge) settingsUpdate(p struct {
 	}
 
 	var undo []func()
+	restoreFailed := false
+	failCode := func(code string) *Error {
+		if restoreFailed {
+			return newErr(CodeHotkeyRestoreFail)
+		}
+		return newErr(code)
+	}
 	rollback := func() {
 		for i := len(undo) - 1; i >= 0; i-- {
 			undo[i]()
@@ -175,10 +182,15 @@ func (b *Bridge) settingsUpdate(p struct {
 		if err := b.d.Host.RebindHotkey(h.kind, *h.dst); err != nil {
 			log.Printf("bridge: rebind %s failed: %v", h.kind, err)
 			rollback()
-			return nil, newErr(CodeHotkeyRegisterFail)
+			return nil, failCode(CodeHotkeyRegisterFail)
 		}
 		host, kind, old := b.d.Host, h.kind, h.old
-		undo = append(undo, func() { _ = host.RebindHotkey(kind, old) })
+		undo = append(undo, func() {
+			if err := host.RebindHotkey(kind, old); err != nil {
+				log.Printf("bridge: restoring the %s hotkey failed: %v", kind, err)
+				restoreFailed = true
+			}
+		})
 		immediate = append(immediate, h.field)
 	}
 	if next.OverlayEnabled != cfg.OverlayEnabled {
@@ -195,7 +207,7 @@ func (b *Bridge) settingsUpdate(p struct {
 	if err := b.d.Config.Update(func(c *model.AppConfig) { *c = withPersisted(*c, next) }); err != nil {
 		log.Printf("bridge: persist settings failed: %v", err)
 		rollback()
-		return nil, newErr(CodeSaveFailed)
+		return nil, failCode(CodeSaveFailed)
 	}
 	b.refreshOverlay(true)
 	if len(immediate)+len(restart) > 0 {

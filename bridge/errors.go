@@ -17,6 +17,7 @@ const (
 	CodeNameTaken          = "NAME_TAKEN"
 	CodeHotkeyConflict     = "HOTKEY_CONFLICT"
 	CodeHotkeyRegisterFail = "HOTKEY_REGISTER_FAILED"
+	CodeHotkeyRestoreFail  = "HOTKEY_RESTORE_FAILED"
 	CodeEditorBusy         = "EDITOR_BUSY"
 	CodeEditorClosed       = "EDITOR_CLOSED"
 	CodeSaveFailed         = "SAVE_FAILED"
@@ -38,6 +39,7 @@ var messages = map[string]string{
 	CodeNameTaken:          "a script with this name already exists",
 	CodeHotkeyConflict:     "hotkey conflicts with another script",
 	CodeHotkeyRegisterFail: "could not register hotkey",
+	CodeHotkeyRestoreFail:  "could not restore the previous hotkey",
 	CodeEditorBusy:         "an editor is already open",
 	CodeEditorClosed:       "editor session is not open",
 	CodeSaveFailed:         "could not write script file",

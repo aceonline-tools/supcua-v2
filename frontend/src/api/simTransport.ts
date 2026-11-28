@@ -27,6 +27,11 @@ export function createSimTransport(shellOrigin: string): Transport {
     if (m.ok) p.resolve(m.result);
     else p.reject(new ApiError(m.error ?? { code: 'INTERNAL', message: 'Internal error' }));
   });
+  // The shell's mock stands in for the host's key hook (Settings hotkey recorder): forward every key.
+  const forward = (down: boolean) => (e: KeyboardEvent) =>
+    window.parent.postMessage({ supcua: 'key', down, code: e.code, key: e.key, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }, shellOrigin);
+  window.addEventListener('keydown', forward(true), true);
+  window.addEventListener('keyup', forward(false), true);
   return {
     call(method, params) {
       const id = nextId++;

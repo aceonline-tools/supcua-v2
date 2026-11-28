@@ -153,6 +153,7 @@ export interface Script {
 }
 
 export type HotkeyField = 'toggle' | 'start' | 'stop';
+export type SettingsHotkeyField = 'global_hotkey' | 'overlay_hotkey' | 'capture_hotkey';
 export type ActionGroup = 'mouse' | 'keyboard' | 'wait' | 'loop' | 'lock' | 'image';
 
 // ASSUMED: param `name` equals the Action JSON tag it edits; kind is int|string|bool.
@@ -197,7 +198,7 @@ export interface CaptureStarted {
 
 export type ErrorCode =
   | 'BAD_REQUEST' | 'UNKNOWN_METHOD' | 'BUSY' | 'INTERNAL' | 'NOT_FOUND' | 'NAME_EMPTY'
-  | 'NAME_TAKEN' | 'HOTKEY_CONFLICT' | 'HOTKEY_REGISTER_FAILED' | 'EDITOR_BUSY' | 'EDITOR_CLOSED'
+  | 'NAME_TAKEN' | 'HOTKEY_CONFLICT' | 'HOTKEY_REGISTER_FAILED' | 'HOTKEY_RESTORE_FAILED' | 'EDITOR_BUSY' | 'EDITOR_CLOSED'
   | 'SAVE_FAILED' | 'INVALID_SETTING' | 'UPDATE_FAILED' | 'NOT_LICENSED'
   | 'FORBIDDEN_ROLE' | 'STALE_GEN' | 'SESSION_CLOSING' | 'DRAFT_TOO_LARGE' | 'SHUTTING_DOWN' | 'EDITOR_WINDOW_BUSY';
 
@@ -236,6 +237,8 @@ export interface Methods {
   'editor.describeActions': { params: { actions: Action[] }; result: string[] };
   'editor.toJSON': { params: { script: Script }; result: { text: string } };
   'editor.fromJSON': { params: { text: string }; result: { script: Script } };
+  'settings.capture.start': { params: { field: SettingsHotkeyField }; result: CaptureStarted };
+  'settings.capture.stop': { params: { capture_id?: number }; result: Record<string, never> };
   'capture.hotkey.start': { params: { sessionId: string; field: HotkeyField }; result: CaptureStarted };
   'capture.key.start': { params: { sessionId: string }; result: CaptureStarted };
   'capture.stop': { params: { sessionId: string; capture_id?: number }; result: Record<string, never> };
@@ -265,6 +268,9 @@ export interface Events {
   'capture.key': { capture_id: number; key: string; mods?: string[] | null };
   'capture.mouse': { capture_id: number; x: number; y: number };
   'capture.ended': { capture_id: number; reason: CaptureEndReason };
+  // The main window's Settings recorder (bridge/capture.go): a single modifier arrives as { modifiers: [], key: 'rctrl' }.
+  'settings.capture.hotkey': { capture_id: number; field: SettingsHotkeyField; hotkey: Hotkey | null; display: string };
+  'settings.capture.ended': { capture_id: number; reason: CaptureEndReason };
   'editor.reset': { reason: string; session_id: string };
   'editor.closeRequested': { gen: number; sessionId?: string; reason: 'user' | 'app-closing' | 'owner-closing' };
   'editor.measureRequest': { token: number };

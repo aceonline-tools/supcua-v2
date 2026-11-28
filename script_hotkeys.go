@@ -14,8 +14,8 @@ type hotkeyRegistrar interface {
 
 type scriptRunner interface {
 	GetRunningScriptID() string
-	StartScript(model.Script)
-	StopRunningScript()
+	StartScriptFromHotkey(model.Script, uint64)
+	StopRunningScriptFromHotkey(uint64)
 }
 
 // scriptHotkeySet serializes script-hotkey bookkeeping. Callers may be the UI
@@ -155,11 +155,11 @@ func registerScriptHotkeys(
 		switch script.HotkeyMode {
 		case "toggle":
 			if script.ToggleHotkey != nil {
-				id, err := hotkeyManager.Register(*script.ToggleHotkey, func(hotkeyID int) {
+				id, err := hotkeyManager.Register(*script.ToggleHotkey, func(hotkeyID int, epoch uint64) {
 					if appController.GetRunningScriptID() == currentScript.ID {
-						appController.StopRunningScript()
+						appController.StopRunningScriptFromHotkey(epoch)
 					} else {
-						appController.StartScript(currentScript)
+						appController.StartScriptFromHotkey(currentScript, epoch)
 					}
 				})
 				if err != nil {
@@ -170,8 +170,8 @@ func registerScriptHotkeys(
 			}
 		case "separate":
 			if script.StartHotkey != nil {
-				id, err := hotkeyManager.Register(*script.StartHotkey, func(hotkeyID int) {
-					appController.StartScript(currentScript)
+				id, err := hotkeyManager.Register(*script.StartHotkey, func(hotkeyID int, epoch uint64) {
+					appController.StartScriptFromHotkey(currentScript, epoch)
 				})
 				if err != nil {
 					log.Printf("warning: failed to register start hotkey for script %s: %v", currentScript.Name, err)
@@ -180,9 +180,9 @@ func registerScriptHotkeys(
 				}
 			}
 			if script.StopHotkey != nil {
-				id, err := hotkeyManager.Register(*script.StopHotkey, func(hotkeyID int) {
+				id, err := hotkeyManager.Register(*script.StopHotkey, func(hotkeyID int, epoch uint64) {
 					if appController.GetRunningScriptID() == currentScript.ID {
-						appController.StopRunningScript()
+						appController.StopRunningScriptFromHotkey(epoch)
 					}
 				})
 				if err != nil {
