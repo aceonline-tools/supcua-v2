@@ -72,7 +72,7 @@ func (s *SelfTest) openFixtureEditor(mode string) (hwnd uintptr, mainEnabledWhen
 	var h uintptr
 	if !waitFor(40*time.Second, func() bool {
 		if ed := s.UI.Editor(); ed != nil {
-			if hw := ed.HWND(); hw != 0 && win.IsWindowVisible(win.HWND(hw)) {
+			if hw := ed.HWND(); hw != 0 && editorRevealed(hw) {
 				h = hw
 				return true
 			}
