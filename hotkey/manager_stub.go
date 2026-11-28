@@ -33,3 +33,11 @@ func (hotkeyManager *Manager) ListenForHotkeys() {}
 func (hotkeyManager *Manager) SetSuspended(bool) {}
 
 func (hotkeyManager *Manager) SetEpochSource(func() uint64) {}
+
+func (hotkeyManager *Manager) StartPreview() {}
+
+func (hotkeyManager *Manager) StopPreview() {}
+
+func (hotkeyManager *Manager) SetPreview(int, Preview) bool { return false }
+
+func SetAcceptInjected(bool) {}

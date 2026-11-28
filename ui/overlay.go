@@ -13,6 +13,7 @@ import (
 	"github.com/lxn/win"
 
 	"github.com/yanmad27/supcua-v2/app"
+	"github.com/yanmad27/supcua-v2/latency"
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/ui/webview"
 )
@@ -162,7 +163,7 @@ func (overlayWindow *OverlayWindow) paint() {
 }
 
 func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
-	return overlayStatus(overlayWindow.appController.Snapshot())
+	return overlayStatus(overlayWindow.appController.OverlaySnapshot())
 }
 
 // render draws the overlay into a 32-bit premultiplied DIB and pushes it with UpdateLayeredWindow.
@@ -171,7 +172,7 @@ func (overlayWindow *OverlayWindow) statusText() (text string, rgb [3]uint8) {
 func (overlayWindow *OverlayWindow) render(x, y int) error {
 	st := overlayWindow.style
 	w, h := st.Width, st.Height
-	req := presentFor(overlayWindow.appController.Snapshot(), st, x, y)
+	req := presentFor(overlayWindow.appController.OverlaySnapshot(), st, x, y)
 	text, rgb := req.Text, req.RGB
 	overlayWindow.lastText, overlayWindow.lastRGB = text, rgb
 	overlayLog.Shown(text, rgb, overlayWindow.appController.IsGlobalActive())
@@ -234,7 +235,9 @@ func (overlayWindow *OverlayWindow) render(x, y int) error {
 	origin := win.POINT{}
 	size := win.SIZE{CX: int32(req.Size[0]), CY: int32(req.Size[1])}
 	dst := win.POINT{X: int32(req.Dst[0]), Y: int32(req.Dst[1])}
-	return updateLayered(overlayWindow.windowHandle, memDC, &dst, &size, &origin, &blend)
+	err = updateLayered(overlayWindow.windowHandle, memDC, &dst, &size, &origin, &blend)
+	latency.Mark(latency.Present)
+	return err
 }
 
 // updateLayered is the single UpdateLayeredWindow call site; tests replace it to see exactly what

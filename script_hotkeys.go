@@ -166,6 +166,7 @@ func registerScriptHotkeys(
 					log.Printf("warning: failed to register toggle hotkey for script %s: %v", currentScript.Name, err)
 				} else {
 					registeredIDs = append(registeredIDs, id)
+					bindStopPreview(hotkeyManager, appController, id, currentScript.ID)
 				}
 			}
 		case "separate":
@@ -189,9 +190,33 @@ func registerScriptHotkeys(
 					log.Printf("warning: failed to register stop hotkey for script %s: %v", currentScript.Name, err)
 				} else {
 					registeredIDs = append(registeredIDs, id)
+					bindStopPreview(hotkeyManager, appController, id, currentScript.ID)
 				}
 			}
 		}
 	}
 	return registeredIDs
+}
+
+type previewBinder interface {
+	SetPreview(int, hotkey.Preview) bool
+}
+
+type stopPreviewer interface {
+	BeginStopPreview(scriptID string, epoch uint64) uint64
+	CancelPreview(token uint64)
+}
+
+// bindStopPreview lets a polled bare-modifier script hotkey (e.g. RCtrl) show "stopped" on the overlay
+// at key-down while its script is running. It is a no-op for other hotkeys and test doubles.
+func bindStopPreview(reg hotkeyRegistrar, runner scriptRunner, id int, scriptID string) {
+	b, ok := reg.(previewBinder)
+	sp, ok2 := runner.(stopPreviewer)
+	if !ok || !ok2 {
+		return
+	}
+	b.SetPreview(id, hotkey.Preview{
+		Begin:  func(epoch uint64) uint64 { return sp.BeginStopPreview(scriptID, epoch) },
+		Cancel: sp.CancelPreview,
+	})
 }

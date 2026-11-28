@@ -25,6 +25,7 @@ import (
 	"github.com/yanmad27/supcua-v2/executor"
 	"github.com/yanmad27/supcua-v2/hotkey"
 	imagedetector "github.com/yanmad27/supcua-v2/image"
+	"github.com/yanmad27/supcua-v2/latency"
 	"github.com/yanmad27/supcua-v2/license"
 	"github.com/yanmad27/supcua-v2/model"
 	"github.com/yanmad27/supcua-v2/storage"
@@ -478,6 +479,7 @@ func main() {
 					scriptHotkeys.Stop()
 				}
 				hotkeyManager.UnregisterAll()
+				hotkeyManager.StopPreview()
 				close(unregistered)
 			}()
 			select {
@@ -722,15 +724,20 @@ func main() {
 	})
 	tray.AddAutoActiveProcessItem(func() { br.NavGoto("settings") })
 	appController.Subscribe(func(snap status.Snapshot) {
+		latency.Mark(latency.Publish)
 		ui.LogOverlayState(snap.GlobalActive, snap.RunningScriptName)
-		if scriptHotkeys != nil {
-			scriptHotkeys.Reconcile()
-		}
-		if ok, why := late.tryPost(func() {
+		// The overlay repaint is posted before Reconcile: Reconcile blocks on the hotkey listener
+		// whenever the global state flips and must not delay what the user is looking at.
+		ok, why := late.tryPost(func() {
+			latency.Mark(latency.Refresh)
 			overlayCtl.Refresh()
 			tray.UpdateTooltip()
-		}); !ok {
+		})
+		if !ok {
 			ui.LogOverlayDropped(why)
+		}
+		if scriptHotkeys != nil {
+			scriptHotkeys.Reconcile()
 		}
 	})
 	tray.UpdateTooltip()
@@ -744,6 +751,11 @@ func main() {
 	if policy.RegisterHotkeys {
 		go hotkeyManager.ListenForHotkeys() // before any Register: it services the channel
 		stages.Mark("hotkey listener started")
+		fixed.setPreview(bridge.HotkeyGlobal, hotkey.Preview{Begin: appController.BeginTogglePreview, Cancel: appController.CancelPreview})
+		appController.SetPreviewNotifier(func() {
+			late.tryPost(overlayCtl.Refresh)
+		})
+		hotkeyManager.StartPreview()
 		fixed.add(bridge.HotkeyGlobal, appConfig.GlobalHotkey, func(_ int, epoch uint64) { appController.ToggleGlobalFromHotkey(epoch) })
 		fixed.add(bridge.HotkeyOverlay, appConfig.OverlayHotkey, func(_ int, epoch uint64) {
 			late.Post(func() { appController.RunHotkeyAction(epoch, overlayCtl.ToggleVisibility) })
@@ -816,6 +828,19 @@ func main() {
 				GlobalHotkey: appConfig.GlobalHotkey, ProbeHotkey: probe, ProbeID: "fx-probe-1",
 				ExpectFixed: 2, AutoActiveEnabled: appConfig.AutoActiveEnabled, ExpectRow: "Fixture Farm",
 				OverlayHotkey: appConfig.OverlayHotkey,
+				Register: func(hk model.Hotkey, f func(uint64), begin func(uint64) uint64) (int, error) {
+					id, err := hotkeyManager.Register(hk, func(_ int, epoch uint64) { f(epoch) })
+					if err == nil && begin != nil {
+						hotkeyManager.SetPreview(id, hotkey.Preview{Begin: begin, Cancel: appController.CancelPreview})
+					}
+					return id, err
+				},
+				PreviewToggle: appController.BeginTogglePreview,
+				PreviewStop:   func(epoch uint64) uint64 { return appController.BeginStopPreview("fx-probe-1", epoch) },
+				Unregister:   func(id int) { _ = hotkeyManager.Unregister(id) },
+				ToggleGlobal: appController.ToggleGlobalFromHotkey,
+				StopRunning:  appController.StopRunningScriptFromHotkey,
+				PhysicalRCtrl: executor.SimulatePhysicalRCtrl,
 			})
 		} else {
 			go selftest.Run()
