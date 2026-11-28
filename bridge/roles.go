@@ -47,7 +47,7 @@ func Roles() RoleLists {
 		// The selftest-only gen-0 route's close (the leak check's main-page cycles): no production caller.
 		SelftestOnly: []string{"editor.close"},
 		EditorOnly: append([]string{
-			"editor.windowReady", "editor.measured", "editor.measureAck", "editor.checkpoint", "editor.guardActive", "editor.closeDecision", "editor.requestClose",
+			"editor.windowReady", "editor.measured", "editor.measureAck", "editor.painted", "editor.checkpoint", "editor.guardActive", "editor.closeDecision", "editor.requestClose",
 		}, legacyEditor...),
 	}
 }

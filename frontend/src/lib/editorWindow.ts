@@ -1,7 +1,7 @@
 import { tick } from 'svelte';
 import type { Client } from '../api/client';
 import type { AppStore } from './store.svelte';
-import { applyScrollbarMetrics, MeasureController, type MeasureMetrics } from './measure';
+import { afterPaint, applyScrollbarMetrics, MeasureController, type MeasureMetrics } from './measure';
 
 export interface EditorMetrics extends Partial<MeasureMetrics> {
   measuring: boolean;
@@ -21,12 +21,14 @@ declare global {
 // handshake. Subscriptions are made before any call so no host event is missed.
 export function startEditorWindow(api: Client, store: AppStore, init: Promise<unknown>): { measure: MeasureController; opened: Promise<boolean> } {
   applyScrollbarMetrics();
-  const opened = init
-    .then(() => api.call('editor.windowReady').catch(() => ({})))
-    .then(() => store.editor.open())
-    .then(async (ok) => { await tick(); return ok; });
-  const measure = new MeasureController(api, { root: () => document.getElementById('editor-root'), ready: async () => { await opened; await tick(); } });
-  api.on('editor.measureRequest', (e) => void measure.request(e.token));
+  const mark = (n: string) => performance.mark(`eo:${n}`);
+  // windowReady, the session attach and the store's initial loads are independent: none waits for another.
+  const ready = api.call('editor.windowReady').catch(() => ({})).then(() => mark('ready-sent'));
+  const initDone = init.then(() => { mark('init'); });
+  const opened = Promise.all([ready, initDone, store.editor.open()])
+    .then(async ([, , ok]) => { await tick(); mark('session'); return ok; });
+  const measure = new MeasureController(api, { root: () => document.getElementById('editor-root'), ready: async () => { await opened; await tick(); }, paint: async () => { await store.editor.captureReady.catch(() => {}); await afterPaint(); } });
+  api.on('editor.measureRequest', (e) => { performance.mark('eo:measure-request'); void measure.request(e.token); });
   api.on('editor.measureAbort', () => void measure.abort());
   window.__editorMetrics = () => {
     const m = measure.metrics();

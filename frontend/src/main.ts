@@ -28,6 +28,7 @@ if (role === 'editor') {
 } else {
   mount(App, { target: document.getElementById('app')!, props: { store, copy: async (text: string) => { await client.call('clipboard.write', { text }); } } });
 }
+performance.mark('eo:mounted');
 reportMounted(client);
 reportRendered(client);
 loader.stage('scripts');

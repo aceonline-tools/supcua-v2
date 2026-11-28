@@ -173,6 +173,15 @@ func (b *Bridge) editorMeasureAck(p struct {
 	return empty{}, nil
 }
 
+func (b *Bridge) editorPainted() (any, error) {
+	w, err := b.needWindow()
+	if err != nil {
+		return nil, err
+	}
+	_ = b.callUI(func() error { w.painted(); return nil })
+	return empty{}, nil
+}
+
 // editorRequestClose is editor.requestClose: the in-page Close button enters the same single close
 // path as WM_CLOSE/Alt-F4 (contract §4.3). A repeat while already in CloseRequested is a no-op.
 func (b *Bridge) editorRequestClose() (any, error) {

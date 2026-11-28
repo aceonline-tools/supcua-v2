@@ -16,7 +16,7 @@ const MAIN_ONLY = [
 // Selftest-only gen-0 route (bridge/roles.go SelftestOnly): denied to both windows in production.
 const SELFTEST_ONLY = ['editor.close'];
 const EDITOR_ONLY = [
-  'editor.windowReady', 'editor.measured', 'editor.measureAck', 'editor.checkpoint', 'editor.guardActive', 'editor.closeDecision',
+  'editor.windowReady', 'editor.measured', 'editor.measureAck', 'editor.painted', 'editor.checkpoint', 'editor.guardActive', 'editor.closeDecision',
   'editor.requestClose', 'editor.open', 'editor.save', 'editor.describeActions', 'editor.toJSON', 'editor.fromJSON',
   'capture.hotkey.start', 'capture.key.start', 'capture.mouse.start', 'capture.mouse.stop', 'capture.stop',
 ];

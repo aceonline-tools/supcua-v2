@@ -3,6 +3,7 @@ package webview
 import (
 	"errors"
 	"fmt"
+	"github.com/yanmad27/supcua-v2/otrace"
 	"log"
 	"sync"
 	"time"
@@ -53,6 +54,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 	if title == "" {
 		title = "Editor"
 	}
+	otrace.At("createwindow-begin")
 	hwnd, err := createHostWindow(title, Bounds{}, false, 0, 0, u.cfg.IconIDs, u.hwnd)
 	if err != nil {
 		return nil, err
@@ -107,6 +109,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 			o.OnFailed(w, err)
 		})
 	}
+	otrace.At("createwindow-done")
 	b := w.newBrowser(u.dataPath)
 	b.ProcessFailedCallback = func(kind int32) { w.onProcessFailed(kind) }
 	b.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
@@ -114,6 +117,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		if !success {
 			log.Printf("webview: editor navigation failed (web error status %d)", status)
 		}
+		otrace.At("nav-completed")
 		w.nav.completed()
 	}
 	w.browser = b
@@ -127,6 +131,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 	b.InitDoneCallback = func(err error) {
 		u.Post(func() {
 			timer.Stop()
+			otrace.At("controller-ready")
 			if w.gone.Load() || u.editor != w {
 				return // rolled back or superseded while the controller was being created
 			}
@@ -146,6 +151,7 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 			if o.Fixture != "" {
 				url = serve.Origin + fixturePath
 			}
+			otrace.At("navigate")
 			if err := w.browser.NavigateChecked(url); err != nil {
 				fail(fmt.Errorf("editor navigate: %w", err))
 				return
@@ -164,7 +170,48 @@ func (u *UI) CreateEditorWindow(o EditorOptions) (*Window, error) {
 		u.editorGen.CompareAndSwap(w.gen, 0)
 		return w, err
 	}
+	if o.Fixture == "" {
+		w.stageEditor()
+	}
 	return w, nil
+}
+
+var procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
+
+const wsExLayered = 0x00080000
+
+// stageEditor makes the still-empty editor "shown" but fully transparent right after creation. A
+// hidden WebView2 host does not render (requestAnimationFrame never fires), so the page could not
+// paint before the window was revealed and its first visible frame was blank. Staged, the page
+// loads, lays out and paints while nothing is visible; ShowEditorWindow then reveals it. UI thread.
+func (w *Window) stageEditor() {
+	ex := win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)
+	// NOACTIVATE keeps every show (a remembered-maximised one included) from taking focus while transparent.
+	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex|wsExLayered|wsExNoActivate)
+	if r, _, _ := procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 0, 2); r == 0 {
+		win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex)
+		return
+	}
+	w.staged = true
+	win.ShowWindow(w.hwnd, win.SW_SHOWNA)
+}
+
+const wsExNoActivate = 0x08000000
+
+// revealStaged ends the staging: the layered and no-activate styles are removed (so no layered style
+// lingers on the WebView2 host once the window is opaque) and the result is read back. It reports
+// whether the window is really opaque and activatable now. UI thread.
+func (w *Window) revealStaged() bool {
+	procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, 255, 2)
+	ex := win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)
+	win.SetWindowLong(w.hwnd, win.GWL_EXSTYLE, ex&^(wsExLayered|wsExNoActivate))
+	return win.GetWindowLong(w.hwnd, win.GWL_EXSTYLE)&wsExLayered == 0
+}
+
+// EditorStaged reports whether the editor is shown-but-transparent and waits for ShowEditorWindow.
+func (u *UI) EditorStaged(gen uint64) bool {
+	w := u.editor
+	return w != nil && w.gen == gen && w.hwnd != 0 && w.staged
 }
 
 // destroyEditor closes the editor window: late replies are suppressed first (gone), the
@@ -267,14 +314,45 @@ func (u *UI) PlaceEditorWindow(gen uint64, l, t, r, b int, maximized bool) {
 	if w := u.editor; w != nil && w.gen == gen && w.hwnd != 0 {
 		win.SetWindowPos(w.hwnd, 0, int32(l), int32(t), int32(r-l), int32(b-t), win.SWP_NOZORDER|win.SWP_NOACTIVATE)
 		w.wantMax = maximized
+		if w.staged && maximized && !w.shownOnce {
+			// Maximise now, while transparent, with the intended NORMAL rectangle as the restore
+			// position (workspace coordinates), so the page lays out and paints at the final size and
+			// the reveal changes nothing but opacity. WS_EX_NOACTIVATE is set on the staged window.
+			dx, dy := workOffset(w.hwnd)
+			wp := win.WINDOWPLACEMENT{ShowCmd: win.SW_SHOWMAXIMIZED, RcNormalPosition: win.RECT{Left: int32(l) - dx, Top: int32(t) - dy, Right: int32(r) - dx, Bottom: int32(b) - dy}}
+			wp.Length = uint32(unsafe.Sizeof(wp))
+			prev := win.GetForegroundWindow()
+			if !win.SetWindowPlacement(w.hwnd, &wp) {
+				win.ShowWindow(w.hwnd, win.SW_SHOWMAXIMIZED)
+			}
+			// Maximising activates whatever the extended styles say; hand the focus straight back, the
+			// reveal activates the window for real.
+			if win.GetForegroundWindow() == w.hwnd && prev != w.hwnd {
+				switch {
+				case prev == 0 || !isWindow(prev) || !win.IsWindowVisible(prev):
+					log.Printf("webview: editor focus hand-back skipped: previous foreground window %#x is gone or hidden; the editor keeps it until the reveal", uintptr(prev))
+				case !win.SetForegroundWindow(prev) || win.GetForegroundWindow() != prev:
+					log.Printf("webview: editor focus hand-back to %#x failed (foreground is %#x); the editor keeps it until the reveal", uintptr(prev), uintptr(win.GetForegroundWindow()))
+				}
+			}
+		}
 	}
 }
 
 // ShowEditorWindow restores (iconic), shows (hidden) and activates the editor. UI thread only.
-func (u *UI) ShowEditorWindow(gen uint64) {
+// It reports whether the window is visible afterwards; a staged window that could not be made
+// opaque stays staged and reports false, so the owner rolls the editor back instead of leaving an
+// invisible modal window.
+func (u *UI) ShowEditorWindow(gen uint64) bool {
 	w := u.editor
 	if w == nil || w.gen != gen || w.hwnd == 0 {
-		return
+		return false
+	}
+	if w.staged {
+		if !w.revealStaged() {
+			return false
+		}
+		w.staged = false
 	}
 	switch {
 	case win.IsIconic(w.hwnd):
@@ -286,6 +364,7 @@ func (u *UI) ShowEditorWindow(gen uint64) {
 	}
 	w.shownOnce = true
 	win.SetForegroundWindow(w.hwnd)
+	return win.IsWindowVisible(w.hwnd)
 }
 
 // EditorWindowBounds is the restored (normal) rectangle and the maximised flag. UI thread only.
@@ -300,7 +379,19 @@ func (u *UI) EditorWindowBounds(gen uint64) (l, t, r, b int, maximized, ok bool)
 		return
 	}
 	n := wp.RcNormalPosition
-	return int(n.Left), int(n.Top), int(n.Right), int(n.Bottom), wp.ShowCmd == win.SW_SHOWMAXIMIZED, true
+	dx, dy := workOffset(w.hwnd) // WINDOWPLACEMENT is in workspace coordinates, the config in screen coordinates
+	return int(n.Left) + int(dx), int(n.Top) + int(dy), int(n.Right) + int(dx), int(n.Bottom) + int(dy), wp.ShowCmd == win.SW_SHOWMAXIMIZED, true
+}
+
+// workOffset is the difference between screen and workspace coordinates on the window's monitor
+// (the taskbar's share of the monitor's top-left).
+func workOffset(h win.HWND) (dx, dy int32) {
+	mon := win.MonitorFromWindow(h, win.MONITOR_DEFAULTTONEAREST)
+	mi := win.MONITORINFO{CbSize: uint32(unsafe.Sizeof(win.MONITORINFO{}))}
+	if mon == 0 || !win.GetMonitorInfo(mon, &mi) {
+		return 0, 0
+	}
+	return mi.RcWork.Left - mi.RcMonitor.Left, mi.RcWork.Top - mi.RcMonitor.Top
 }
 
 // EmitEditor pushes an event to the editor window of generation gen (dropped when it is gone).

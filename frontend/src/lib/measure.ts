@@ -30,6 +30,7 @@ export interface MeasureEnv {
   root: () => HTMLElement | null;
   ready: () => Promise<void>;
   frames?: () => Promise<void>;
+  paint?: () => Promise<void>;
   fonts?: () => Promise<unknown>;
   dpr?: () => number;
 }
@@ -45,7 +46,22 @@ export interface MeasureMetrics {
   lastBlockBottom: number;
 }
 
-const twoFrames = () => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res())));
+// requestAnimationFrame does not run while the editor window is hidden, so the measurement never waits
+// for a frame: reading a rect forces the style and layout pass synchronously and a macrotask lets the
+// reactive DOM flush. The paint wait (after the window is placed and shown transparent) does use frames,
+// bounded so a stalled compositor cannot hold the window back.
+const settle = () => {
+  void document.documentElement.offsetHeight;
+  return new Promise<void>((res) => setTimeout(res, 0));
+};
+const PAINT_WAIT_MS = 300;
+const fontsReady = () => Promise.race([document.fonts?.ready, new Promise((res) => setTimeout(res, 250))]);
+export const afterPaint = () =>
+  new Promise<void>((res) => {
+    const t = setTimeout(res, PAINT_WAIT_MS);
+    if (typeof requestAnimationFrame !== 'function') return;
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); res(); }));
+  });
 
 // Page side of the size handshake (contract §5.2). The host drives it: measureRequest{token} starts a
 // measurement, the measured reply says show or remeasure (new token + width), measureAbort ends it.
@@ -86,8 +102,8 @@ export class MeasureController {
     document.documentElement.dataset.measure = '';
     try {
       await this.env.ready();
-      await (this.env.fonts ?? (() => document.fonts?.ready))();
-      await (this.env.frames ?? twoFrames)();
+      await (this.env.fonts ?? fontsReady)();
+      await (this.env.frames ?? settle)();
     } catch { /* measure what is there */ }
     let t = token;
     for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -97,6 +113,7 @@ export class MeasureController {
       this.last = m;
       let reply: { next: 'show' | 'remeasure'; token?: number; cssW?: number };
       try {
+        performance.mark('eo:measured-sent');
         reply = await this.api.call('editor.measured', { token: t, cssW: m.cssW, cssH: m.cssH, dpr: m.dpr });
       } catch {
         return this.finish(mine, t);
@@ -106,7 +123,7 @@ export class MeasureController {
       t = this.token = reply.token;
       document.documentElement.style.setProperty('--measure-w', `${reply.cssW}px`);
       document.documentElement.dataset.measureFit = '';
-      await (this.env.frames ?? twoFrames)();
+      await (this.env.frames ?? settle)();
     }
     return this.finish(mine, t);
   }
@@ -128,5 +145,8 @@ export class MeasureController {
     delete document.documentElement.dataset.measureFit;
     document.documentElement.style.removeProperty('--measure-w');
     await this.api.call('editor.measureAck', { token }).catch(() => {});
+    await (this.env.paint ?? this.env.frames ?? afterPaint)();
+    performance.mark('eo:painted');
+    await this.api.call('editor.painted', {}).catch(() => {});
   }
 }

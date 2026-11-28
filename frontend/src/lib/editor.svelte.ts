@@ -96,6 +96,9 @@ export class EditorStore {
 
   // The editor window's session: the host decides which script (editor.openWindow) and the page only
   // attaches to it.
+  // Mouse capture starts off the measure's critical path, but the window is only revealed once it did.
+  captureReady: Promise<void> = Promise.resolve();
+
   async open(): Promise<boolean> {
     if (this.sessionId) return true;
     try {
@@ -112,7 +115,7 @@ export class EditorStore {
       return false;
     }
     await this.refreshLabels();
-    await this.enqueue(() => this.doResume());
+    this.captureReady = this.enqueue(() => this.doResume());
     return true;
   }
 

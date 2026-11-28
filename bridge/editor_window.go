@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"github.com/yanmad27/supcua-v2/otrace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,7 +31,11 @@ type EditorHost interface {
 	// the owner's), lets its DPI settle and returns that monitor's facts.
 	PrepareEditor(gen uint64, remembered model.EditorWindow) (EditorMetrics, error)
 	PlaceEditor(gen uint64, r Rect, maximized bool)
-	ShowEditor(gen uint64) // restore when iconic or hidden, then activate
+	// ShowEditor restores when iconic or hidden, reveals a staged window, then activates. It reports
+	// whether the window is visible afterwards (false: a staged window could not be revealed).
+	ShowEditor(gen uint64) bool
+	// EditorStaged: the window is shown but transparent; the page's `editor.painted` (or revealGrace) reveals it.
+	EditorStaged(gen uint64) bool
 	EditorBounds(gen uint64) (r Rect, maximized bool, ok bool)
 	// DestroyEditor invalidates the generation, posts the controller Close() and destroys the HWND.
 	// It never blocks (no COM call, no lock).
@@ -81,7 +86,8 @@ const (
 	measureRound    = 5 * time.Second
 	measureTotal    = 12 * time.Second
 	measureGrace    = time.Second
-	maxMeasureTries = 2 // extra rounds, shared by width remeasure and DPI change
+	revealGrace     = 400 * time.Millisecond // a staged window is revealed even if the page never reports painted
+	maxMeasureTries = 2                      // extra rounds, shared by width remeasure and DPI change
 	closeBase       = 10 * time.Second
 	closeLease      = 3 * time.Second
 	closeCeiling    = 60 * time.Second
@@ -123,6 +129,9 @@ type windowCtl struct {
 	graceT      Timer
 	closeT      Timer
 
+	revealT    Timer
+	revealed   bool
+	focusReq   bool       // a second open arrived before the window was revealed
 	pendingOut *BoundsOut // fallback size waiting for the page's measureAck or the grace timer
 
 	activeScript atomic.Pointer[string] // the script of the active generation; set under Bridge.admitMu
@@ -199,7 +208,7 @@ func (c *windowCtl) State() string {
 }
 
 func (c *windowCtl) stopTimersLocked() {
-	for _, t := range []*Timer{&c.startupT, &c.roundT, &c.totalT, &c.graceT, &c.closeT} {
+	for _, t := range []*Timer{&c.startupT, &c.roundT, &c.totalT, &c.graceT, &c.closeT, &c.revealT} {
 		if *t != nil {
 			(*t).Stop()
 			*t = nil
@@ -228,12 +237,19 @@ func (c *windowCtl) postGen(gen uint64, f func()) {
 // only touches its own (detached) session and capture and releases the gate only when no editor
 // generation is active (cleanupDone).
 func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error) {
+	otrace.At("rpc-openWindow")
 	visible := c.h.MainVisible()
 	c.mu.Lock()
 	if c.state != stNone && c.state != stClosing {
 		gen = c.gen
+		revealed := c.revealed
+		if !revealed {
+			c.focusReq = true // creating, loading, measuring or staged: focus once it is revealed
+		}
 		c.mu.Unlock()
-		c.h.ShowEditor(gen)
+		if revealed {
+			c.h.ShowEditor(gen)
+		}
 		return "focused", gen, nil
 	}
 	if c.state == stClosing || c.b.stopping.Load() {
@@ -249,12 +265,14 @@ func (c *windowCtl) openWindow(id *string) (status string, gen uint64, err error
 	c.activeScript.Store(id)
 	c.b.admitMu.Unlock()
 	c.shown, c.shutdown, c.token, c.tries = false, false, 0, 0
+	c.revealed, c.focusReq = false, false
 	c.recoverBy = time.Time{}
 	c.destroyed, c.done = make(chan struct{}), make(chan struct{})
 	c.b.d.Controller.SetEditDialogOpen(true)
 	c.mu.Unlock()
 	c.h.EnableMain(false)
 	gen, cerr := c.h.CreateEditor()
+	otrace.At("create-editor-returned")
 	if cerr != nil {
 		// A synchronous failure returns here and is rolled back here (never through the async
 		// callback): main is re-enabled and the gate restored BEFORE the half-made window is destroyed.
@@ -325,6 +343,7 @@ func (c *windowCtl) WindowFailed(gen uint64, stage, msg string) { c.failEditor(g
 
 // pageReady is editor.windowReady: start the measurement handshake.
 func (c *windowCtl) pageReady() error {
+	otrace.At("rpc-windowReady")
 	c.mu.Lock()
 	if c.state != stCreating && c.state != stLoading {
 		c.mu.Unlock()
@@ -353,7 +372,9 @@ func (c *windowCtl) pageReady() error {
 	c.armMeasureLocked(gen)
 	c.totalT = c.clk.AfterFunc(measureTotal, func() { c.postGen(gen, func() { c.fallback(gen, "timeout") }) })
 	c.mu.Unlock()
+	otrace.At("prepared")
 	c.h.EmitEditor(gen, evEditorMeasureRequest, measureRequestEvent{Token: tok})
+	otrace.At("measure-request-emitted")
 	return nil
 }
 
@@ -389,6 +410,7 @@ type measuredResult struct {
 
 // measured is editor.measured (UI thread): decide show or remeasure.
 func (c *windowCtl) measured(token uint64, cssW, cssH int) (measuredResult, error) {
+	otrace.At("rpc-measured")
 	c.mu.Lock()
 	if c.state != stMeasuring {
 		c.mu.Unlock()
@@ -446,7 +468,57 @@ func (c *windowCtl) present(gen uint64, out BoundsOut) {
 	}
 	c.mu.Unlock()
 	c.h.PlaceEditor(gen, out.Outer, out.Maximized)
-	c.h.ShowEditor(gen)
+	otrace.At("placed")
+	if !c.h.EditorStaged(gen) {
+		c.h.ShowEditor(gen)
+		c.mu.Lock()
+		c.revealed = true
+		c.mu.Unlock()
+		otrace.At("shown")
+		return
+	}
+	c.mu.Lock()
+	if c.revealT == nil {
+		c.revealT = c.clk.AfterFunc(revealGrace, func() { c.postGen(gen, func() { c.reveal(gen, "grace") }) })
+	}
+	c.mu.Unlock()
+}
+
+// painted is editor.painted: the page painted its final layout at the placed size; reveal now.
+func (c *windowCtl) painted() {
+	c.mu.Lock()
+	gen, ok := c.gen, c.state == stOpen
+	c.mu.Unlock()
+	if ok {
+		c.reveal(gen, "painted")
+	}
+}
+
+func (c *windowCtl) reveal(gen uint64, cause string) {
+	c.mu.Lock()
+	if c.gen != gen || c.state != stOpen || c.revealed {
+		c.mu.Unlock()
+		return
+	}
+	if c.revealT != nil {
+		c.revealT.Stop()
+		c.revealT = nil
+	}
+	c.mu.Unlock()
+	otrace.At("reveal-by-" + cause)
+	if !c.h.ShowEditor(gen) {
+		c.failEditor(gen, "reveal", "the editor window could not be shown")
+		return
+	}
+	c.mu.Lock()
+	c.revealed = true
+	focus := c.focusReq
+	c.focusReq = false
+	c.mu.Unlock()
+	if focus {
+		c.h.ShowEditor(gen)
+	}
+	otrace.At("shown")
 }
 
 // fallback shows the window at the failure-only size and tells the page to leave measure mode.
