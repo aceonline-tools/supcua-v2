@@ -7,6 +7,7 @@
   import HotkeyRecorder from './HotkeyRecorder.svelte';
   import TextSetting from './TextSetting.svelte';
   import OverlayStyle from './OverlayStyle.svelte';
+  import LanguageSetting from './LanguageSetting.svelte';
   let { store }: { store: AppStore } = $props();
 
   const themes: { id: ThemeSetting; label: string; icon: IconName }[] = [
@@ -39,6 +40,7 @@
       {/each}
     </div>
   </div>
+  <LanguageSetting {store} />
 </div>
 
 {#if aa}

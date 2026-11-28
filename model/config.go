@@ -42,6 +42,7 @@ type AppConfig struct {
 	AutoActiveProcessName string `json:"auto_active_process_name"`
 
 	Theme           string   `json:"theme,omitempty"`
+	Language        string   `json:"language,omitempty"`
 	CollapsedGroups []string `json:"collapsed_groups,omitempty"`
 
 	SidebarCollapsed bool `json:"sidebar_collapsed,omitempty"`

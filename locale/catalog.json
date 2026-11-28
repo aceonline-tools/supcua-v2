@@ -1,0 +1,424 @@
+{
+ "common.add": {
+  "en": "Add",
+  "vi": "Thêm",
+  "pending": "C3"
+ },
+ "common.apply": {
+  "en": "Apply",
+  "vi": "Áp dụng",
+  "pending": "C3"
+ },
+ "common.cancel": {
+  "en": "Cancel",
+  "vi": "Hủy",
+  "pending": "C3"
+ },
+ "common.capture": {
+  "en": "Capture",
+  "vi": "Lấy",
+  "pending": "C3"
+ },
+ "common.clear": {
+  "en": "Clear",
+  "vi": "Xóa",
+  "pending": "C3"
+ },
+ "common.close": {
+  "en": "Close",
+  "vi": "Đóng",
+  "pending": "C3"
+ },
+ "common.copied": {
+  "en": "Copied",
+  "vi": "Đã chép",
+  "pending": "C3"
+ },
+ "common.copy": {
+  "en": "Copy",
+  "vi": "Sao chép",
+  "pending": "C3"
+ },
+ "common.delete": {
+  "en": "Delete",
+  "vi": "Xóa",
+  "pending": "C3"
+ },
+ "common.dismiss": {
+  "en": "Dismiss",
+  "vi": "Đóng",
+  "pending": "C3"
+ },
+ "common.edit": {
+  "en": "Edit",
+  "vi": "Sửa",
+  "pending": "C3"
+ },
+ "common.loading": {
+  "en": "Loading…",
+  "vi": "Đang tải…",
+  "pending": "C3"
+ },
+ "common.new": {
+  "en": "New",
+  "vi": "Mới",
+  "pending": "C3"
+ },
+ "common.no": {
+  "en": "No",
+  "vi": "Không",
+  "pending": "C3"
+ },
+ "common.ok": {
+  "en": "OK",
+  "vi": "OK",
+  "pending": "C3",
+  "same": true,
+  "why": "identical in Vietnamese UI"
+ },
+ "common.record": {
+  "en": "Record",
+  "vi": "Ghi",
+  "pending": "C3"
+ },
+ "common.retry": {
+  "en": "Retry",
+  "vi": "Thử lại",
+  "pending": "C3"
+ },
+ "common.skip": {
+  "en": "Skip",
+  "vi": "Bỏ qua",
+  "pending": "C3"
+ },
+ "common.update": {
+  "en": "Update",
+  "vi": "Cập nhật",
+  "pending": "C3"
+ },
+ "common.yes": {
+  "en": "Yes",
+  "vi": "Có",
+  "pending": "C3"
+ },
+ "error.bad_request": {
+  "en": "invalid request",
+  "vi": "Yêu cầu không hợp lệ"
+ },
+ "error.busy": {
+  "en": "busy",
+  "vi": "Đang bận"
+ },
+ "error.client_disconnected": {
+  "en": "Disconnected from the application. Restart it and try again.",
+  "vi": "Mất kết nối với ứng dụng. Hãy mở lại ứng dụng rồi thử lại."
+ },
+ "error.client_timeout": {
+  "en": "Request timed out",
+  "vi": "Yêu cầu quá thời gian chờ"
+ },
+ "error.draft_too_large": {
+  "en": "draft is too large",
+  "vi": "Bản nháp quá lớn"
+ },
+ "error.editor_busy": {
+  "en": "an editor is already open",
+  "vi": "Đang mở một trình soạn thảo"
+ },
+ "error.editor_closed": {
+  "en": "editor session is not open",
+  "vi": "Phiên soạn thảo chưa mở"
+ },
+ "error.editor_window_busy": {
+  "en": "an editor window is already open",
+  "vi": "Đã có một cửa sổ soạn thảo đang mở"
+ },
+ "error.forbidden_role": {
+  "en": "method not allowed for this window",
+  "vi": "Cửa sổ này không được dùng lệnh đó"
+ },
+ "error.hotkey_conflict": {
+  "en": "hotkey conflicts with another script",
+  "vi": "Hotkey trùng với script khác"
+ },
+ "error.hotkey_register_failed": {
+  "en": "could not register hotkey",
+  "vi": "Không đăng ký được hotkey"
+ },
+ "error.hotkey_restore_failed": {
+  "en": "could not restore the previous hotkey",
+  "vi": "Không khôi phục được hotkey trước đó"
+ },
+ "error.internal": {
+  "en": "internal error",
+  "vi": "Lỗi nội bộ"
+ },
+ "error.invalid_setting": {
+  "en": "invalid setting",
+  "vi": "Cài đặt không hợp lệ"
+ },
+ "error.name_empty": {
+  "en": "script name cannot be empty",
+  "vi": "Tên script không được để trống"
+ },
+ "error.name_taken": {
+  "en": "a script with this name already exists",
+  "vi": "Đã có script trùng tên"
+ },
+ "error.not_found": {
+  "en": "not found",
+  "vi": "Không tìm thấy"
+ },
+ "error.not_licensed": {
+  "en": "not licensed",
+  "vi": "Chưa có giấy phép"
+ },
+ "error.save_failed": {
+  "en": "could not write script file",
+  "vi": "Không ghi được file script"
+ },
+ "error.session_closing": {
+  "en": "editor session is closing",
+  "vi": "Phiên soạn thảo đang đóng"
+ },
+ "error.shutting_down": {
+  "en": "application is closing",
+  "vi": "Ứng dụng đang đóng"
+ },
+ "error.something_wrong": {
+  "en": "Something went wrong",
+  "vi": "Đã xảy ra lỗi"
+ },
+ "error.stale_gen": {
+  "en": "window superseded",
+  "vi": "Cửa sổ đã được thay bằng cửa sổ mới"
+ },
+ "error.unknown_method": {
+  "en": "unknown method",
+  "vi": "Không nhận ra lệnh này"
+ },
+ "error.update_failed": {
+  "en": "update failed",
+  "vi": "Cập nhật thất bại"
+ },
+ "error.update_stale": {
+  "en": "A newer update was found. Check again.",
+  "vi": "Đã có bản cập nhật mới hơn. Hãy kiểm tra lại."
+ },
+ "loader.continue": {
+  "en": "Continue",
+  "vi": "Tiếp tục",
+  "scope": [
+   "web",
+   "boot"
+  ]
+ },
+ "loader.failed": {
+  "en": "Failed to load",
+  "vi": "Không tải được",
+  "pending": "C3"
+ },
+ "loader.loadingInterface": {
+  "en": "Loading interface…",
+  "vi": "Đang tải giao diện…",
+  "pending": "C3"
+ },
+ "loader.loadingScripts": {
+  "en": "Loading scripts…",
+  "vi": "Đang tải script…",
+  "pending": "C3"
+ },
+ "loader.starting": {
+  "en": "Starting…",
+  "vi": "Đang khởi động…",
+  "scope": [
+   "web",
+   "boot"
+  ]
+ },
+ "loader.stillLoading": {
+  "en": "Still loading… this is taking longer than usual",
+  "vi": "Vẫn đang tải… lâu hơn bình thường",
+  "pending": "C3"
+ },
+ "native.alreadyRunning": {
+  "en": "supcua-v2 is already running.",
+  "vi": "supcua-v2 đang chạy rồi.",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "native.alreadyRunningTitle": {
+  "en": "Already Running",
+  "vi": "Đang chạy rồi",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "native.editorTitle": {
+  "en": "Script editor",
+  "vi": "Trình soạn thảo script",
+  "scope": [
+   "native"
+  ],
+  "pending": "C5"
+ },
+ "native.loadTimeout": {
+  "en": "supcua-v2 is taking unusually long to load its window.\n\nIt keeps trying and this message closes by itself if it succeeds. Last startup stage: {stage}\n\nIf the window stays blank, close the app and send this log file:\n{logPath}",
+  "vi": "supcua-v2 đang tải cửa sổ lâu bất thường.\n\nỨng dụng vẫn đang thử và hộp thoại này tự đóng nếu thành công. Bước khởi động gần nhất: {stage}\n\nNếu cửa sổ vẫn trống, hãy đóng ứng dụng và gửi file log này:\n{logPath}",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "native.loadTimeoutTitle": {
+  "en": "supcua-v2 is still loading",
+  "vi": "supcua-v2 vẫn đang tải",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "native.runtimeMissing": {
+  "en": "supcua needs the Microsoft Edge WebView2 Runtime, which is not installed on this PC.\n\nDownload the Evergreen installer from:\n{url}\n\nChoose Yes to open the download page now, then start the app again.",
+  "vi": "supcua cần Microsoft Edge WebView2 Runtime nhưng máy này chưa cài.\n\nTải bộ cài Evergreen tại:\n{url}\n\nChọn Yes (Có) để mở trang tải ngay, rồi mở lại ứng dụng.",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "native.runtimeMissingTitle": {
+  "en": "WebView2 Runtime missing",
+  "vi": "Thiếu WebView2 Runtime",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "native.startupFailed": {
+  "en": "supcua could not start its WebView2 user interface (the runtime did not respond in time).\n\nReinstall or repair the Microsoft Edge WebView2 Runtime:\n{url}\n\nChoose Yes to open the download page now, then start the app again.",
+  "vi": "supcua không khởi động được giao diện WebView2 (runtime không phản hồi kịp).\n\nHãy cài lại hoặc sửa Microsoft Edge WebView2 Runtime:\n{url}\n\nChọn Yes (Có) để mở trang tải ngay, rồi mở lại ứng dụng.",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "native.startupFailedTitle": {
+  "en": "WebView2 failed to start",
+  "vi": "WebView2 không khởi động được",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "settings.language": {
+  "en": "Language",
+  "vi": "Ngôn ngữ"
+ },
+ "settings.languageDesc": {
+  "en": "Choose the language of the supcua interface.",
+  "vi": "Chọn ngôn ngữ giao diện của supcua."
+ },
+ "settings.languageEnglish": {
+  "en": "English",
+  "vi": "English",
+  "same": true,
+  "why": "endonym, shown in its own language"
+ },
+ "settings.languageVietnamese": {
+  "en": "Tiếng Việt",
+  "vi": "Tiếng Việt",
+  "same": true,
+  "why": "endonym, shown in its own language"
+ },
+ "tray.autoActive": {
+  "en": "Auto Active",
+  "vi": "Tự kích hoạt",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.autoActiveProcess": {
+  "en": "Auto Active Process...",
+  "vi": "Tiến trình tự kích hoạt...",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.dragOff": {
+  "en": "Overlay: Drag OFF",
+  "vi": "Overlay: Kéo TẮT",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.dragOn": {
+  "en": "Overlay: Drag ON",
+  "vi": "Overlay: Kéo BẬT",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.exit": {
+  "en": "Exit",
+  "vi": "Thoát",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.showWindow": {
+  "en": "Show Window",
+  "vi": "Hiện cửa sổ",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.toggleActive": {
+  "en": "Toggle Active",
+  "vi": "Bật/tắt",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.toggleOverlay": {
+  "en": "Toggle Overlay",
+  "vi": "Bật/tắt overlay",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.tooltipActive": {
+  "en": "supcua-v2 - Active",
+  "vi": "supcua-v2 - Đang bật",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.tooltipInactive": {
+  "en": "supcua-v2 - Inactive",
+  "vi": "supcua-v2 - Đang tắt",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ },
+ "tray.tooltipRunning": {
+  "en": "supcua-v2 - Active - Running: {script}",
+  "vi": "supcua-v2 - Đang bật - Đang chạy: {script}",
+  "scope": [
+   "native"
+  ],
+  "pending": "C2"
+ }
+}

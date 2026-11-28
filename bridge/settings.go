@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/yanmad27/supcua-v2/locale"
 	"github.com/yanmad27/supcua-v2/model"
 )
 
@@ -23,6 +24,7 @@ func settingsOf(c model.AppConfig) SettingsDTO {
 		AutoActiveEnabled: c.AutoActiveEnabled, AutoActiveProcessName: c.AutoActiveProcessName,
 		CollapsedGroups: groups, SidebarCollapsed: c.SidebarCollapsed,
 		OverlayStyle: overlayStyleOf(c.OverlayStyle, c.OverlayPosition.X, c.OverlayPosition.Y),
+		Language:     string(locale.Effective(c.Language)),
 	}
 }
 
@@ -104,6 +106,18 @@ func (b *Bridge) settingsUpdate(p struct {
 		if *patch.Theme != themeOf(cfg) {
 			next.Theme = *patch.Theme
 			immediate = append(immediate, "theme")
+		}
+	}
+	var newLang locale.Locale
+	if patch.Language != nil {
+		l, ok := locale.Parse(*patch.Language)
+		if !ok {
+			return nil, invalidSetting("language")
+		}
+		if string(l) != cfg.Language {
+			next.Language = string(l)
+			newLang = l
+			immediate = append(immediate, "language")
 		}
 	}
 	var rebinds []int
@@ -210,8 +224,13 @@ func (b *Bridge) settingsUpdate(p struct {
 		return nil, failCode(CodeSaveFailed)
 	}
 	b.refreshOverlay(true)
+	ev := settingsChangedEvent{Fields: append(append([]string{}, immediate...), restart...)}
+	if newLang != "" {
+		locale.Set(newLang)
+		ev.Language = string(newLang)
+	}
 	if len(immediate)+len(restart) > 0 {
-		b.emit(EvSettingsChanged, settingsChangedEvent{Fields: append(append([]string{}, immediate...), restart...)})
+		b.emit(EvSettingsChanged, ev)
 		b.NotifyStateChanged()
 	}
 	return SettingsUpdateResult{
@@ -223,6 +242,7 @@ func (b *Bridge) settingsUpdate(p struct {
 // goroutines changed meanwhile (window bounds, collapsed groups).
 func withPersisted(current, next model.AppConfig) model.AppConfig {
 	current.Theme = next.Theme
+	current.Language = next.Language
 	current.GlobalHotkey, current.CaptureHotkey, current.OverlayHotkey = next.GlobalHotkey, next.CaptureHotkey, next.OverlayHotkey
 	current.OverlayEnabled = next.OverlayEnabled
 	current.KeyPressDurationMs = next.KeyPressDurationMs

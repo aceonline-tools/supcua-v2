@@ -35,7 +35,7 @@ export function defaultSeed(): MockSeed {
     settings: {
       theme: 'dark', global_hotkey: 'RCtrl', capture_hotkey: 'P', overlay_hotkey: 'Ctrl + O',
       overlay_enabled: true, key_press_duration_ms: 10, scripts_dir: './scripts',
-      auto_active_enabled: true, auto_active_process_name: 'game.exe', collapsed_groups: [], sidebar_collapsed: false,
+      auto_active_enabled: true, auto_active_process_name: 'game.exe', collapsed_groups: [], sidebar_collapsed: false, language: 'en',
       overlay_style: { ...OVERLAY_DEFAULTS },
     },
     state: {
