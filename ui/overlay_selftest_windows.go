@@ -331,6 +331,10 @@ type overlayObs struct {
 	rgb  [3]uint8
 	pix  []byte
 	w, h int
+	// screen is a BitBlt of the overlay's on-screen rectangle (what a user sees), BGRA top-down.
+	screen   []byte
+	sw, sh   int
+	screenOK bool
 }
 
 func (s *SelfTest) observeOverlay() (o overlayObs) {
@@ -338,9 +342,36 @@ func (s *SelfTest) observeOverlay() (o overlayObs) {
 		if ow := s.Overlay.Window(); ow != nil {
 			o.text, o.rgb = ow.LastStatus()
 			o.pix, o.w, o.h = ow.Snapshot()
+			hwnd, _ := ow.Handle()
+			var r win.RECT
+			if win.GetWindowRect(win.HWND(hwnd), &r) {
+				o.sw, o.sh = int(r.Right-r.Left), int(r.Bottom-r.Top)
+				if px, err := captureScreen(int(r.Left), int(r.Top), o.sw, o.sh); err == nil {
+					o.screen, o.screenOK = px, true
+				}
+			}
 		}
 	})
 	return o
+}
+
+// screenHue counts on-screen pixels whose dominant channel matches rgb (R, G or B) by a margin;
+// for a grey target it counts neutral pixels clearly brighter than the dark background.
+func screenHue(o overlayObs, rgb [3]uint8) int {
+	n := 0
+	for i := 0; i+3 < len(o.screen); i += 4 {
+		b, g, r := int(o.screen[i]), int(o.screen[i+1]), int(o.screen[i+2])
+		mx, mn := max(r, g, b), min(r, g, b)
+		switch {
+		case rgb[0] == rgb[1] && rgb[1] == rgb[2]:
+			if mx-mn < 16 && mx > 0x70 {
+				n++
+			}
+		case mx-mn > 60 && ((rgb[0] > 0x80) == (r == mx || r > mn+60)) && ((rgb[1] > 0x80) == (g > mn+60)) && ((rgb[2] > 0x80) == (b > mn+60)):
+			n++
+		}
+	}
+	return n
 }
 
 func (s *SelfTest) waitOverlay(cond func(overlayObs) bool) overlayObs {
@@ -382,8 +413,14 @@ func (s *SelfTest) overlayStatusE2E(res *webview.Result, h ProductionHooks, name
 		res.Step(fmt.Sprintf("overlay e2e [%s] %s", name, label),
 			len(o.text) >= len(prefix) && o.text[:len(prefix)] == prefix && o.rgb == rgb && n >= 10,
 			fmt.Sprintf("text=%q rgb=%v want=%q/%v glyphPixels=%d", o.text, o.rgb, prefix, rgb, n))
+		sn := screenHue(o, rgb)
+		res.Step(fmt.Sprintf("overlay e2e [%s] %s on screen", name, label), o.screenOK && sn >= 10,
+			fmt.Sprintf("screenOK=%v %dx%d screenPixels(%v)=%d", o.screenOK, o.sw, o.sh, rgb, sn))
 		if dir != "" && len(o.pix) > 0 {
 			savePNG(filepath.Join(dir, fmt.Sprintf("e2e-%s-%s.png", name, label)), o.pix, o.w, o.h, 4)
+		}
+		if dir != "" && len(o.screen) > 0 {
+			savePNG(filepath.Join(dir, fmt.Sprintf("e2e-%s-%s-screen.png", name, label)), o.screen, o.sw, o.sh, 4)
 		}
 	}
 	if !fire(h.ProbeHotkey, "overlay e2e ["+name+"] script started via hotkey", func() bool { return h.RunningScriptID() == h.ProbeID }) {
